@@ -93,7 +93,6 @@ def detect_lang(text):
     return "en"
 
 
-# ============ المصادر ============
 def get_okx(symbol):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     try:
@@ -116,7 +115,7 @@ def get_okx(symbol):
         return df
     except Exception:
         return None
-def get_kraken(symbol):
+    def get_kraken(symbol):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     kraken_base = "XBT" if base == "BTC" else base
     try:
@@ -199,7 +198,6 @@ def get_data(symbol):
     return None
 
 
-# ============ المؤشرات ============
 def calc_ema(df, period):
     return df["close"].ewm(span=period, adjust=False).mean()
 
@@ -261,7 +259,6 @@ def calc_fibonacci(df, period=100):
     }
 
 
-# ============ التحليل ============
 def analyze(symbol):
     df = get_data(symbol)
     if df is None or len(df) < 100:
@@ -312,7 +309,6 @@ def analyze(symbol):
     }
 
 
-# ============ الشارت (مطابق لأبو تركي - كل التسميات في Legend فوق يسار) ============
 def create_chart(result, lang, is_admin):
     t = LANG[lang]
     df = result["df"]
@@ -337,11 +333,11 @@ def create_chart(result, lang, is_admin):
         targets = [result["tp1"], result["tp2"], result["tp3"], result["tp4"]]
     else:
         targets = [result["tp1"], result["tp2"]]
-        hlines_values = [result["entry"]] + targets + [result["sl"]]
+
+    hlines_values = [result["entry"]] + targets + [result["sl"]]
     hlines_colors = ["#1f4e79"] + ["#27ae60"] * len(targets) + ["#c0392b"]
     hlines_styles = ["-.", "--", "--", "--", "--", "--"][:len(hlines_values)]
     hlines_widths = [1.5] + [1.2] * len(targets) + [1.5]
-
     hlines = dict(
         hlines=hlines_values,
         colors=hlines_colors,
@@ -386,16 +382,13 @@ def create_chart(result, lang, is_admin):
     ax = axes[0]
     ax_rsi = axes[2]
 
-    # تخصيص الخط الرئيسي (السعر) - أزرق سميك
     ax.lines[0].set_color("#2980b9")
     ax.lines[0].set_linewidth(2.5)
 
-    # العلامة المائية
     ax.text(0.5, 0.5, "Crypto Analyse", transform=ax.transAxes,
             fontsize=75, color="gray", alpha=0.12, ha="center",
             va="center", fontweight="bold", zorder=0)
 
-    # ===== كل التسميات في الـ Legend فوق يسار =====
     legend_handles = [
         mlines.Line2D([], [], color="#2980b9", linewidth=2.5, label=t["price_lbl"]),
         mlines.Line2D([], [], color="#f39c12", linewidth=1.8, label=t["ema20_lbl"]),
@@ -410,16 +403,9 @@ def create_chart(result, lang, is_admin):
         legend_handles.append(mlines.Line2D([], [], color="#27ae60", linewidth=1.2, linestyle="--", label=t["tp4_lbl_ar"] + ": " + str(round(result["tp4"], 4))))
     legend_handles.append(mlines.Line2D([], [], color="#c0392b", linewidth=1.5, linestyle="--", label=t["sl_lbl_ar"] + ": " + str(round(result["sl"], 4))))
 
-    ax.legend(
-        handles=legend_handles,
-        loc="upper left",
-        fontsize=8.5,
-        facecolor="white",
-        edgecolor="#cccccc",
-        framealpha=0.9
-    )
+    ax.legend(handles=legend_handles, loc="upper left", fontsize=8.5,
+              facecolor="white", edgecolor="#cccccc", framealpha=0.9)
 
-    # ===== Fibonacci على اليسار =====
     fib = result["fib"]
     fib_items = [
         (fib["38.2"], t["fib_382"], "#a569bd"),
@@ -431,14 +417,14 @@ def create_chart(result, lang, is_admin):
         ax.text(0.01, price_val, label, transform=ax.get_yaxis_transform(),
                 color=color, fontsize=8, va="center", ha="left")
 
-    # ===== خطوط RSI =====
     ax_rsi.axhline(y=70, color="#c0392b", linestyle="--", linewidth=0.8, alpha=0.5)
     ax_rsi.axhline(y=30, color="#27ae60", linestyle="--", linewidth=0.8, alpha=0.5)
 
     fig.savefig(filename, dpi=110, facecolor="white", bbox_inches="tight", pad_inches=0.3)
     plt.close(fig)
     return filename
-# ============ البوت التفاعلي ============
+
+
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     if not message.text:
@@ -460,8 +446,7 @@ def handle_message(message):
     symbol = text.upper()
     if not symbol.endswith("USDT"):
         symbol = symbol + "USDT"
-
-    try:
+        try:
         result = analyze(symbol)
         if result is None:
             bot.reply_to(message, t["error"] + ": " + symbol)
@@ -505,7 +490,6 @@ def handle_message(message):
         bot.reply_to(message, "Error: " + str(e)[:200])
 
 
-# ============ Scheduler ============
 COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX", "LTC", "TRX", "ATOM", "UNI", "XLM"]
 
 
@@ -525,7 +509,7 @@ def save_positions(positions):
 
 
 def pick_best_signal():
-    print("🔍 Scanning market...")
+    print("Scanning market...")
     results = []
     for coin in COINS:
         symbol = coin + "USDT"
@@ -541,17 +525,17 @@ def pick_best_signal():
         time.sleep(0.3)
 
     if not results:
-        print("⚠️ No strong signals")
+        print("No strong signals")
         return None
 
     results.sort(key=lambda x: x[0], reverse=True)
-    print("✅ Best: " + results[0][1]["symbol"] + " (score " + str(results[0][0]) + ")")
+    print("Best: " + results[0][1]["symbol"] + " (score " + str(results[0][0]) + ")")
     return results[0][1]
 
 
 def send_signal():
     if not CHANNEL_ID:
-        print("⚠️ CHANNEL_ID not set")
+        print("CHANNEL_ID not set")
         return
     signal = pick_best_signal()
     if signal is None:
@@ -559,6 +543,7 @@ def send_signal():
 
     emoji = "🟢" if signal["side"] == "buy" else "🔴"
     action = "شراء" if signal["side"] == "buy" else "بيع"
+
     txt = "📈 توصية جديدة\n"
     txt += "━━━━━━━━━━━━━━━━\n\n"
     txt += emoji + " " + signal["symbol"] + "\n"
@@ -574,8 +559,7 @@ def send_signal():
 
     try:
         bot.send_message(CHANNEL_ID, txt)
-        print("✅ Sent: " + signal["symbol"])
-
+        print("Sent: " + signal["symbol"])
         positions = load_positions()
         positions.append({
             "symbol": signal["symbol"], "side": signal["side"],
@@ -586,4 +570,153 @@ def send_signal():
         })
         save_positions(positions)
     except Exception as e:
-        print("❌ Send error: " + str(e))
+        print("Send error: " + str(e))
+
+
+def send_price_alerts():
+    if not CHANNEL_ID:
+        return
+    print("Price alerts...")
+    txt = "📊 تنبيهات السوق\n"
+    txt += "🕐 " + datetime.now().strftime("%Y-%m-%d %H:%M") + "\n"
+    txt += "━━━━━━━━━━━━━━━━\n\n"
+
+    for coin in COINS[:10]:
+        symbol = coin + "USDT"
+        try:
+            df = get_data(symbol)
+            if df is None or len(df) < 30:
+                continue
+            price = df["close"].iloc[-1]
+            change_24h = ((price - df["close"].iloc[-2]) / df["close"].iloc[-2]) * 100
+            change_7d = ((price - df["close"].iloc[-8]) / df["close"].iloc[-8]) * 100
+            change_30d = ((price - df["close"].iloc[-31]) / df["close"].iloc[-31]) * 100 if len(df) > 31 else 0
+
+            arrow_24 = "🔺" if change_24h >= 0 else "🔻"
+            arrow_7d = "🔺" if change_7d >= 0 else "🔻"
+            arrow_30 = "🔺" if change_30d >= 0 else "🔻"
+
+            txt += "💠 " + coin + "\n"
+            txt += "💰 " + str(round(price, 4)) + "\n"
+            txt += arrow_24 + " 24h: " + str(round(change_24h, 2)) + "%\n"
+            txt += arrow_7d + " 7d: " + str(round(change_7d, 2)) + "%\n"
+            txt += arrow_30 + " 30d: " + str(round(change_30d, 2)) + "%\n\n"
+        except Exception:
+            continue
+        time.sleep(0.3)
+
+    txt += "📣 " + CHANNEL_LINK
+
+    try:
+        bot.send_message(CHANNEL_ID, txt)
+        print("Alerts sent")
+    except Exception as e:
+        print(str(e))
+
+
+def track_targets():
+    positions = load_positions()
+    if not positions:
+        return
+
+    updated = False
+    for pos in positions:
+        if pos.get("tp3_hit") or pos.get("sl_hit"):
+            continue
+
+        symbol = pos["symbol"]
+        try:
+            df = get_data(symbol)
+            if df is None or len(df) < 2:
+                continue
+            current_price = df["close"].iloc[-1]
+
+            if pos["side"] == "buy":
+                if not pos.get("tp1_hit") and current_price >= pos["tp1"]:
+                    pos["tp1_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "الهدف 1", "🎯", pos["tp1"])
+                elif not pos.get("tp2_hit") and current_price >= pos["tp2"]:
+                    pos["tp2_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "الهدف 2", "🎯", pos["tp2"])
+                elif not pos.get("tp3_hit") and current_price >= pos["tp3"]:
+                    pos["tp3_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "الهدف 3", "🎯", pos["tp3"])
+                elif current_price <= pos["sl"]:
+                    pos["sl_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "الستوب", "🔴", pos["sl"])
+            else:
+                if not pos.get("tp1_hit") and current_price <= pos["tp1"]:
+                    pos["tp1_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "الهدف 1", "🎯", pos["tp1"])
+                elif not pos.get("tp2_hit") and current_price <= pos["tp2"]:
+                    pos["tp2_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "الهدف 2", "🎯", pos["tp2"])
+                elif not pos.get("tp3_hit") and current_price <= pos["tp3"]:
+                    pos["tp3_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "الهدف 3", "🎯", pos["tp3"])
+                elif current_price >= pos["sl"]:
+                    pos["sl_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "الستوب", "🔴", pos["sl"])
+        except Exception:
+            continue
+        time.sleep(0.3)
+
+    if updated:
+        save_positions(positions)
+
+
+def send_target_hit(pos, target_name, emoji, target_price):
+    if not CHANNEL_ID:
+        return
+    txt = emoji + " تحديث صفقة\n"
+    txt += "━━━━━━━━━━━━━━━━\n\n"
+    txt += "💠 " + pos["symbol"] + "\n"
+    txt += "✅ تم تحقيق: " + target_name + "\n\n"
+    txt += "💰 الدخول: " + str(round(pos["entry"], 4)) + "\n"
+    txt += "🎯 المحقق: " + str(round(target_price, 4)) + "\n\n"
+    txt += "📣 " + CHANNEL_LINK
+
+    try:
+        bot.send_message(CHANNEL_ID, txt)
+        print("Update: " + pos["symbol"] + " - " + target_name)
+    except Exception as e:
+        print(str(e))
+
+
+def run_scheduler():
+    time.sleep(15)
+    print("Scheduler started...")
+    if CHANNEL_ID:
+        print("Channel: " + CHANNEL_ID)
+    else:
+        print("No CHANNEL_ID")
+
+    try:
+        send_signal()
+    except Exception as e:
+        print("Initial signal error: " + str(e))
+
+    schedule.every(1).hours.do(send_signal)
+    schedule.every(6).hours.do(send_price_alerts)
+    schedule.every(5).minutes.do(track_targets)
+
+    while True:
+        try:
+            schedule.run_pending()
+        except Exception as e:
+            print("Scheduler error: " + str(e))
+        time.sleep(60)
+
+
+scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+scheduler_thread.start()
+
+bot.infinity_polling()
