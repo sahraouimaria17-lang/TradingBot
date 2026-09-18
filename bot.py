@@ -252,25 +252,22 @@ def analyze(symbol):
     liquidity = calc_liquidity(df)
     whale_count = calc_whale_radar(df)
 
-    if ema20_val > ema50_val:
-        side = "buy"
-        entry = price
-        sl = entry - (atr_val * 2)
-        risk = entry - sl
-        tp1 = entry + risk * 0.75
-        tp2 = entry + risk * 1.50
-        tp3 = entry + risk * 2.25
-        tp4 = entry + risk * 3.00
-    else:
-        side = "sell"
-        entry = price
-        sl = entry + (atr_val * 2)
-        risk = sl - entry
-        tp1 = entry - risk * 0.75
-        tp2 = entry - risk * 1.50
-        tp3 = entry - risk * 2.25
-        tp4 = entry - risk * 3.00
-
+if ema20_val > ema50_val:
+    side = "buy"
+    entry = price
+    sl = entry - (atr_val * 1.5)
+    tp1 = entry + (atr_val * 0.8)
+    tp2 = entry + (atr_val * 1.6)
+    tp3 = entry + (atr_val * 2.8)
+    tp4 = entry + (atr_val * 4.0)
+else:
+    side = "sell"
+    entry = price
+    sl = entry + (atr_val * 1.5)
+    tp1 = entry - (atr_val * 0.8)
+    tp2 = entry - (atr_val * 1.6)
+    tp3 = entry - (atr_val * 2.8)
+    tp4 = entry - (atr_val * 4.0)
     return {
         "symbol": symbol, "side": side, "entry": entry, "sl": sl,
         "tp1": tp1, "tp2": tp2, "tp3": tp3, "tp4": tp4,
