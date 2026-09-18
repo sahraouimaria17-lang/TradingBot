@@ -1,4 +1,7 @@
 import os
+import time
+import threading
+import json
 import requests
 import telebot
 import pandas as pd
@@ -7,40 +10,55 @@ import mplfinance as mpf
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
+import schedule
+from datetime import datetime
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "").strip()
 ADMIN_ID = 7002618091
 bot = telebot.TeleBot(BOT_TOKEN)
 
 CHANNEL_LINK = "https://t.me/rym_rima16"
+POSITIONS_FILE = "positions.json"
 
 LANG = {
     "ar": {
-        "report": "📊 التحليل الفني",
-        "frame": "⏰ الإطار الزمني: يومي",
-        "buy": "🟢 شراء",
-        "sell": "🔴 بيع",
-        "entry": "💰 سعر الدخول",
+        "chart_title": "التحليل الفني المباشر لعملة: ",
+        "report": "📊 تقرير التحليل الفني",
+        "frame": "⏰ فريم التحليل: يومي",
+        "buy": "🟢 التوصية المتوقعة: شراء",
+        "sell": "🔴 التوصية المتوقعة: بيع",
+        "entry": "💰 السعر الحالي / الدخول",
         "tp": "🎯 الهدف",
-        "sl": "🔴 وقف الخسارة",
-        "rsi": "📈 RSI",
-        "adx": "📊 ADX",
-        "atr": "📉 ATR",
+        "sl": "🔴 إيقاف الخسارة",
+        "rsi": "📈 مؤشر القوة النسبية (RSI)",
+        "adx": "📊 مؤشر الاتجاه (ADX)",
+        "atr": "📉 مؤشر التقلب (ATR)",
         "ask": "أرسل عملة مثل BTC",
         "error": "⚠️ ما لقيت العملة",
-        "entry_lbl": "Entry",
-        "tp_lbl": "Target",
-        "sl_lbl": "Stop Loss",
-        "res_lbl": "Resistance",
-        "sup_lbl": "Support",
+        "fib_382": "Fib 38.2%",
+        "fib_500": "Fib 50.0%",
+        "fib_618": "Fib 61.8%",
+        "price_lbl": "السعر المباشر (منصة Binance)",
+        "ema20_lbl": "EMA 20",
+        "ema50_lbl": "EMA 50",
+        "bb_lbl": "Bollinger Bands",
+        "entry_lbl_ar": "سعر الدخول",
+        "tp1_lbl_ar": "الهدف 1",
+        "tp2_lbl_ar": "الهدف 2",
+        "tp3_lbl_ar": "الهدف 3",
+        "tp4_lbl_ar": "الهدف 4",
+        "sl_lbl_ar": "وقف الخسارة",
         "vip_msg": "\n\n🔒 نسخة تجريبية. للاشتراك في VIP (4 أهداف + تحليل أعمق)، تواصل معنا.",
-        "channel_promo": "\n\n━━━━━━━━━━━━━━━━\n📣 [توصيات كريبتو مجانية](" + CHANNEL_LINK + ")"
+        "channel_promo": "\n\n━━━━━━━━━━━━━━━━\n📣 " + CHANNEL_LINK
     },
     "en": {
-        "report": "📊 Technical Analysis",
+        "chart_title": "Live Technical Analysis: ",
+        "report": "📊 Technical Analysis Report",
         "frame": "⏰ Timeframe: Daily",
-        "buy": "🟢 BUY",
-        "sell": "🔴 SELL",
+        "buy": "🟢 Signal: BUY",
+        "sell": "🔴 Signal: SELL",
         "entry": "💰 Entry",
         "tp": "🎯 Target",
         "sl": "🔴 Stop Loss",
@@ -49,13 +67,21 @@ LANG = {
         "atr": "📉 ATR",
         "ask": "Send a coin like BTC",
         "error": "⚠️ Coin not found",
-        "entry_lbl": "Entry",
-        "tp_lbl": "Target",
-        "sl_lbl": "Stop Loss",
-        "res_lbl": "Resistance",
-        "sup_lbl": "Support",
+        "fib_382": "Fib 38.2%",
+        "fib_500": "Fib 50.0%",
+        "fib_618": "Fib 61.8%",
+        "price_lbl": "Live Price (Binance)",
+        "ema20_lbl": "EMA 20",
+        "ema50_lbl": "EMA 50",
+        "bb_lbl": "Bollinger Bands",
+        "entry_lbl_ar": "Entry",
+        "tp1_lbl_ar": "Target 1",
+        "tp2_lbl_ar": "Target 2",
+        "tp3_lbl_ar": "Target 3",
+        "tp4_lbl_ar": "Target 4",
+        "sl_lbl_ar": "Stop Loss",
         "vip_msg": "\n\n🔒 Trial version. For VIP (4 targets + deeper analysis), contact us.",
-        "channel_promo": "\n\n━━━━━━━━━━━━━━━━\n📣 [Free Crypto Signals](" + CHANNEL_LINK + ")"
+        "channel_promo": "\n\n━━━━━━━━━━━━━━━━\n📣 " + CHANNEL_LINK
     }
 }
 
@@ -67,6 +93,7 @@ def detect_lang(text):
     return "en"
 
 
+# ============ المصادر ============
 def get_okx(symbol):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     try:
@@ -89,9 +116,7 @@ def get_okx(symbol):
         return df
     except Exception:
         return None
-
-
-def get_kraken(symbol):
+    def get_kraken(symbol):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     kraken_base = "XBT" if base == "BTC" else base
     try:
@@ -174,6 +199,7 @@ def get_data(symbol):
     return None
 
 
+# ============ المؤشرات ============
 def calc_ema(df, period):
     return df["close"].ewm(span=period, adjust=False).mean()
 
@@ -220,19 +246,33 @@ def calc_whale_radar(df):
     avg_vol = recent["volume"].mean()
     if avg_vol <= 0:
         return 0
-    whales = recent[recent["volume"] > avg_vol * 2.5]
+    whales = recent[recent["volume"] > avg_vol * 2.0]
     return len(whales)
 
 
+def calc_fibonacci(df, period=100):
+    high = df["high"].tail(period).max()
+    low = df["low"].tail(period).min()
+    diff = high - low
+    return {
+        "38.2": low + diff * 0.382,
+        "50.0": low + diff * 0.500,
+        "61.8": low + diff * 0.618
+    }
+
+
+# ============ التحليل ============
 def analyze(symbol):
     df = get_data(symbol)
     if df is None or len(df) < 100:
         return None
+
     ema20 = calc_ema(df, 20)
     ema50 = calc_ema(df, 50)
     bb_upper, bb_mid, bb_lower = calc_bollinger(df)
     rsi_series = calc_rsi(df)
     adx_series, atr_series = calc_adx_atr(df)
+    fib = calc_fibonacci(df)
 
     price = df["close"].iloc[-1]
     ema20_val = ema20.iloc[-1]
@@ -248,41 +288,157 @@ def analyze(symbol):
         side = "buy"
         entry = price
         sl = entry - (atr_val * 1.5)
-        tp1 = entry + (atr_val * 0.8)
-        tp2 = entry + (atr_val * 1.6)
-        tp3 = entry + (atr_val * 2.8)
-        tp4 = entry + (atr_val * 4.0)
+        tp1 = entry + (atr_val * 0.5)
+        tp2 = entry + (atr_val * 1.0)
+        tp3 = entry + (atr_val * 2.0)
+        tp4 = entry + (atr_val * 3.7)
     else:
         side = "sell"
         entry = price
         sl = entry + (atr_val * 1.5)
-        tp1 = entry - (atr_val * 0.8)
-        tp2 = entry - (atr_val * 1.6)
-        tp3 = entry - (atr_val * 2.8)
-        tp4 = entry - (atr_val * 4.0)
+        tp1 = entry - (atr_val * 0.5)
+        tp2 = entry - (atr_val * 1.0)
+        tp3 = entry - (atr_val * 2.0)
+        tp4 = entry - (atr_val * 3.7)
 
     return {
-        "symbol": symbol,
-        "side": side,
-        "entry": entry,
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "tp3": tp3,
-        "tp4": tp4,
-        "rsi": rsi_val,
-        "adx": adx_val,
-        "atr": atr_val,
-        "liquidity": liquidity,
-        "whale_count": whale_count,
-        "df": df,
-        "ema20": ema20,
-        "ema50": ema50,
-        "bb_upper": bb_upper,
-        "bb_lower": bb_lower
+        "symbol": symbol, "side": side, "entry": entry, "sl": sl,
+        "tp1": tp1, "tp2": tp2, "tp3": tp3, "tp4": tp4,
+        "rsi": rsi_val, "adx": adx_val, "atr": atr_val,
+        "liquidity": liquidity, "whale_count": whale_count,
+        "df": df, "ema20": ema20, "ema50": ema50,
+        "bb_upper": bb_upper, "bb_lower": bb_lower,
+        "rsi_series": rsi_series, "fib": fib
     }
 
 
+# ============ الشارت (مطابق لأبو تركي - كل التسميات في Legend فوق يسار) ============
+def create_chart(result, lang, is_admin):
+    t = LANG[lang]
+    df = result["df"]
+    symbol = result["symbol"]
+
+    df_plot = df.tail(80).copy()
+    df_plot["ema20"] = result["ema20"].tail(80)
+    df_plot["ema50"] = result["ema50"].tail(80)
+    df_plot["bb_upper"] = result["bb_upper"].tail(80)
+    df_plot["bb_lower"] = result["bb_lower"].tail(80)
+    df_plot["rsi"] = result["rsi_series"].tail(80)
+
+    apds = [
+        mpf.make_addplot(df_plot["ema20"], color="#f39c12", width=1.8, panel=0),
+        mpf.make_addplot(df_plot["ema50"], color="#8e44ad", width=1.8, panel=0),
+        mpf.make_addplot(df_plot["bb_upper"], color="#5dade2", width=1.0, linestyle="--", panel=0),
+        mpf.make_addplot(df_plot["bb_lower"], color="#5dade2", width=1.0, linestyle="--", panel=0),
+        mpf.make_addplot(df_plot["rsi"], color="#c0392b", width=1.2, panel=1, ylabel="RSI (14)"),
+    ]
+
+    if is_admin:
+        targets = [result["tp1"], result["tp2"], result["tp3"], result["tp4"]]
+    else:
+        targets = [result["tp1"], result["tp2"]]
+        hlines_values = [result["entry"]] + targets + [result["sl"]]
+    hlines_colors = ["#1f4e79"] + ["#27ae60"] * len(targets) + ["#c0392b"]
+    hlines_styles = ["-.", "--", "--", "--", "--", "--"][:len(hlines_values)]
+    hlines_widths = [1.5] + [1.2] * len(targets) + [1.5]
+
+    hlines = dict(
+        hlines=hlines_values,
+        colors=hlines_colors,
+        linestyle=hlines_styles,
+        linewidths=hlines_widths
+    )
+
+    safe_name = symbol.replace("/", "_")
+    filename = "chart_" + safe_name + ".png"
+
+    style = mpf.make_mpf_style(
+        base_mpf_style="default",
+        gridstyle=":",
+        gridcolor="#e8e8e8",
+        facecolor="white",
+        figcolor="white",
+        edgecolor="#cccccc",
+        rc={
+            "font.size": 9,
+            "axes.labelcolor": "black",
+            "xtick.color": "black",
+            "ytick.color": "black",
+            "text.color": "black",
+            "axes.titlecolor": "black"
+        }
+    )
+
+    fig, axes = mpf.plot(
+        df_plot,
+        type="line",
+        style=style,
+        addplot=apds,
+        hlines=hlines,
+        volume=False,
+        figsize=(14, 10),
+        title=t["chart_title"] + symbol + " (Binance)",
+        returnfig=True,
+        tight_layout=True,
+        panel_ratios=(4, 1)
+    )
+
+    ax = axes[0]
+    ax_rsi = axes[2]
+
+    # تخصيص الخط الرئيسي (السعر) - أزرق سميك
+    ax.lines[0].set_color("#2980b9")
+    ax.lines[0].set_linewidth(2.5)
+
+    # العلامة المائية
+    ax.text(0.5, 0.5, "Crypto Analyse", transform=ax.transAxes,
+            fontsize=75, color="gray", alpha=0.12, ha="center",
+            va="center", fontweight="bold", zorder=0)
+
+    # ===== كل التسميات في الـ Legend فوق يسار =====
+    legend_handles = [
+        mlines.Line2D([], [], color="#2980b9", linewidth=2.5, label=t["price_lbl"]),
+        mlines.Line2D([], [], color="#f39c12", linewidth=1.8, label=t["ema20_lbl"]),
+        mlines.Line2D([], [], color="#8e44ad", linewidth=1.8, label=t["ema50_lbl"]),
+        mlines.Line2D([], [], color="#5dade2", linewidth=1.0, linestyle="--", label=t["bb_lbl"]),
+        mlines.Line2D([], [], color="#1f4e79", linewidth=1.5, linestyle="-.", label=t["entry_lbl_ar"] + ": " + str(round(result["entry"], 4))),
+        mlines.Line2D([], [], color="#27ae60", linewidth=1.2, linestyle="--", label=t["tp1_lbl_ar"] + ": " + str(round(result["tp1"], 4))),
+        mlines.Line2D([], [], color="#27ae60", linewidth=1.2, linestyle="--", label=t["tp2_lbl_ar"] + ": " + str(round(result["tp2"], 4))),
+    ]
+    if is_admin:
+        legend_handles.append(mlines.Line2D([], [], color="#27ae60", linewidth=1.2, linestyle="--", label=t["tp3_lbl_ar"] + ": " + str(round(result["tp3"], 4))))
+        legend_handles.append(mlines.Line2D([], [], color="#27ae60", linewidth=1.2, linestyle="--", label=t["tp4_lbl_ar"] + ": " + str(round(result["tp4"], 4))))
+    legend_handles.append(mlines.Line2D([], [], color="#c0392b", linewidth=1.5, linestyle="--", label=t["sl_lbl_ar"] + ": " + str(round(result["sl"], 4))))
+
+    ax.legend(
+        handles=legend_handles,
+        loc="upper left",
+        fontsize=8.5,
+        facecolor="white",
+        edgecolor="#cccccc",
+        framealpha=0.9
+    )
+
+    # ===== Fibonacci على اليسار =====
+    fib = result["fib"]
+    fib_items = [
+        (fib["38.2"], t["fib_382"], "#a569bd"),
+        (fib["50.0"], t["fib_500"], "#c0392b"),
+        (fib["61.8"], t["fib_618"], "#a569bd"),
+    ]
+    for price_val, label, color in fib_items:
+        ax.axhline(y=price_val, color=color, linestyle=":", linewidth=0.8, alpha=0.6)
+        ax.text(0.01, price_val, label, transform=ax.get_yaxis_transform(),
+                color=color, fontsize=8, va="center", ha="left")
+
+    # ===== خطوط RSI =====
+    ax_rsi.axhline(y=70, color="#c0392b", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax_rsi.axhline(y=30, color="#27ae60", linestyle="--", linewidth=0.8, alpha=0.5)
+
+    fig.savefig(filename, dpi=110, facecolor="white", bbox_inches="tight", pad_inches=0.3)
+    plt.close(fig)
+    return filename
+# ============ البوت التفاعلي ============
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     if not message.text:
@@ -311,109 +467,15 @@ def handle_message(message):
             bot.reply_to(message, t["error"] + ": " + symbol)
             return
 
-        df = result["df"]
-        high = df["high"].tail(30).max()
-        low = df["low"].tail(30).min()
-
-        df_plot = df.tail(100).copy()
-        df_plot["ema20"] = result["ema20"].tail(100)
-        df_plot["ema50"] = result["ema50"].tail(100)
-        df_plot["bb_upper"] = result["bb_upper"].tail(100)
-        df_plot["bb_lower"] = result["bb_lower"].tail(100)
-
-        apds = [
-            mpf.make_addplot(df_plot["ema20"], color="#1f77b4", width=1.5),
-            mpf.make_addplot(df_plot["ema50"], color="#ff7f0e", width=1.5),
-            mpf.make_addplot(df_plot["bb_upper"], color="#999999", width=0.8, linestyle="--"),
-            mpf.make_addplot(df_plot["bb_lower"], color="#999999", width=0.8, linestyle="--"),
-        ]
-
-        hlines = dict(
-            hlines=[result["entry"], result["tp1"], result["tp2"], result["tp3"], result["tp4"], result["sl"]],
-            colors=["#1f77b4", "#2ca02c", "#2ca02c", "#2ca02c", "#9467bd", "#d62728"],
-            linestyle="dashed",
-            linewidths=[1.2, 1.2, 1.2, 1.2, 1.2, 1.5]
-        )
-
-        safe_name = symbol.replace("/", "_")
-        filename = "chart_" + safe_name + ".png"
-
-        mc = mpf.make_marketcolors(up="#26a69a", down="#ef5350", edge="inherit", wick="inherit", volume="in")
-        style = mpf.make_mpf_style(
-            marketcolors=mc,
-            gridstyle=":",
-            gridcolor="#dddddd",
-            facecolor="white",
-            figcolor="white",
-            edgecolor="#cccccc",
-            rc={
-                "font.size": 9,
-                "axes.labelcolor": "black",
-                "xtick.color": "black",
-                "ytick.color": "black",
-                "text.color": "black",
-                "axes.titlecolor": "black"
-            }
-        )
-        fig, axes = mpf.plot(
-            df_plot,
-            type="candle",
-            style=style,
-            addplot=apds,
-            hlines=hlines,
-            volume=False,
-            figsize=(13, 8),
-            title=safe_name + " - Daily",
-            returnfig=True,
-            tight_layout=True
-        )
-
-        ax = axes[0]
-        ax.text(
-            0.5, 0.5, "Crypto Analyse",
-            transform=ax.transAxes,
-            fontsize=70,
-            color="gray",
-            alpha=0.15,
-            ha="center",
-            va="center",
-            fontweight="bold",
-            zorder=0
-        )
-
-        labels = [
-            (t["res_lbl"] + ": " + str(round(high, 6)), "#00008B"),
-            (t["tp_lbl"] + " 4: " + str(round(result["tp4"], 6)), "#9467bd"),
-            (t["tp_lbl"] + " 3: " + str(round(result["tp3"], 6)), "#2ca02c"),
-            (t["tp_lbl"] + " 2: " + str(round(result["tp2"], 6)), "#2ca02c"),
-            (t["tp_lbl"] + " 1: " + str(round(result["tp1"], 6)), "#2ca02c"),
-            (t["entry_lbl"] + ": " + str(round(result["entry"], 6)), "#1f77b4"),
-            (t["sl_lbl"] + ": " + str(round(result["sl"], 6)), "#d62728"),
-            (t["sup_lbl"] + ": " + str(round(low, 6)), "#8B0000"),
-        ]
-
-        for i, (label, color) in enumerate(labels):
-            y_pos = 0.97 - (i * 0.045)
-            ax.text(
-                0.98, y_pos, label,
-                transform=ax.transAxes,
-                color=color,
-                fontsize=9,
-                va="top",
-                ha="right",
-                fontweight="bold",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=color, linewidth=1)
-            )
-
-        fig.savefig(filename, dpi=110, bbox_inches="tight", facecolor="white")
-        plt.close(fig)
+        is_admin = (message.from_user.id == ADMIN_ID)
+        filename = create_chart(result, lang, is_admin)
 
         txt = t["report"] + " - " + symbol + "\n"
         txt += t["frame"] + "\n"
         txt += t[result["side"]] + "\n\n"
         txt += t["entry"] + ": " + str(round(result["entry"], 6)) + "\n"
 
-        if message.from_user.id != ADMIN_ID:
+        if not is_admin:
             txt += t["tp"] + " 1: " + str(round(result["tp1"], 6)) + "\n"
             txt += t["tp"] + " 2: " + str(round(result["tp2"], 6)) + "\n"
             txt += t["sl"] + ": " + str(round(result["sl"], 6)) + "\n\n"
@@ -437,10 +499,91 @@ def handle_message(message):
             txt += "🐋 رادار الحيتان: " + str(result["whale_count"]) + " شمعة"
 
         with open(filename, "rb") as photo:
-            bot.send_photo(message.chat.id, photo, caption=txt, parse_mode="Markdown")
+            bot.send_photo(message.chat.id, photo, caption=txt)
 
     except Exception as e:
         bot.reply_to(message, "Error: " + str(e)[:200])
 
 
-bot.infinity_polling()
+# ============ Scheduler ============
+COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX", "LTC", "TRX", "ATOM", "UNI", "XLM"]
+
+
+def load_positions():
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+
+def save_positions(positions):
+    with open(POSITIONS_FILE, "w") as f:
+        json.dump(positions, f)
+
+
+def pick_best_signal():
+    print("🔍 Scanning market...")
+    results = []
+    for coin in COINS:
+        symbol = coin + "USDT"
+        try:
+            result = analyze(symbol)
+            if result and result["adx"] > 20:
+                score = result["adx"]
+                if 40 < result["rsi"] < 60:
+                    score += 20
+                results.append((score, result))
+        except Exception:
+            continue
+        time.sleep(0.3)
+
+    if not results:
+        print("⚠️ No strong signals")
+        return None
+
+    results.sort(key=lambda x: x[0], reverse=True)
+    print("✅ Best: " + results[0][1]["symbol"] + " (score " + str(results[0][0]) + ")")
+    return results[0][1]
+
+
+def send_signal():
+    if not CHANNEL_ID:
+        print("⚠️ CHANNEL_ID not set")
+        return
+    signal = pick_best_signal()
+    if signal is None:
+        return
+
+    emoji = "🟢" if signal["side"] == "buy" else "🔴"
+    action = "شراء" if signal["side"] == "buy" else "بيع"
+    txt = "📈 توصية جديدة\n"
+    txt += "━━━━━━━━━━━━━━━━\n\n"
+    txt += emoji + " " + signal["symbol"] + "\n"
+    txt += "📊 الصفقة: " + action + "\n\n"
+    txt += "💰 الدخول: " + str(round(signal["entry"], 4)) + "\n"
+    txt += "🎯 الهدف 1: " + str(round(signal["tp1"], 4)) + "\n"
+    txt += "🎯 الهدف 2: " + str(round(signal["tp2"], 4)) + "\n"
+    txt += "🎯 الهدف 3: " + str(round(signal["tp3"], 4)) + "\n"
+    txt += "🔴 الستوب: " + str(round(signal["sl"], 4)) + "\n\n"
+    txt += "📈 RSI: " + str(round(signal["rsi"], 2)) + "\n"
+    txt += "📊 ADX: " + str(round(signal["adx"], 2)) + "\n\n"
+    txt += "📣 " + CHANNEL_LINK
+
+    try:
+        bot.send_message(CHANNEL_ID, txt)
+        print("✅ Sent: " + signal["symbol"])
+
+        positions = load_positions()
+        positions.append({
+            "symbol": signal["symbol"], "side": signal["side"],
+            "entry": signal["entry"], "tp1": signal["tp1"], "tp2": signal["tp2"],
+            "tp3": signal["tp3"], "sl": signal["sl"],
+            "tp1_hit": False, "tp2_hit": False, "tp3_hit": False, "sl_hit": False,
+            "created_at": datetime.now().isoformat()
+        })
+        save_positions(positions)
+    except Exception as e:
+        print("❌ Send error: " + str(e))
