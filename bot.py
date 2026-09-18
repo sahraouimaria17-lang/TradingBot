@@ -67,7 +67,6 @@ def detect_lang(text):
     return "en"
 
 
-# ============ المصادر الأربعة ============
 def get_okx(symbol):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     try:
@@ -126,7 +125,7 @@ def get_kraken(symbol):
 def get_coinbase(symbol):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     try:
-        url = f"https://api.exchange.coinbase.com/products/{base}-USD/candles"
+        url = "https://api.exchange.coinbase.com/products/" + base + "-USD/candles"
         params = {"granularity": 86400}
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, params=params, headers=headers, timeout=15).json()
@@ -147,7 +146,7 @@ def get_coinbase(symbol):
 def get_coingecko(symbol):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().lower()
     try:
-        url = f"https://api.coingecko.com/api/v3/coins/{base}/ohlc"
+        url = "https://api.coingecko.com/api/v3/coins/" + base + "/ohlc"
         params = {"vs_currency": "usd", "days": "365"}
         resp = requests.get(url, params=params, timeout=15).json()
         if not isinstance(resp, list) or len(resp) < 50:
@@ -163,18 +162,18 @@ def get_coingecko(symbol):
 
 
 def get_data(symbol):
-    for name, func in [("OKX", get_okx), ("Kraken", get_kraken), ("Coinbase", get_coinbase), ("CoinGecko", get_coingecko)]:
+    sources = [("OKX", get_okx), ("Kraken", get_kraken), ("Coinbase", get_coinbase), ("CoinGecko", get_coingecko)]
+    for name, func in sources:
         try:
             df = func(symbol)
             if df is not None and len(df) >= 50:
-                print(f"✅ {name}")
+                print("OK:", name)
                 return df
         except Exception:
             continue
     return None
 
 
-# ============ المؤشرات ============
 def calc_ema(df, period):
     return df["close"].ewm(span=period, adjust=False).mean()
 
@@ -210,32 +209,25 @@ def calc_adx_atr(df, period=14):
     return adx, atr
 
 
-# ============ السيولة ورادار الحيتان ============
 def calc_liquidity(df):
-    try:
-        avg_vol = df["volume"].tail(7).mean()
-        avg_price = df["close"].tail(7).mean()
-        return avg_vol * avg_price
-    except Exception:
-        return 0
-    def calc_whale_radar(df):
-    try:
-        recent = df.tail(30)
-        avg_vol = recent["volume"].mean()
-        if avg_vol <= 0:
-            return 0
-        whales = recent[recent["volume"] > avg_vol * 2.5]
-        return len(whales)
-    except Exception:
-        return 0
+    avg_vol = df["volume"].tail(7).mean()
+    avg_price = df["close"].tail(7).mean()
+    return avg_vol * avg_price
 
 
-# ============ التحليل ============
+def calc_whale_radar(df):
+    recent = df.tail(30)
+    avg_vol = recent["volume"].mean()
+    if avg_vol <= 0:
+        return 0
+    whales = recent[recent["volume"] > avg_vol * 2.5]
+    return len(whales)
+
+
 def analyze(symbol):
     df = get_data(symbol)
     if df is None or len(df) < 100:
         return None
-
     ema20 = calc_ema(df, 20)
     ema50 = calc_ema(df, 50)
     bb_upper, bb_mid, bb_lower = calc_bollinger(df)
@@ -270,16 +262,27 @@ def analyze(symbol):
         tp4 = entry - (atr_val * 4.0)
 
     return {
-        "symbol": symbol, "side": side, "entry": entry, "sl": sl,
-        "tp1": tp1, "tp2": tp2, "tp3": tp3, "tp4": tp4,
-        "rsi": rsi_val, "adx": adx_val, "atr": atr_val,
-        "liquidity": liquidity, "whale_count": whale_count,
-        "df": df, "ema20": ema20, "ema50": ema50,
-        "bb_upper": bb_upper, "bb_lower": bb_lower
+        "symbol": symbol,
+        "side": side,
+        "entry": entry,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "tp4": tp4,
+        "rsi": rsi_val,
+        "adx": adx_val,
+        "atr": atr_val,
+        "liquidity": liquidity,
+        "whale_count": whale_count,
+        "df": df,
+        "ema20": ema20,
+        "ema50": ema50,
+        "bb_upper": bb_upper,
+        "bb_lower": bb_lower
     }
 
 
-# ============ البوت ============
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     if not message.text:
@@ -337,22 +340,46 @@ def handle_message(message):
 
         mc = mpf.make_marketcolors(up="#26a69a", down="#ef5350", edge="inherit", wick="inherit", volume="in")
         style = mpf.make_mpf_style(
-            marketcolors=mc, gridstyle=":", gridcolor="#dddddd",
-            facecolor="white", figcolor="white", edgecolor="#cccccc",
-            rc={"font.size": 9, "axes.labelcolor": "black", "xtick.color": "black",
-                "ytick.color": "black", "text.color": "black", "axes.titlecolor": "black"}
+            marketcolors=mc,
+            gridstyle=":",
+            gridcolor="#dddddd",
+            facecolor="white",
+            figcolor="white",
+            edgecolor="#cccccc",
+            rc={
+                "font.size": 9,
+                "axes.labelcolor": "black",
+                "xtick.color": "black",
+                "ytick.color": "black",
+                "text.color": "black",
+                "axes.titlecolor": "black"
+            }
         )
         fig, axes = mpf.plot(
-            df_plot, type="candle", style=style, addplot=apds,
-            hlines=hlines, volume=False, figsize=(13, 8),
-            title=safe_name + " - Daily", returnfig=True,
+            df_plot,
+            type="candle",
+            style=style,
+            addplot=apds,
+            hlines=hlines,
+            volume=False,
+            figsize=(13, 8),
+            title=safe_name + " - Daily",
+            returnfig=True,
             tight_layout=True
         )
 
         ax = axes[0]
-        ax.text(0.5, 0.5, "Crypto Analyse", transform=ax.transAxes,
-                fontsize=70, color="gray", alpha=0.15, ha="center",
-                va="center", fontweight="bold", zorder=0)
+        ax.text(
+            0.5, 0.5, "Crypto Analyse",
+            transform=ax.transAxes,
+            fontsize=70,
+            color="gray",
+            alpha=0.15,
+            ha="center",
+            va="center",
+            fontweight="bold",
+            zorder=0
+        )
 
         labels = [
             (t["res_lbl"] + ": " + str(round(high, 6)), "#00008B"),
@@ -364,12 +391,19 @@ def handle_message(message):
             (t["sl_lbl"] + ": " + str(round(result["sl"], 6)), "#d62728"),
             (t["sup_lbl"] + ": " + str(round(low, 6)), "#8B0000"),
         ]
+
         for i, (label, color) in enumerate(labels):
             y_pos = 0.97 - (i * 0.045)
-            ax.text(0.98, y_pos, label, transform=ax.transAxes,
-                    color=color, fontsize=9, va="top", ha="right",
-                    fontweight="bold",
-                    bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=color, linewidth=1))
+            ax.text(
+                0.98, y_pos, label,
+                transform=ax.transAxes,
+                color=color,
+                fontsize=9,
+                va="top",
+                ha="right",
+                fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=color, linewidth=1)
+            )
 
         fig.savefig(filename, dpi=110, bbox_inches="tight", facecolor="white")
         plt.close(fig)
