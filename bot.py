@@ -218,7 +218,7 @@ def calc_liquidity(df):
         return avg_vol * avg_price
     except Exception:
         return 0
-def calc_whale_radar(df):
+    def calc_whale_radar(df):
     try:
         recent = df.tail(30)
         avg_vol = recent["volume"].mean()
@@ -252,22 +252,23 @@ def analyze(symbol):
     liquidity = calc_liquidity(df)
     whale_count = calc_whale_radar(df)
 
-if ema20_val > ema50_val:
-    side = "buy"
-    entry = price
-    sl = entry - (atr_val * 1.5)
-    tp1 = entry + (atr_val * 0.8)
-    tp2 = entry + (atr_val * 1.6)
-    tp3 = entry + (atr_val * 2.8)
-    tp4 = entry + (atr_val * 4.0)
-else:
-    side = "sell"
-    entry = price
-    sl = entry + (atr_val * 1.5)
-    tp1 = entry - (atr_val * 0.8)
-    tp2 = entry - (atr_val * 1.6)
-    tp3 = entry - (atr_val * 2.8)
-    tp4 = entry - (atr_val * 4.0)
+    if ema20_val > ema50_val:
+        side = "buy"
+        entry = price
+        sl = entry - (atr_val * 1.5)
+        tp1 = entry + (atr_val * 0.8)
+        tp2 = entry + (atr_val * 1.6)
+        tp3 = entry + (atr_val * 2.8)
+        tp4 = entry + (atr_val * 4.0)
+    else:
+        side = "sell"
+        entry = price
+        sl = entry + (atr_val * 1.5)
+        tp1 = entry - (atr_val * 0.8)
+        tp2 = entry - (atr_val * 1.6)
+        tp3 = entry - (atr_val * 2.8)
+        tp4 = entry - (atr_val * 4.0)
+
     return {
         "symbol": symbol, "side": side, "entry": entry, "sl": sl,
         "tp1": tp1, "tp2": tp2, "tp3": tp3, "tp4": tp4,
@@ -341,7 +342,6 @@ def handle_message(message):
             rc={"font.size": 9, "axes.labelcolor": "black", "xtick.color": "black",
                 "ytick.color": "black", "text.color": "black", "axes.titlecolor": "black"}
         )
-
         fig, axes = mpf.plot(
             df_plot, type="candle", style=style, addplot=apds,
             hlines=hlines, volume=False, figsize=(13, 8),
