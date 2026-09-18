@@ -424,8 +424,6 @@ def create_chart(result, lang, is_admin):
     fig.savefig(filename, dpi=110, facecolor="white", bbox_inches="tight", pad_inches=0.3)
     plt.close(fig)
     return filename
-
-
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     if not message.text:
@@ -447,7 +445,8 @@ def handle_message(message):
     symbol = text.upper()
     if not symbol.endswith("USDT"):
         symbol = symbol + "USDT"
-        try:
+
+    try:
         result = analyze(symbol)
         if result is None:
             bot.reply_to(message, t["error"] + ": " + symbol)
