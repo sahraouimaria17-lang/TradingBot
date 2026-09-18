@@ -1,0 +1,8 @@
+pyTelegramBotAPI
+pandas
+numpy
+mplfinance
+matplotlib
+requests
+python-binance
+schedule
