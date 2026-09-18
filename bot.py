@@ -115,7 +115,9 @@ def get_okx(symbol):
         return df
     except Exception:
         return None
-    def get_kraken(symbol):
+
+
+def get_kraken(symbol):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     kraken_base = "XBT" if base == "BTC" else base
     try:
@@ -144,7 +146,6 @@ def get_okx(symbol):
         return df
     except Exception:
         return None
-
 
 def get_coinbase(symbol):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
