@@ -8,7 +8,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-BOT_TOKEN = "8949808593:AAHj6fsXN598ovODpD4_yRHNg6V9CAqJbvA"
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 ADMIN_ID = 7002618091
 bot = telebot.TeleBot(BOT_TOKEN)
 
