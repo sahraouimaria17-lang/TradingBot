@@ -57,7 +57,7 @@ LANG = {
         "vip_msg": "\n\n🔒 نسخة تجريبية. للاشتراك في VIP (4 أهداف + تحليل أعمق)، تواصل معنا.",
         "vip_warning": "\n\n⚠️ تنبيه: انتهت فترة التجربة قريباً.\nمتبقي لك أيام قليلة.\nللاشتراك في VIP: تواصل معنا.",
         "vip_expired": "\n\n🔒 انتهت فترة التجربة.\nللاستمرار في استخدام البوت، اشترك في VIP.",
-        "channel_promo": "\n\n━━━━━━━━━━━━━━━━\n📣 " + CHANNEL_LINK
+        "channel_promo": "\n\n━━━━━━━━━━━━━━━━\n📣 قناة التوصيات: @rym_rima16"
     },
     "en": {
         "chart_title": "Live Technical Analysis: ",
@@ -89,10 +89,9 @@ LANG = {
         "vip_msg": "\n\n🔒 Trial version. For VIP (4 targets + deeper analysis), contact us.",
         "vip_warning": "\n\n⚠️ Warning: Your trial is ending soon.\nFor VIP: contact us.",
         "vip_expired": "\n\n🔒 Trial expired.\nTo continue using the bot, subscribe to VIP.",
-        "channel_promo": "\n\n━━━━━━━━━━━━━━━━\n📣 " + CHANNEL_LINK
+        "channel_promo": "\n\n━━━━━━━━━━━━━━━━\n📣 Channel: @rym_rima16"
     }
 }
-
 
 def detect_lang(text):
     for ch in text:
