@@ -4,6 +4,7 @@ import threading
 import json
 import requests
 import telebot
+from telebot import types 
 import pandas as pd
 import numpy as np
 import mplfinance as mpf
@@ -522,8 +523,6 @@ def handle_message(message):
                 txt += t["vip_expired"]
             else:
                 txt += t["vip_msg"]
-
-            txt += t["channel_promo"]
         else:
             txt += t["tp"] + " 1: " + str(round(result["tp1"], 6)) + "\n"
             txt += t["tp"] + " 2: " + str(round(result["tp2"], 6)) + "\n"
@@ -540,12 +539,18 @@ def handle_message(message):
             txt += "💧 السيولة (USDT): " + "{:,.0f}".format(result["liquidity"]) + "\n"
             txt += "🐋 رادار الحيتان: " + str(result["whale_count"]) + " شمعة"
 
+        markup = types.InlineKeyboardMarkup()
+        btn = types.InlineKeyboardButton(
+            text="📣 Free Crypto Signals",
+            url=CHANNEL_LINK
+        )
+        markup.add(btn)
+
         with open(filename, "rb") as photo:
-            bot.send_photo(message.chat.id, photo, caption=txt)
+            bot.send_photo(message.chat.id, photo, caption=txt, reply_markup=markup)
 
     except Exception as e:
         bot.reply_to(message, "Error: " + str(e)[:200])
-
 
 COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX", "LTC", "TRX", "ATOM", "UNI", "XLM"]
 
