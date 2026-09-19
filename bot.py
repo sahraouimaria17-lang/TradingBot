@@ -474,8 +474,6 @@ def create_chart(result, lang, is_admin):
     fig.savefig(filename, dpi=110, facecolor="white", bbox_inches="tight", pad_inches=0.3)
     plt.close(fig)
     return filename
-
-
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     if not message.text:
@@ -730,4 +728,78 @@ def track_targets():
                     updated = True
                     send_target_hit(pos, "الهدف 3", "🎯", pos["tp3"])
                 elif current_price <= pos["sl"]:
-                    pos["
+                    pos["sl_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "الستوب", "🔴", pos["sl"])
+            else:
+                if not pos.get("tp1_hit") and current_price <= pos["tp1"]:
+                    pos["tp1_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "الهدف 1", "🎯", pos["tp1"])
+                elif not pos.get("tp2_hit") and current_price <= pos["tp2"]:
+                    pos["tp2_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "الهدف 2", "🎯", pos["tp2"])
+                elif not pos.get("tp3_hit") and current_price <= pos["tp3"]:
+                    pos["tp3_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "الهدف 3", "🎯", pos["tp3"])
+                elif current_price >= pos["sl"]:
+                    pos["sl_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "الستوب", "🔴", pos["sl"])
+        except Exception:
+            continue
+        time.sleep(0.3)
+
+    if updated:
+        save_positions(positions)
+
+
+def send_target_hit(pos, target_name, emoji, target_price):
+    if not CHANNEL_ID:
+        return
+    txt = emoji + " تحديث صفقة\n"
+    txt += "━━━━━━━━━━━━━━━━\n\n"
+    txt += "💠 " + pos["symbol"] + "\n"
+    txt += "✅ تم تحقيق: " + target_name + "\n\n"
+    txt += "💰 الدخول: " + str(round(pos["entry"], 4)) + "\n"
+    txt += "🎯 المحقق: " + str(round(target_price, 4)) + "\n\n"
+    txt += "📣 " + CHANNEL_LINK
+
+    try:
+        bot.send_message(CHANNEL_ID, txt)
+        print("Update: " + pos["symbol"] + " - " + target_name)
+    except Exception as e:
+        print(str(e))
+
+
+def run_scheduler():
+    time.sleep(15)
+    print("Scheduler started...")
+    if CHANNEL_ID:
+        print("Channel: " + CHANNEL_ID)
+    else:
+        print("No CHANNEL_ID")
+
+    try:
+        send_signal()
+    except Exception as e:
+        print("Initial signal error: " + str(e))
+
+    schedule.every(3).hours.do(send_signal)
+    schedule.every(6).hours.do(send_price_alerts)
+    schedule.every(5).minutes.do(track_targets)
+
+    while True:
+        try:
+            schedule.run_pending()
+        except Exception as e:
+            print("Scheduler error: " + str(e))
+        time.sleep(60)
+
+
+scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+scheduler_thread.start()
+
+bot.infinity_polling()
