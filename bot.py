@@ -23,6 +23,9 @@ CHANNEL_LINK = "https://t.me/rym_rima16"
 POSITIONS_FILE = "positions.json"
 USERS_FILE = "users.json"
 
+TRIAL_DAYS = 15
+WARNING_DAY = 7
+
 LANG = {
     "ar": {
         "chart_title": "التحليل الفني المباشر لعملة: ",
@@ -90,9 +93,6 @@ LANG = {
     }
 }
 
-TRIAL_DAYS = 15
-WARNING_DAY = 7
-
 
 def detect_lang(text):
     for ch in text:
@@ -128,6 +128,7 @@ def check_user_status(user_id):
 
     joined = datetime.fromisoformat(users[uid]["joined"])
     days = (now - joined).days
+
     if days >= TRIAL_DAYS:
         return "expired"
     elif days >= WARNING_DAY:
@@ -227,7 +228,9 @@ def get_coingecko(symbol):
         return df
     except Exception:
         return None
-    def get_data(symbol):
+
+
+def get_data(symbol):
     sources = [("OKX", get_okx), ("Kraken", get_kraken), ("Coinbase", get_coinbase), ("CoinGecko", get_coingecko)]
     for name, func in sources:
         try:
@@ -362,6 +365,7 @@ def create_chart(result, lang, is_admin):
     df_plot["bb_upper"] = result["bb_upper"].tail(80)
     df_plot["bb_lower"] = result["bb_lower"].tail(80)
     df_plot["rsi"] = result["rsi_series"].tail(80)
+
     apds = [
         mpf.make_addplot(df_plot["ema20"], color="#f39c12", width=1.8, panel=0),
         mpf.make_addplot(df_plot["ema50"], color="#8e44ad", width=1.8, panel=0),
@@ -452,6 +456,7 @@ def create_chart(result, lang, is_admin):
 
     ax.legend(handles=legend_handles, loc="upper left", fontsize=8.5,
               facecolor="white", edgecolor="#cccccc", framealpha=0.9)
+
     fib = result["fib"]
     fib_items = [
         (fib["38.2"], t["fib_382"], "#a569bd"),
@@ -562,7 +567,9 @@ def load_positions():
 def save_positions(positions):
     with open(POSITIONS_FILE, "w") as f:
         json.dump(positions, f)
-        def pick_best_signal():
+
+
+def pick_best_signal():
     print("Scanning market...")
     results = []
     for coin in COINS:
@@ -684,6 +691,7 @@ def send_price_alerts():
         time.sleep(0.3)
 
     txt += "📣 " + CHANNEL_LINK
+
     try:
         bot.send_message(CHANNEL_ID, txt)
         print("Alerts sent")
@@ -720,5 +728,6 @@ def track_targets():
                 elif not pos.get("tp3_hit") and current_price >= pos["tp3"]:
                     pos["tp3_hit"] = True
                     updated = True
-                    send_target_hit(pos,
-                                    
+                    send_target_hit(pos, "الهدف 3", "🎯", pos["tp3"])
+                elif current_price <= pos["sl"]:
+                    pos["
