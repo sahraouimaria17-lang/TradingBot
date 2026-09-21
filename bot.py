@@ -560,7 +560,6 @@ def handle_message(message):
             copy_txt += "🎯 TP2: " + str(round(result["tp2"], 4)) + "\n"
             copy_txt += "🎯 TP3: " + str(round(result["tp3"], 4)) + "\n"
             copy_txt += "🛑 SL: " + str(round(result["sl"], 4)) + "\n\n\n\n"
-            copy_txt += "📊"
 
             bot.send_message(message.chat.id, copy_txt)
 
