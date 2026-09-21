@@ -475,8 +475,6 @@ def create_chart(result, lang, is_admin):
     fig.savefig(filename, dpi=110, facecolor="white", bbox_inches="tight", pad_inches=0.3)
     plt.close(fig)
     return filename
-
-
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     if not message.text:
@@ -720,14 +718,6 @@ def send_price_alerts():
 
 
 def track_targets():
-    positions = load_positions()
-    if not positions:
-        return
-
-    updated = False
-    for pos in positions:
-        if pos.get
-        def track_targets():
     positions = load_positions()
     if not positions:
         return
