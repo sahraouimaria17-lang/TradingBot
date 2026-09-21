@@ -4,7 +4,7 @@ import threading
 import json
 import requests
 import telebot
-from telebot import types 
+from telebot import types
 import pandas as pd
 import numpy as np
 import mplfinance as mpf
@@ -93,6 +93,8 @@ LANG = {
         "channel_promo": "\n\n━━━━━━━━━━━━━━━━\n📣 Free Crypto Signals\n@rym_rima16"
     }
 }
+
+
 def detect_lang(text):
     for ch in text:
         if ch in "ابتثجحخدذرزسشصضطظعغفقكلمنهوي":
@@ -473,6 +475,8 @@ def create_chart(result, lang, is_admin):
     fig.savefig(filename, dpi=110, facecolor="white", bbox_inches="tight", pad_inches=0.3)
     plt.close(fig)
     return filename
+
+
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     if not message.text:
@@ -523,6 +527,8 @@ def handle_message(message):
                 txt += t["vip_expired"]
             else:
                 txt += t["vip_msg"]
+
+            txt += t["channel_promo"]
         else:
             txt += t["tp"] + " 1: " + str(round(result["tp1"], 6)) + "\n"
             txt += t["tp"] + " 2: " + str(round(result["tp2"], 6)) + "\n"
@@ -549,8 +555,20 @@ def handle_message(message):
         with open(filename, "rb") as photo:
             bot.send_photo(message.chat.id, photo, caption=txt, reply_markup=markup)
 
+        if is_admin:
+            copy_txt = "#" + symbol + "\n"
+            copy_txt += "➡️ Entry: " + str(round(result["entry"], 4)) + "\n"
+            copy_txt += "🎯 TP 1: " + str(round(result["tp1"], 4)) + "\n"
+            copy_txt += "🎯 TP2: " + str(round(result["tp2"], 4)) + "\n"
+            copy_txt += "🎯 TP3: " + str(round(result["tp3"], 4)) + "\n"
+            copy_txt += "🛑 SL: " + str(round(result["sl"], 4)) + "\n\n\n\n"
+            copy_txt += "📊"
+
+            bot.send_message(message.chat.id, copy_txt)
+
     except Exception as e:
         bot.reply_to(message, "Error: " + str(e)[:200])
+
 
 COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX", "LTC", "TRX", "ATOM", "UNI", "XLM"]
 
@@ -650,8 +668,9 @@ def send_signal():
         positions.append({
             "symbol": signal["symbol"], "side": signal["side"],
             "entry": signal["entry"], "tp1": signal["tp1"], "tp2": signal["tp2"],
-            "tp3": signal["tp3"], "sl": signal["sl"],
-            "tp1_hit": False, "tp2_hit": False, "tp3_hit": False, "sl_hit": False,
+            "tp3": signal["tp3"], "tp4": signal["tp4"], "sl": signal["sl"],
+            "tp1_hit": False, "tp2_hit": False, "tp3_hit": False, "tp4_hit": False,
+            "sl_hit": False,
             "created_at": datetime.now().isoformat()
         })
         save_positions(positions)
@@ -707,7 +726,15 @@ def track_targets():
 
     updated = False
     for pos in positions:
-        if pos.get("tp3_hit") or pos.get("sl_hit"):
+        if pos.get
+        def track_targets():
+    positions = load_positions()
+    if not positions:
+        return
+
+    updated = False
+    for pos in positions:
+        if pos.get("tp4_hit") or pos.get("sl_hit"):
             continue
 
         symbol = pos["symbol"]
@@ -721,36 +748,44 @@ def track_targets():
                 if not pos.get("tp1_hit") and current_price >= pos["tp1"]:
                     pos["tp1_hit"] = True
                     updated = True
-                    send_target_hit(pos, "الهدف 1", "🎯", pos["tp1"])
+                    send_target_hit(pos, "Target 1", "🎯", pos["tp1"])
                 elif not pos.get("tp2_hit") and current_price >= pos["tp2"]:
                     pos["tp2_hit"] = True
                     updated = True
-                    send_target_hit(pos, "الهدف 2", "🎯", pos["tp2"])
+                    send_target_hit(pos, "Target 2", "🎯", pos["tp2"])
                 elif not pos.get("tp3_hit") and current_price >= pos["tp3"]:
                     pos["tp3_hit"] = True
                     updated = True
-                    send_target_hit(pos, "الهدف 3", "🎯", pos["tp3"])
+                    send_target_hit(pos, "Target 3", "🎯", pos["tp3"])
+                elif not pos.get("tp4_hit") and current_price >= pos["tp4"]:
+                    pos["tp4_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "Target 4", "🎯", pos["tp4"])
                 elif current_price <= pos["sl"]:
                     pos["sl_hit"] = True
                     updated = True
-                    send_target_hit(pos, "الستوب", "🔴", pos["sl"])
+                    send_target_hit(pos, "Stop Loss", "🔴", pos["sl"])
             else:
                 if not pos.get("tp1_hit") and current_price <= pos["tp1"]:
                     pos["tp1_hit"] = True
                     updated = True
-                    send_target_hit(pos, "الهدف 1", "🎯", pos["tp1"])
+                    send_target_hit(pos, "Target 1", "🎯", pos["tp1"])
                 elif not pos.get("tp2_hit") and current_price <= pos["tp2"]:
                     pos["tp2_hit"] = True
                     updated = True
-                    send_target_hit(pos, "الهدف 2", "🎯", pos["tp2"])
+                    send_target_hit(pos, "Target 2", "🎯", pos["tp2"])
                 elif not pos.get("tp3_hit") and current_price <= pos["tp3"]:
                     pos["tp3_hit"] = True
                     updated = True
-                    send_target_hit(pos, "الهدف 3", "🎯", pos["tp3"])
+                    send_target_hit(pos, "Target 3", "🎯", pos["tp3"])
+                elif not pos.get("tp4_hit") and current_price <= pos["tp4"]:
+                    pos["tp4_hit"] = True
+                    updated = True
+                    send_target_hit(pos, "Target 4", "🎯", pos["tp4"])
                 elif current_price >= pos["sl"]:
                     pos["sl_hit"] = True
                     updated = True
-                    send_target_hit(pos, "الستوب", "🔴", pos["sl"])
+                    send_target_hit(pos, "Stop Loss", "🔴", pos["sl"])
         except Exception:
             continue
         time.sleep(0.3)
@@ -762,13 +797,35 @@ def track_targets():
 def send_target_hit(pos, target_name, emoji, target_price):
     if not CHANNEL_ID:
         return
-    txt = emoji + " تحديث صفقة\n"
-    txt += "━━━━━━━━━━━━━━━━\n\n"
-    txt += "💠 " + pos["symbol"] + "\n"
-    txt += "✅ تم تحقيق: " + target_name + "\n\n"
-    txt += "💰 الدخول: " + str(round(pos["entry"], 4)) + "\n"
-    txt += "🎯 المحقق: " + str(round(target_price, 4)) + "\n\n"
-    txt += "📣 " + CHANNEL_LINK
+
+    symbol_hashtag = "#" + pos["symbol"]
+    entry = round(pos["entry"], 4)
+    sl = round(pos["sl"], 4)
+
+    txt = symbol_hashtag + "\n\n"
+    txt += "➡️ Entry: " + str(entry) + "\n\n"
+
+    txt += "🎯 Target 1: " + str(round(pos["tp1"], 4))
+    if pos.get("tp1_hit"):
+        txt += " ✅"
+    txt += "\n"
+
+    txt += "🎯 Target 2: " + str(round(pos["tp2"], 4))
+    if pos.get("tp2_hit"):
+        txt += " ✅"
+    txt += "\n"
+
+    txt += "🎯 Target 3: " + str(round(pos["tp3"], 4))
+    if pos.get("tp3_hit"):
+        txt += " ✅"
+    txt += "\n"
+
+    txt += "🎯 Target 4: " + str(round(pos["tp4"], 4))
+    if pos.get("tp4_hit"):
+        txt += " ✅"
+    txt += "\n\n"
+
+    txt += "🛑 Stop Loss: " + str(sl)
 
     try:
         bot.send_message(CHANNEL_ID, txt)
