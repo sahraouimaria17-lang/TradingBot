@@ -117,13 +117,16 @@ def save_users(users):
         json.dump(users, f)
 
 
-def check_user_status(user_id):
+def check_user_status(user_id, first_name="Unknown"):
     users = load_users()
     uid = str(user_id)
     now = datetime.now()
 
     if uid not in users:
-        users[uid] = {"joined": now.isoformat()}
+        users[uid] = {
+            "joined": now.isoformat(),
+            "name": first_name
+        }
         save_users(users)
         return "new"
 
@@ -482,6 +485,118 @@ def handle_message(message):
 
     text = message.text.strip()
 
+    if text.lower() == "/stats" and message.from_user.id == ADMIN_ID:
+        users = load_users()
+        total = len(users)
+
+        now = datetime.now()
+        week_ago = now.timestamp() - (7 * 24 * 60 * 60)
+        recent = 0
+        for u in users.values():
+            try:
+                if datetime.fromisoformat(u["joined"]).timestamp() > week_ago:
+                    recent += 1
+            except:
+                continue
+
+        stats = "📊 *إحصائيات البوت*\n"
+        stats += "━━━━━━━━━━━━━━━━\n"
+        stats += "👥 إجمالي المستخدمين: *" + str(total) + "*\n"
+        stats += "🆕 آخر 7 أيام: *" + str(recent) + "*\n"
+
+        bot.reply_to(message, stats, parse_mode="Markdown")
+        return
+
+    if text.lower() == "/users" and message.from_user.id == ADMIN_ID:
+        users = load_users()
+        if not users:
+            bot.reply_to(message, "ما في مستخدمين")
+            return
+
+        txt = "👥 *قائمة المستخدمين*\n"
+        txt += "━━━━━━━━━━━━━━━━\n"
+        count = 0
+        for uid, data in users.items():
+            count += 1
+            if count > 50:
+                txt += "...\n"
+                break
+            name = data.get("name", "Unknown")
+            joined = data.get("joined", "")[:10]
+            txt += str(count) + ". " + name + " — " + joined + "\n"
+
+        bot.reply_to(message, txt, parse_mode="Markdown")
+        return
+
+    if text.lower() == "/dashboard" and message.from_user.id == ADMIN_ID:
+        users = load_users()
+        positions = load_positions()
+
+        total_users = len(users)
+        now = datetime.now()
+        week_ago = now.timestamp() - (7 * 24 * 60 * 60)
+        new_users = 0
+        for u in users.values():
+            try:
+                if datetime.fromisoformat(u["joined"]).timestamp() > week_ago:
+                    new_users += 1
+            except:
+                continue
+
+        total_positions = len(positions)
+        wins = 0
+        losses = 0
+        for p in positions:
+            if p.get("tp1_hit") or p.get("tp2_hit") or p.get("tp3_hit") or p.get("tp4_hit"):
+                wins += 1
+            elif p.get("sl_hit"):
+                losses += 1
+
+        if wins + losses > 0:
+            win_rate = round((wins / (wins + losses)) * 100, 1)
+        else:
+            win_rate = 0
+
+        symbol_stats = {}
+        for p in positions:
+            s = p["symbol"]
+            if s not in symbol_stats:
+                symbol_stats[s] = {"wins": 0, "losses": 0}
+            if p.get("tp1_hit") or p.get("tp2_hit") or p.get("tp3_hit") or p.get("tp4_hit"):
+                symbol_stats[s]["wins"] += 1
+            elif p.get("sl_hit"):
+                symbol_stats[s]["losses"] += 1
+
+        best_symbol = "—"
+        worst_symbol = "—"
+        best_rate = -1
+        worst_rate = 101
+        for s, st in symbol_stats.items():
+            if st["wins"] + st["losses"] >= 2:
+                rate = (st["wins"] / (st["wins"] + st["losses"])) * 100
+                if rate > best_rate:
+                    best_rate = rate
+                    best_symbol = s + " (" + str(round(rate, 1)) + "%)"
+                if rate < worst_rate:
+                    worst_rate = rate
+                    worst_symbol = s + " (" + str(round(rate, 1)) + "%)"
+
+        txt = "📊 *لوحة الإحصائيات*\n"
+        txt += "━━━━━━━━━━━━━━━━\n\n"
+        txt += "👥 *المستخدمون*\n"
+        txt += "   الإجمالي: *" + str(total_users) + "*\n"
+        txt += "   جديد (7 أيام): *" + str(new_users) + "*\n\n"
+        txt += "📈 *الصفقات*\n"
+        txt += "   الإجمالي: *" + str(total_positions) + "*\n"
+        txt += "   ✅ رابحة: *" + str(wins) + "*\n"
+        txt += "   ❌ خاسرة: *" + str(losses) + "*\n"
+        txt += "   📊 نسبة النجاح: *" + str(win_rate) + "%*\n\n"
+        txt += "🏆 *أفضل عملة:* " + best_symbol + "\n"
+        txt += "⚠️ *أسوأ عملة:* " + worst_symbol + "\n"
+
+        bot.reply_to(message, txt, parse_mode="Markdown")
+        return
+
     if text.lower() in ["/start", "start", "help", "/help", "بدأ", "مساعدة"]:
         lang = detect_lang(message.from_user.language_code or "en")
         bot.reply_to(message, LANG[lang]["ask"])
@@ -512,7 +627,10 @@ def handle_message(message):
         txt += t["entry"] + ": " + str(round(result["entry"], 6)) + "\n"
 
         if not is_admin:
-            user_status = check_user_status(message.from_user.id)
+            user_status = check_user_status(
+                message.from_user.id,
+                message.from_user.first_name or "Unknown"
+            )
 
             txt += t["tp"] + " 1: " + str(round(result["tp1"], 6)) + "\n"
             txt += t["tp"] + " 2: " + str(round(result["tp2"], 6)) + "\n"
@@ -559,7 +677,7 @@ def handle_message(message):
             copy_txt += "🎯 TP 1: " + str(round(result["tp1"], 4)) + "\n"
             copy_txt += "🎯 TP2: " + str(round(result["tp2"], 4)) + "\n"
             copy_txt += "🎯 TP3: " + str(round(result["tp3"], 4)) + "\n"
-            copy_txt += "🛑 SL: " + str(round(result["sl"], 4)) + "\n\n\n\n"
+            copy_txt += "🛑 SL: " + str(round(result["sl"], 4))
 
             bot.send_message(message.chat.id, copy_txt)
 
