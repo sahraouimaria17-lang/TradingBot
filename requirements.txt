@@ -6,3 +6,4 @@ matplotlib
 requests
 python-binance
 schedule
+pillow
