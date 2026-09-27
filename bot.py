@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import schedule
 from datetime import datetime
+from PIL import Image
 
 # ============== الإعدادات الأساسية ==============
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
@@ -21,6 +22,7 @@ CHANNEL_ID = os.environ.get("CHANNEL_ID", "").strip()
 ADMIN_ID = 7002618091
 GIST_ID = os.environ.get("GIST_ID", "").strip()
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
+
 bot = telebot.TeleBot(BOT_TOKEN)
 CHANNEL_LINK = "https://t.me/rym_rima16"
 
@@ -30,11 +32,21 @@ WARNING_DAY = 7
 MAJOR_COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA",
                "DOGE", "DOT", "LINK", "AVAX", "LTC", "TRX"]
 
+COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT",
+         "LINK", "AVAX", "LTC", "TRX", "ATOM", "UNI", "XLM"]
+
+
 def get_timeframe(symbol):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     if base in MAJOR_COINS:
         return "daily"
     return "4h"
+
+
+def is_major(symbol):
+    base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
+    return base in MAJOR_COINS
+
 
 # ============== اللغات ==============
 LANG = {
@@ -52,6 +64,7 @@ LANG = {
         "atr": "📉 مؤشر التقلب (ATR)",
         "ask": "أرسل عملة مثل BTC",
         "error": "⚠️ ما لقيت العملة",
+        "error_low_data": "⚠️ بيانات العملة غير كافية للتحليل",
         "fib_382": "Fib 38.2%",
         "fib_500": "Fib 50.0%",
         "fib_618": "Fib 61.8%",
@@ -87,6 +100,7 @@ LANG = {
         "atr": "📉 ATR",
         "ask": "Send a coin like BTC",
         "error": "⚠️ Coin not found",
+        "error_low_data": "⚠️ Insufficient data for analysis",
         "fib_382": "Fib 38.2%",
         "fib_500": "Fib 50.0%",
         "fib_618": "Fib 61.8%",
@@ -110,15 +124,18 @@ LANG = {
     }
 }
 
+
 def detect_lang(text):
     for ch in text:
         if ch in "ابتثجحخدذرزسشصضطظعغفقكلمنهوي":
             return "ar"
     return "en"
 
+
 # ============== التخزين على GitHub Gist ==============
 DATA_CACHE = {"users": {}, "positions": [], "alerts": {}}
 CACHE_LOCK = threading.Lock()
+
 
 def load_from_gist():
     try:
@@ -139,11 +156,13 @@ def load_from_gist():
                     DATA_CACHE["users"] = parsed.get("users", {})
                     DATA_CACHE["positions"] = parsed.get("positions", [])
                     DATA_CACHE["alerts"] = parsed.get("alerts", {})
-                print("Gist loaded: " + str(len(DATA_CACHE["users"])) + " users, " + str(len(DATA_CACHE["positions"])) + " positions")
+                print("Gist loaded: " + str(len(DATA_CACHE["users"])) + " users, "
+                      + str(len(DATA_CACHE["positions"])) + " positions")
             except Exception as e:
                 print("Parse error: " + str(e))
     except Exception as e:
         print("Load gist error: " + str(e))
+
 
 def save_to_gist():
     try:
@@ -164,15 +183,18 @@ def save_to_gist():
     except Exception as e:
         print("Save gist error: " + str(e))
 
+
 # ============== إدارة المستخدمين ==============
 def load_users():
     with CACHE_LOCK:
         return dict(DATA_CACHE.get("users", {}))
 
+
 def save_users(users):
     with CACHE_LOCK:
         DATA_CACHE["users"] = users
     save_to_gist()
+
 
 def check_user_status(user_id, first_name="Unknown"):
     users = load_users()
@@ -190,16 +212,19 @@ def check_user_status(user_id, first_name="Unknown"):
         return "warning"
     return "active"
 
+
 def load_positions():
     with CACHE_LOCK:
         return list(DATA_CACHE.get("positions", []))
+
 
 def save_positions(positions):
     with CACHE_LOCK:
         DATA_CACHE["positions"] = positions
     save_to_gist()
 
-# ============== مصادر البيانات (مع دعم الفريمات) ==============
+
+# ============== مصادر البيانات ==============
 def get_okx(symbol, timeframe="daily"):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     bar = "1D" if timeframe == "daily" else "4H"
@@ -213,7 +238,8 @@ def get_okx(symbol, timeframe="daily"):
         if not data or len(data) < 50:
             return None
         data = list(reversed(data))
-        df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close", "vol", "volCcy", "volCcyQuote", "confirm"])
+        df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close",
+                                          "vol", "volCcy", "volCcyQuote", "confirm"])
         for c in ["open", "high", "low", "close", "vol"]:
             df[c] = pd.to_numeric(df[c], errors="coerce")
         df = df.rename(columns={"vol": "volume"})
@@ -223,6 +249,7 @@ def get_okx(symbol, timeframe="daily"):
         return df
     except Exception:
         return None
+
 
 def get_kraken(symbol, timeframe="daily"):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
@@ -245,7 +272,8 @@ def get_kraken(symbol, timeframe="daily"):
         data = result[key]
         if not data or len(data) < 50:
             return None
-        df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close", "vwap", "volume", "count"])
+        df = pd.DataFrame(data, columns=["time", "open", "high", "low",
+                                          "close", "vwap", "volume", "count"])
         for c in ["open", "high", "low", "close", "volume"]:
             df[c] = pd.to_numeric(df[c], errors="coerce")
         df["time"] = pd.to_datetime(df["time"], unit="s")
@@ -254,6 +282,7 @@ def get_kraken(symbol, timeframe="daily"):
         return df
     except Exception:
         return None
+
 
 def get_coinbase(symbol, timeframe="daily"):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
@@ -276,8 +305,8 @@ def get_coinbase(symbol, timeframe="daily"):
     except Exception:
         return None
 
+
 def get_coingecko(symbol, timeframe="daily"):
-    # CoinGecko يدعم فقط Daily
     base = symbol.replace("USDT", "").replace("USDC", "").strip().lower()
     try:
         url = "https://api.coingecko.com/api/v3/coins/" + base + "/ohlc"
@@ -294,6 +323,7 @@ def get_coingecko(symbol, timeframe="daily"):
     except Exception:
         return None
 
+
 def get_data(symbol, timeframe="daily"):
     sources = [
         ("OKX", get_okx),
@@ -305,20 +335,28 @@ def get_data(symbol, timeframe="daily"):
         try:
             df = func(symbol, timeframe)
             if df is not None and len(df) >= 50:
+                # ✅ فحص جودة البيانات
+                price = df["close"].iloc[-1]
+                if pd.isna(price) or price <= 0:
+                    continue
+                recent = df["close"].tail(80)
+                if recent.max() > recent.min() * 100:
+                    continue
                 print("Data OK: " + name + " (" + timeframe + ")")
                 return df
         except Exception:
             continue
     return None
-
 # ============== المؤشرات الفنية ==============
 def calc_ema(df, period):
     return df["close"].ewm(span=period, adjust=False).mean()
+
 
 def calc_bollinger(df, period=20):
     ma = df["close"].rolling(period).mean()
     sd = df["close"].rolling(period).std()
     return ma + 2 * sd, ma, ma - 2 * sd
+
 
 def calc_rsi(df, period=14):
     delta = df["close"].diff()
@@ -326,6 +364,7 @@ def calc_rsi(df, period=14):
     loss = -delta.where(delta < 0, 0).rolling(period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
+
 
 def calc_adx_atr(df, period=14):
     high_low = df["high"] - df["low"]
@@ -343,10 +382,12 @@ def calc_adx_atr(df, period=14):
     adx = dx.ewm(alpha=1 / period).mean()
     return adx, atr
 
+
 def calc_liquidity(df):
     avg_vol = df["volume"].tail(7).mean()
     avg_price = df["close"].tail(7).mean()
     return avg_vol * avg_price
+
 
 def calc_whale_radar(df):
     recent = df.tail(30)
@@ -355,6 +396,7 @@ def calc_whale_radar(df):
         return 0
     whales = recent[recent["volume"] > avg_vol * 2.0]
     return len(whales)
+
 
 def calc_fibonacci(df, period=100):
     high = df["high"].tail(period).max()
@@ -365,6 +407,7 @@ def calc_fibonacci(df, period=100):
         "50.0": low + diff * 0.500,
         "61.8": low + diff * 0.618
     }
+
 
 # ============== Golden / Death Cross ==============
 def detect_cross(df):
@@ -380,7 +423,8 @@ def detect_cross(df):
         return "death"
     return None
 
-# ============== الدعم والمقاومة (Swings) ==============
+
+# ============== الدعم والمقاومة ==============
 def find_support_resistance(df, lookback=80, window=5):
     recent = df.tail(lookback)
     highs = recent["high"].values
@@ -396,6 +440,8 @@ def find_support_resistance(df, lookback=80, window=5):
     resistances = sorted([r for r in resistance_levels if r > price])[:3]
     supports = sorted([s for s in support_levels if s < price], reverse=True)[:3]
     return supports, resistances
+
+
 # ============== التحليل الرئيسي ==============
 def analyze(symbol, timeframe=None):
     if timeframe is None:
@@ -403,6 +449,11 @@ def analyze(symbol, timeframe=None):
 
     df = get_data(symbol, timeframe)
     if df is None or len(df) < 100:
+        return None
+
+    # ✅ فلتر إضافي للبيانات الشاذة
+    price = df["close"].iloc[-1]
+    if pd.isna(price) or price <= 0:
         return None
 
     ema20 = calc_ema(df, 20)
@@ -413,9 +464,17 @@ def analyze(symbol, timeframe=None):
     adx_series, atr_series = calc_adx_atr(df)
     fib = calc_fibonacci(df)
     cross = detect_cross(df)
-    supports, resistances = find_support_resistance(df)
 
-    price = df["close"].iloc[-1]
+    # ✅ الدعم والمقاومة فقط للعملات الرئيسية
+    if is_major(symbol):
+        supports, resistances = find_support_resistance(df)
+        # ✅ فلتر: تجاهل المستويات البعيدة أكثر من 15% عن السعر
+        supports = [s for s in supports if abs(s - price) / price < 0.15]
+        resistances = [r for r in resistances if abs(r - price) / price < 0.15]
+    else:
+        supports, resistances = [], []
+
+    price_val = df["close"].iloc[-1]
     ema20_val = ema20.iloc[-1]
     ema50_val = ema50.iloc[-1]
     ema200_val = ema200.iloc[-1]
@@ -423,12 +482,16 @@ def analyze(symbol, timeframe=None):
     adx_val = adx_series.iloc[-1]
     atr_val = atr_series.iloc[-1]
 
+    # ✅ حماية: لو ATR صفر أو NaN
+    if pd.isna(atr_val) or atr_val <= 0:
+        atr_val = price_val * 0.02
+
     liquidity = calc_liquidity(df)
     whale_count = calc_whale_radar(df)
 
     if ema20_val > ema50_val:
         side = "buy"
-        entry = price
+        entry = price_val
         sl = entry - (atr_val * 1.5)
         tp1 = entry + (atr_val * 0.5)
         tp2 = entry + (atr_val * 1.0)
@@ -436,7 +499,7 @@ def analyze(symbol, timeframe=None):
         tp4 = entry + (atr_val * 3.7)
     else:
         side = "sell"
-        entry = price
+        entry = price_val
         sl = entry + (atr_val * 1.5)
         tp1 = entry - (atr_val * 0.5)
         tp2 = entry - (atr_val * 1.0)
@@ -468,7 +531,8 @@ def analyze(symbol, timeframe=None):
         "fib": fib,
         "cross": cross,
         "supports": supports,
-        "resistances": resistances
+        "resistances": resistances,
+        "is_major": is_major(symbol)
     }
 
 
@@ -553,13 +617,15 @@ def create_chart(result, lang, is_admin):
     ax.lines[0].set_color("#2980b9")
     ax.lines[0].set_linewidth(2.5)
 
-    all_lines = [result["entry"], result["sl"]] + targets
-    y_min = min(all_lines) * 0.985
-    y_max = max(all_lines) * 1.015
+    # ✅ ضبط الحدود بناءً على السعر فقط (وليس المستويات البعيدة)
+    price_range = max(result["entry"], result["tp4"], result["sl"])
+    price_range_min = min(result["entry"], result["sl"])
+    y_min = price_range_min * 0.98
+    y_max = price_range * 1.02
     ax.set_ylim(y_min, y_max)
 
     ax.text(0.5, 0.5, "Crypto Analyse", transform=ax.transAxes,
-            fontsize=75, color="gray", alpha=0.12, ha="center",
+            fontsize=60, color="gray", alpha=0.10, ha="center",
             va="center", fontweight="bold", zorder=0)
 
     legend_handles = [
@@ -577,7 +643,7 @@ def create_chart(result, lang, is_admin):
         legend_handles.append(mlines.Line2D([], [], color="#27ae60", linewidth=1.8, linestyle="--", label=t["tp4_lbl_ar"] + ": " + str(round(result["tp4"], 4))))
     legend_handles.append(mlines.Line2D([], [], color="#c0392b", linewidth=2.0, linestyle="--", label=t["sl_lbl_ar"] + ": " + str(round(result["sl"], 4))))
 
-    ax.legend(handles=legend_handles, loc="upper left", fontsize=8.5,
+    ax.legend(handles=legend_handles, loc="upper left", fontsize=8,
               facecolor="white", edgecolor="#cccccc", framealpha=0.9)
 
     # فيبوناتشي
@@ -588,30 +654,44 @@ def create_chart(result, lang, is_admin):
         (fib["61.8"], t["fib_618"], "#a569bd"),
     ]
     for price_val, label, color in fib_items:
+        if price_val <= 0 or pd.isna(price_val):
+            continue
         ax.axhline(y=price_val, color=color, linestyle=":", linewidth=0.8, alpha=0.6)
         ax.text(0.01, price_val, label, transform=ax.get_yaxis_transform(),
                 color=color, fontsize=8, va="center", ha="left")
 
-    # الدعم والمقاومة
-    for sup in result["supports"][:2]:
-        ax.axhline(y=sup, color="#27ae60", linestyle="-", linewidth=0.9, alpha=0.5)
-        ax.text(0.99, sup, t["sup_lbl"] + " " + str(round(sup, 4)),
-                transform=ax.get_yaxis_transform(), color="#27ae60",
-                fontsize=8, va="center", ha="right")
-    for res in result["resistances"][:2]:
-        ax.axhline(y=res, color="#c0392b", linestyle="-", linewidth=0.9, alpha=0.5)
-        ax.text(0.99, res, t["res_lbl"] + " " + str(round(res, 4)),
-                transform=ax.get_yaxis_transform(), color="#c0392b",
-                fontsize=8, va="center", ha="right")
+    # ✅ الدعم والمقاومة فقط للعملات الرئيسية
+    if result.get("is_major"):
+        for sup in result["supports"][:2]:
+            ax.axhline(y=sup, color="#27ae60", linestyle="-", linewidth=0.9, alpha=0.5)
+            ax.text(0.99, sup, t["sup_lbl"] + " " + str(round(sup, 4)),
+                    transform=ax.get_yaxis_transform(), color="#27ae60",
+                    fontsize=8, va="center", ha="right")
+        for res in result["resistances"][:2]:
+            ax.axhline(y=res, color="#c0392b", linestyle="-", linewidth=0.9, alpha=0.5)
+            ax.text(0.99, res, t["res_lbl"] + " " + str(round(res, 4)),
+                    transform=ax.get_yaxis_transform(), color="#c0392b",
+                    fontsize=8, va="center", ha="right")
 
     ax_rsi.axhline(y=70, color="#c0392b", linestyle="--", linewidth=0.8, alpha=0.5)
     ax_rsi.axhline(y=30, color="#27ae60", linestyle="--", linewidth=0.8, alpha=0.5)
 
-    fig.savefig(filename, dpi=110, facecolor="white", bbox_inches="tight", pad_inches=0.3)
+    # ✅ حفظ الصورة بدون bbox_inches
+    fig.savefig(filename, dpi=100, facecolor="white")
     plt.close(fig)
+
+    # ✅ ضبط قسري للأبعاد
+    try:
+        img = Image.open(filename)
+        max_w, max_h = 1920, 1080
+        if img.width > max_w or img.height > max_h:
+            img.thumbnail((max_w, max_h), Image.LANCZOS)
+            img.save(filename)
+        print("Chart size: " + str(img.size))
+    except Exception as e:
+        print("Resize error: " + str(e))
+
     return filename
-
-
 # ============== معالج الرسائل ==============
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
@@ -739,7 +819,7 @@ def handle_message(message):
     try:
         result = analyze(symbol)
         if result is None:
-            bot.reply_to(message, t["error"] + ": " + symbol)
+            bot.reply_to(message, t["error_low_data"] + ": " + symbol)
             return
 
         filename = create_chart(result, lang, is_admin)
@@ -781,34 +861,37 @@ def handle_message(message):
             txt += "━━━━━━━━━━━━━━━━\n"
             txt += "💧 السيولة (USDT): " + "{:,.0f}".format(result["liquidity"]) + "\n"
             txt += "🐋 رادار الحيتان: " + str(result["whale_count"]) + " شمعة\n"
-            if result["supports"]:
-                txt += "🟢 أقرب دعم: " + str(round(result["supports"][0], 4)) + "\n"
-            if result["resistances"]:
-                txt += "🔴 أقرب مقاومة: " + str(round(result["resistances"][0], 4)) + "\n"
-
-        # تصغير الصورة إذا كانت كبيرة
-        try:
-            from PIL import Image
-            img = Image.open(filename)
-            max_size = 3000
-            if img.width > max_size or img.height > max_size:
-                ratio = min(max_size / img.width, max_size / img.height)
-                new_size = (int(img.width * ratio), int(img.height * ratio))
-                img = img.resize(new_size, Image.LANCZOS)
-                img.save(filename)
-        except Exception as e:
-            print("Resize error: " + str(e))
+            if result.get("is_major"):
+                if result["supports"]:
+                    txt += "🟢 أقرب دعم: " + str(round(result["supports"][0], 4)) + "\n"
+                if result["resistances"]:
+                    txt += "🔴 أقرب مقاومة: " + str(round(result["resistances"][0], 4)) + "\n"
 
         markup = types.InlineKeyboardMarkup()
         btn = types.InlineKeyboardButton(text="📣 Free Crypto Signals", url=CHANNEL_LINK)
         markup.add(btn)
 
+        # ✅ محاولة إرسال الصورة (photo → document → نص)
+        sent = False
         try:
             with open(filename, "rb") as photo:
                 bot.send_photo(message.chat.id, photo, caption=txt, reply_markup=markup)
+            sent = True
         except Exception as e:
             print("Send photo error: " + str(e))
+
+        if not sent:
+            try:
+                with open(filename, "rb") as doc:
+                    bot.send_document(message.chat.id, doc, caption=txt, reply_markup=markup)
+                sent = True
+                print("Sent as document")
+            except Exception as e2:
+                print("Send document error: " + str(e2))
+
+        if not sent:
             bot.send_message(message.chat.id, txt)
+            print("Sent as text only")
 
         if is_admin:
             copy_txt = "#" + symbol + "\n"
@@ -824,10 +907,6 @@ def handle_message(message):
 
 
 # ============== اختيار أفضل إشارة ==============
-COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT",
-         "LINK", "AVAX", "LTC", "TRX", "ATOM", "UNI", "XLM"]
-
-
 def pick_best_signal():
     print("Scanning market...")
     results = []
@@ -1054,7 +1133,7 @@ def track_targets():
         save_positions(positions)
 
 
-# ============== تنبيهات فيبوناتشي و Cross (للأدمن فقط) ==============
+# ============== تنبيهات فيبوناتشي و Cross ==============
 def check_alerts():
     print("Checking alerts...")
     alerts_state = DATA_CACHE.get("alerts", {})
