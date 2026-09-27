@@ -622,7 +622,6 @@ def handle_message(message):
     user_id = message.from_user.id
     is_admin = (user_id == ADMIN_ID)
 
-    # /stats
     if text.lower() == "/stats" and is_admin:
         users = load_users()
         total = len(users)
@@ -642,7 +641,6 @@ def handle_message(message):
         bot.reply_to(message, stats, parse_mode="Markdown")
         return
 
-    # /users
     if text.lower() == "/users" and is_admin:
         users = load_users()
         if not users:
@@ -662,7 +660,6 @@ def handle_message(message):
         bot.reply_to(message, txt, parse_mode="Markdown")
         return
 
-    # /dashboard
     if text.lower() == "/dashboard" and is_admin:
         users = load_users()
         positions = load_positions()
@@ -725,7 +722,6 @@ def handle_message(message):
         bot.reply_to(message, txt, parse_mode="Markdown")
         return
 
-    # /start
     if text.lower() in ["/start", "start", "help", "/help", "بدأ", "مساعدة"]:
         lang = detect_lang(message.from_user.language_code or "en")
         bot.reply_to(message, LANG[lang]["ask"])
@@ -734,7 +730,6 @@ def handle_message(message):
     if text.startswith("/"):
         return
 
-    # تحليل عملة
     lang = detect_lang(text)
     t = LANG[lang]
     symbol = text.upper()
@@ -791,12 +786,29 @@ def handle_message(message):
             if result["resistances"]:
                 txt += "🔴 أقرب مقاومة: " + str(round(result["resistances"][0], 4)) + "\n"
 
+        # تصغير الصورة إذا كانت كبيرة
+        try:
+            from PIL import Image
+            img = Image.open(filename)
+            max_size = 3000
+            if img.width > max_size or img.height > max_size:
+                ratio = min(max_size / img.width, max_size / img.height)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, Image.LANCZOS)
+                img.save(filename)
+        except Exception as e:
+            print("Resize error: " + str(e))
+
         markup = types.InlineKeyboardMarkup()
         btn = types.InlineKeyboardButton(text="📣 Free Crypto Signals", url=CHANNEL_LINK)
         markup.add(btn)
 
-        with open(filename, "rb") as photo:
-            bot.send_photo(message.chat.id, photo, caption=txt, reply_markup=markup)
+        try:
+            with open(filename, "rb") as photo:
+                bot.send_photo(message.chat.id, photo, caption=txt, reply_markup=markup)
+        except Exception as e:
+            print("Send photo error: " + str(e))
+            bot.send_message(message.chat.id, txt)
 
         if is_admin:
             copy_txt = "#" + symbol + "\n"
@@ -809,7 +821,9 @@ def handle_message(message):
 
     except Exception as e:
         bot.reply_to(message, "Error: " + str(e)[:200])
-        # ============== اختيار أفضل إشارة ==============
+
+
+# ============== اختيار أفضل إشارة ==============
 COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT",
          "LINK", "AVAX", "LTC", "TRX", "ATOM", "UNI", "XLM"]
 
@@ -1055,7 +1069,6 @@ def check_alerts():
             price = df["close"].iloc[-1]
             prev_price = df["close"].iloc[-2]
 
-            # فيبوناتشي
             fib = calc_fibonacci(df)
             fib_map = {"38.2": fib["38.2"], "50.0": fib["50.0"], "61.8": fib["61.8"]}
             key = symbol + "_" + tf
@@ -1084,7 +1097,6 @@ def check_alerts():
                         alerts_state[key]["fib_crossed"] = alerts_state[key]["fib_crossed"][-10:]
                         updated = True
 
-            # Golden / Death Cross
             cross = detect_cross(df)
             if cross and alerts_state[key].get("last_cross") != cross:
                 alerts_state[key]["last_cross"] = cross
