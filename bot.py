@@ -540,7 +540,7 @@ def create_chart(result, lang, is_admin):
         addplot=apds,
         hlines=hlines,
         volume=False,
-        figsize=(16, 11),
+        figsize=(14, 9),
         title=t["chart_title"] + symbol + " (" + timeframe.upper() + ")",
         returnfig=True,
         tight_layout=True,
