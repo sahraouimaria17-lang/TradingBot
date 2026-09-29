@@ -722,24 +722,42 @@ def handle_message(message):
         return
 
     if text.lower() == "/users" and is_admin:
-        users = load_users()
-        if not users:
-            bot.reply_to(message, "ما في مستخدمين")
-            return
-        txt = "👥 *قائمة المستخدمين*\n"
-        txt += "━━━━━━━━━━━━━━━━\n"
-        count = 0
-        for uid, data in users.items():
-            count += 1
-            if count > 50:
-                txt += "...\n"
-                break
-            name = data.get("name", "Unknown")
-            joined = data.get("joined", "")[:10]
-            txt += str(count) + ". " + name + " — " + joined + "\n"
-        bot.reply_to(message, txt)
+    users = load_users()
+    if not users:
+        bot.reply_to(message, "ما في مستخدمين")
         return
 
+    lines = []
+    lines.append("👥 قائمة المستخدمين")
+    lines.append("الإجمالي: " + str(len(users)))
+    lines.append("=" * 30)
+    count = 0
+    for uid, data in users.items():
+        count += 1
+        name = str(data.get("name", "Unknown")).strip()
+        joined = str(data.get("joined", ""))[:10]
+        lines.append(str(count) + ". " + name + " | " + joined + " | ID: " + str(uid))
+
+    full_txt = "\n".join(lines)
+
+    try:
+        with open("users_list.txt", "w", encoding="utf-8") as f:
+            f.write(full_txt)
+        with open("users_list.txt", "rb") as f:
+            bot.send_document(
+                message.chat.id,
+                f,
+                caption="👥 قائمة المستخدمين (" + str(len(users)) + ") — " + datetime.now().strftime("%Y-%m-%d %H:%M")
+            )
+        print("Users list sent as file (" + str(len(users)) + " users)")
+    except Exception as e:
+        print("Users file error: " + str(e))
+        try:
+            bot.send_message(message.chat.id, full_txt[:4000])
+        except Exception as e2:
+            print("Users text error: " + str(e2))
+            bot.reply_to(message, "⚠️ خطأ: " + str(e2)[:100])
+    return
     if text.lower() == "/dashboard" and is_admin:
         users = load_users()
         positions = load_positions()
