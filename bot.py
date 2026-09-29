@@ -335,7 +335,6 @@ def get_data(symbol, timeframe="daily"):
         try:
             df = func(symbol, timeframe)
             if df is not None and len(df) >= 50:
-                # ✅ فحص جودة البيانات
                 price = df["close"].iloc[-1]
                 if pd.isna(price) or price <= 0:
                     continue
@@ -409,7 +408,6 @@ def calc_fibonacci(df, period=100):
     }
 
 
-# ============== Golden / Death Cross ==============
 def detect_cross(df):
     ema50 = calc_ema(df, 50)
     ema200 = calc_ema(df, 200)
@@ -424,7 +422,6 @@ def detect_cross(df):
     return None
 
 
-# ============== الدعم والمقاومة ==============
 def find_support_resistance(df, lookback=80, window=5):
     recent = df.tail(lookback)
     highs = recent["high"].values
@@ -451,7 +448,6 @@ def analyze(symbol, timeframe=None):
     if df is None or len(df) < 100:
         return None
 
-    # ✅ فلتر إضافي للبيانات الشاذة
     price = df["close"].iloc[-1]
     if pd.isna(price) or price <= 0:
         return None
@@ -465,10 +461,8 @@ def analyze(symbol, timeframe=None):
     fib = calc_fibonacci(df)
     cross = detect_cross(df)
 
-    # ✅ الدعم والمقاومة فقط للعملات الرئيسية
     if is_major(symbol):
         supports, resistances = find_support_resistance(df)
-        # ✅ فلتر: تجاهل المستويات البعيدة أكثر من 15% عن السعر
         supports = [s for s in supports if abs(s - price) / price < 0.15]
         resistances = [r for r in resistances if abs(r - price) / price < 0.15]
     else:
@@ -482,7 +476,6 @@ def analyze(symbol, timeframe=None):
     adx_val = adx_series.iloc[-1]
     atr_val = atr_series.iloc[-1]
 
-    # ✅ حماية: لو ATR صفر أو NaN
     if pd.isna(atr_val) or atr_val <= 0:
         atr_val = price_val * 0.02
 
@@ -617,11 +610,10 @@ def create_chart(result, lang, is_admin):
     ax.lines[0].set_color("#2980b9")
     ax.lines[0].set_linewidth(2.5)
 
-    # ✅ ضبط الحدود بناءً على السعر فقط (وليس المستويات البعيدة)
-    price_range = max(result["entry"], result["tp4"], result["sl"])
-    price_range_min = min(result["entry"], result["sl"])
-    y_min = price_range_min * 0.98
-    y_max = price_range * 1.02
+    price_max = max(result["entry"], result["tp4"], result["sl"])
+    price_min = min(result["entry"], result["sl"])
+    y_min = price_min * 0.98
+    y_max = price_max * 1.02
     ax.set_ylim(y_min, y_max)
 
     ax.text(0.5, 0.5, "Crypto Analyse", transform=ax.transAxes,
@@ -646,7 +638,6 @@ def create_chart(result, lang, is_admin):
     ax.legend(handles=legend_handles, loc="upper left", fontsize=8,
               facecolor="white", edgecolor="#cccccc", framealpha=0.9)
 
-    # فيبوناتشي
     fib = result["fib"]
     fib_items = [
         (fib["38.2"], t["fib_382"], "#a569bd"),
@@ -660,7 +651,6 @@ def create_chart(result, lang, is_admin):
         ax.text(0.01, price_val, label, transform=ax.get_yaxis_transform(),
                 color=color, fontsize=8, va="center", ha="left")
 
-    # ✅ الدعم والمقاومة فقط للعملات الرئيسية
     if result.get("is_major"):
         for sup in result["supports"][:2]:
             ax.axhline(y=sup, color="#27ae60", linestyle="-", linewidth=0.9, alpha=0.5)
@@ -676,11 +666,9 @@ def create_chart(result, lang, is_admin):
     ax_rsi.axhline(y=70, color="#c0392b", linestyle="--", linewidth=0.8, alpha=0.5)
     ax_rsi.axhline(y=30, color="#27ae60", linestyle="--", linewidth=0.8, alpha=0.5)
 
-    # ✅ حفظ الصورة بدون bbox_inches
     fig.savefig(filename, dpi=100, facecolor="white")
     plt.close(fig)
 
-    # ✅ ضبط قسري للأبعاد
     try:
         img = Image.open(filename)
         max_w, max_h = 1920, 1080
@@ -702,124 +690,137 @@ def handle_message(message):
     user_id = message.from_user.id
     is_admin = (user_id == ADMIN_ID)
 
+    # ============ /stats ============
     if text.lower() == "/stats" and is_admin:
-        users = load_users()
-        total = len(users)
-        now = datetime.now()
-        week_ago = now.timestamp() - (7 * 24 * 60 * 60)
-        recent = 0
-        for u in users.values():
-            try:
-                if datetime.fromisoformat(u["joined"]).timestamp() > week_ago:
-                    recent += 1
-            except:
-                continue
-        stats = "📊 *إحصائيات البوت*\n"
-        stats += "━━━━━━━━━━━━━━━━\n"
-        stats += "👥 إجمالي المستخدمين: *" + str(total) + "*\n"
-        stats += "🆕 آخر 7 أيام: *" + str(recent) + "*\n"
-        bot.reply_to(message, stats, parse_mode="Markdown")
-        return
-
-    if text.lower() == "/users" and is_admin:
-    users = load_users()
-    if not users:
-        bot.reply_to(message, "ما في مستخدمين")
-        return
-
-    lines = []
-    lines.append("👥 قائمة المستخدمين")
-    lines.append("الإجمالي: " + str(len(users)))
-    lines.append("=" * 30)
-    count = 0
-    for uid, data in users.items():
-        count += 1
-        name = str(data.get("name", "Unknown")).strip()
-        joined = str(data.get("joined", ""))[:10]
-        lines.append(str(count) + ". " + name + " | " + joined + " | ID: " + str(uid))
-
-    full_txt = "\n".join(lines)
-
-    try:
-        with open("users_list.txt", "w", encoding="utf-8") as f:
-            f.write(full_txt)
-        with open("users_list.txt", "rb") as f:
-            bot.send_document(
-                message.chat.id,
-                f,
-                caption="👥 قائمة المستخدمين (" + str(len(users)) + ") — " + datetime.now().strftime("%Y-%m-%d %H:%M")
-            )
-        print("Users list sent as file (" + str(len(users)) + " users)")
-    except Exception as e:
-        print("Users file error: " + str(e))
         try:
-            bot.send_message(message.chat.id, full_txt[:4000])
-        except Exception as e2:
-            print("Users text error: " + str(e2))
-            bot.reply_to(message, "⚠️ خطأ: " + str(e2)[:100])
-    return
-    if text.lower() == "/dashboard" and is_admin:
-        users = load_users()
-        positions = load_positions()
-        total_users = len(users)
-        now = datetime.now()
-        week_ago = now.timestamp() - (7 * 24 * 60 * 60)
-        new_users = 0
-        for u in users.values():
-            try:
-                if datetime.fromisoformat(u["joined"]).timestamp() > week_ago:
-                    new_users += 1
-            except:
-                continue
-        total_positions = len(positions)
-        wins = 0
-        losses = 0
-        for p in positions:
-            if p.get("tp1_hit") or p.get("tp2_hit") or p.get("tp3_hit") or p.get("tp4_hit"):
-                wins += 1
-            elif p.get("sl_hit"):
-                losses += 1
-        if wins + losses > 0:
-            win_rate = round((wins / (wins + losses)) * 100, 1)
-        else:
-            win_rate = 0
-        symbol_stats = {}
-        for p in positions:
-            s = p["symbol"]
-            if s not in symbol_stats:
-                symbol_stats[s] = {"wins": 0, "losses": 0}
-            if p.get("tp1_hit") or p.get("tp2_hit") or p.get("tp3_hit") or p.get("tp4_hit"):
-                symbol_stats[s]["wins"] += 1
-            elif p.get("sl_hit"):
-                symbol_stats[s]["losses"] += 1
-        best_symbol = "—"
-        worst_symbol = "—"
-        best_rate = -1
-        worst_rate = 101
-        for s, st in symbol_stats.items():
-            if st["wins"] + st["losses"] >= 2:
-                rate = (st["wins"] / (st["wins"] + st["losses"])) * 100
-                if rate > best_rate:
-                    best_rate = rate
-                    best_symbol = s + " (" + str(round(rate, 1)) + "%)"
-                if rate < worst_rate:
-                    worst_rate = rate
-                    worst_symbol = s + " (" + str(round(rate, 1)) + "%)"
-        txt = "📊 *لوحة الإحصائيات*\n"
-        txt += "━━━━━━━━━━━━━━━━\n\n"
-        txt += "👥 *المستخدمون*\n"
-        txt += "   الإجمالي: *" + str(total_users) + "*\n"
-        txt += "   جديد (7 أيام): *" + str(new_users) + "*\n\n"
-        txt += "📈 *الصفقات*\n"
-        txt += "   الإجمالي: *" + str(total_positions) + "*\n"
-        txt += "   ✅ رابحة: *" + str(wins) + "*\n"
-        txt += "   ❌ خاسرة: *" + str(losses) + "*\n"
-        txt += "   📊 نسبة النجاح: *" + str(win_rate) + "%*\n\n"
-        txt += "🏆 *أفضل عملة:* " + best_symbol + "\n"
-        txt += "⚠️ *أسوأ عملة:* " + worst_symbol + "\n"
-        bot.reply_to(message, txt, parse_mode="Markdown")
+            users = load_users()
+            total = len(users)
+            now = datetime.now()
+            week_ago = now.timestamp() - (7 * 24 * 60 * 60)
+            recent = 0
+            for u in users.values():
+                try:
+                    if datetime.fromisoformat(u["joined"]).timestamp() > week_ago:
+                        recent += 1
+                except:
+                    continue
+            stats = "📊 إحصائيات البوت\n"
+            stats += "━━━━━━━━━━━━━━━━\n"
+            stats += "👥 إجمالي المستخدمين: " + str(total) + "\n"
+            stats += "🆕 آخر 7 أيام: " + str(recent) + "\n"
+            bot.reply_to(message, stats)
+        except Exception as e:
+            print("Stats error: " + str(e))
         return
 
+    # ============ /users ============
+    if text.lower() == "/users" and is_admin:
+        try:
+            users = load_users()
+            if not users:
+                bot.reply_to(message, "ما في مستخدمين")
+                return
+
+            lines = []
+            lines.append("👥 قائمة المستخدمين")
+            lines.append("الإجمالي: " + str(len(users)))
+            lines.append("=" * 30)
+            count = 0
+            for uid, data in users.items():
+                count += 1
+                name = str(data.get("name", "Unknown")).strip()
+                joined = str(data.get("joined", ""))[:10]
+                lines.append(str(count) + ". " + name + " | " + joined)
+
+            full_txt = "\n".join(lines)
+
+            try:
+                with open("users_list.txt", "w", encoding="utf-8") as f:
+                    f.write(full_txt)
+                with open("users_list.txt", "rb") as f:
+                    bot.send_document(
+                        message.chat.id,
+                        f,
+                        caption="👥 قائمة المستخدمين (" + str(len(users)) + ")"
+                    )
+                print("Users list sent (" + str(len(users)) + " users)")
+            except Exception as e:
+                print("Users file error: " + str(e))
+                try:
+                    bot.send_message(message.chat.id, full_txt[:4000])
+                except Exception as e2:
+                    print("Users text error: " + str(e2))
+        except Exception as e:
+            print("Users error: " + str(e))
+        return
+
+    # ============ /dashboard ============
+    if text.lower() == "/dashboard" and is_admin:
+        try:
+            users = load_users()
+            positions = load_positions()
+            total_users = len(users)
+            now = datetime.now()
+            week_ago = now.timestamp() - (7 * 24 * 60 * 60)
+            new_users = 0
+            for u in users.values():
+                try:
+                    if datetime.fromisoformat(u["joined"]).timestamp() > week_ago:
+                        new_users += 1
+                except:
+                    continue
+            total_positions = len(positions)
+            wins = 0
+            losses = 0
+            for p in positions:
+                if p.get("tp1_hit") or p.get("tp2_hit") or p.get("tp3_hit") or p.get("tp4_hit"):
+                    wins += 1
+                elif p.get("sl_hit"):
+                    losses += 1
+            if wins + losses > 0:
+                win_rate = round((wins / (wins + losses)) * 100, 1)
+            else:
+                win_rate = 0
+            symbol_stats = {}
+            for p in positions:
+                s = p["symbol"]
+                if s not in symbol_stats:
+                    symbol_stats[s] = {"wins": 0, "losses": 0}
+                if p.get("tp1_hit") or p.get("tp2_hit") or p.get("tp3_hit") or p.get("tp4_hit"):
+                    symbol_stats[s]["wins"] += 1
+                elif p.get("sl_hit"):
+                    symbol_stats[s]["losses"] += 1
+            best_symbol = "—"
+            worst_symbol = "—"
+            best_rate = -1
+            worst_rate = 101
+            for s, st in symbol_stats.items():
+                if st["wins"] + st["losses"] >= 2:
+                    rate = (st["wins"] / (st["wins"] + st["losses"])) * 100
+                    if rate > best_rate:
+                        best_rate = rate
+                        best_symbol = s + " (" + str(round(rate, 1)) + "%)"
+                    if rate < worst_rate:
+                        worst_rate = rate
+                        worst_symbol = s + " (" + str(round(rate, 1)) + "%)"
+            txt = "📊 لوحة الإحصائيات\n"
+            txt += "━━━━━━━━━━━━━━━━\n\n"
+            txt += "👥 المستخدمون\n"
+            txt += "   الإجمالي: " + str(total_users) + "\n"
+            txt += "   جديد (7 أيام): " + str(new_users) + "\n\n"
+            txt += "📈 الصفقات\n"
+            txt += "   الإجمالي: " + str(total_positions) + "\n"
+            txt += "   ✅ رابحة: " + str(wins) + "\n"
+            txt += "   ❌ خاسرة: " + str(losses) + "\n"
+            txt += "   📊 نسبة النجاح: " + str(win_rate) + "%\n\n"
+            txt += "🏆 أفضل عملة: " + best_symbol + "\n"
+            txt += "⚠️ أسوأ عملة: " + worst_symbol + "\n"
+            bot.reply_to(message, txt)
+        except Exception as e:
+            print("Dashboard error: " + str(e))
+        return
+
+    # ============ /start ============
     if text.lower() in ["/start", "start", "help", "/help", "بدأ", "مساعدة"]:
         lang = detect_lang(message.from_user.language_code or "en")
         bot.reply_to(message, LANG[lang]["ask"])
@@ -828,6 +829,7 @@ def handle_message(message):
     if text.startswith("/"):
         return
 
+    # ============ تحليل عملة ============
     lang = detect_lang(text)
     t = LANG[lang]
     symbol = text.upper()
@@ -889,7 +891,6 @@ def handle_message(message):
         btn = types.InlineKeyboardButton(text="📣 Free Crypto Signals", url=CHANNEL_LINK)
         markup.add(btn)
 
-        # ✅ محاولة إرسال الصورة (photo → document → نص)
         sent = False
         try:
             with open(filename, "rb") as photo:
@@ -921,6 +922,7 @@ def handle_message(message):
             bot.send_message(message.chat.id, copy_txt)
 
     except Exception as e:
+        print("Analyze error: " + str(e))
         bot.reply_to(message, "Error: " + str(e)[:200])
 
 
@@ -1179,7 +1181,7 @@ def check_alerts():
                     cross_key = label + ("_up" if crossed_up else "_down")
                     if cross_key not in alerts_state[key]["fib_crossed"][-5:]:
                         direction = "⬆️ كسر لأعلى" if crossed_up else "⬇️ كسر لأسفل"
-                        alert_txt = "🔔 *تنبيه كسر فيبوناتشي*\n"
+                        alert_txt = "🔔 تنبيه كسر فيبوناتشي\n"
                         alert_txt += "━━━━━━━━━━━━━━━━\n"
                         alert_txt += "💠 " + symbol + "\n"
                         alert_txt += "📊 الفريم: " + ("يومي" if tf == "daily" else "4 ساعات") + "\n"
@@ -1187,7 +1189,7 @@ def check_alerts():
                         alert_txt += "🎯 المستوى: Fib " + label + "% (" + str(round(level, 4)) + ")\n"
                         alert_txt += "💰 السعر الحالي: " + str(round(price, 4))
                         try:
-                            bot.send_message(ADMIN_ID, alert_txt, parse_mode="Markdown")
+                            bot.send_message(ADMIN_ID, alert_txt)
                         except Exception as e:
                             print("Alert send error: " + str(e))
                         alerts_state[key]["fib_crossed"].append(cross_key)
@@ -1198,7 +1200,7 @@ def check_alerts():
             if cross and alerts_state[key].get("last_cross") != cross:
                 alerts_state[key]["last_cross"] = cross
                 if cross == "golden":
-                    cross_txt = "🌟 *Golden Cross!*\n"
+                    cross_txt = "🌟 Golden Cross!\n"
                     cross_txt += "━━━━━━━━━━━━━━━━\n"
                     cross_txt += "💠 " + symbol + "\n"
                     cross_txt += "📊 الفريم: " + ("يومي" if tf == "daily" else "4 ساعات") + "\n"
@@ -1206,7 +1208,7 @@ def check_alerts():
                     cross_txt += "🟢 إشارة صعود قوية\n"
                     cross_txt += "💰 السعر: " + str(round(price, 4))
                 else:
-                    cross_txt = "💀 *Death Cross!*\n"
+                    cross_txt = "💀 Death Cross!\n"
                     cross_txt += "━━━━━━━━━━━━━━━━\n"
                     cross_txt += "💠 " + symbol + "\n"
                     cross_txt += "📊 الفريم: " + ("يومي" if tf == "daily" else "4 ساعات") + "\n"
@@ -1214,7 +1216,7 @@ def check_alerts():
                     cross_txt += "🔴 إشارة هبوط قوية\n"
                     cross_txt += "💰 السعر: " + str(round(price, 4))
                 try:
-                    bot.send_message(ADMIN_ID, cross_txt, parse_mode="Markdown")
+                    bot.send_message(ADMIN_ID, cross_txt)
                 except Exception as e:
                     print("Cross alert error: " + str(e))
                 updated = True
