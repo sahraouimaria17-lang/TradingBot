@@ -737,7 +737,7 @@ def handle_message(message):
             name = data.get("name", "Unknown")
             joined = data.get("joined", "")[:10]
             txt += str(count) + ". " + name + " — " + joined + "\n"
-        bot.reply_to(message, txt, parse_mode="Markdown")
+        bot.reply_to(message, txt)
         return
 
     if text.lower() == "/dashboard" and is_admin:
