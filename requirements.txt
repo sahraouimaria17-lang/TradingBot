@@ -8,3 +8,4 @@ python-binance
 schedule
 pillow
 feedparser
+pricehub
