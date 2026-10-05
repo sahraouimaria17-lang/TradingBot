@@ -39,8 +39,55 @@ WARNING_DAY = 7
 MAJOR_COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA",
                "DOGE", "DOT", "LINK", "AVAX", "LTC", "TRX"]
 
-COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT",
-         "LINK", "AVAX", "LTC", "TRX", "ATOM", "UNI", "XLM"]
+# قائمة احتياطية
+FALLBACK_COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT",
+                  "LINK", "AVAX", "LTC", "TRX", "ATOM", "UNI", "XLM"]
+
+# Cache لعملات Binance
+BINANCE_SYMBOLS_CACHE = {"time": 0, "gainers": [], "losers": []}
+SYMBOLS_LOCK = threading.Lock()
+
+
+def get_top_gainers_losers(limit=50):
+    """يجيب أفضل 50 صاعدة + 50 هابطة من Binance"""
+    with SYMBOLS_LOCK:
+        if time.time() - BINANCE_SYMBOLS_CACHE["time"] < 600:
+            return BINANCE_SYMBOLS_CACHE["gainers"], BINANCE_SYMBOLS_CACHE["losers"]
+    try:
+        url = "https://data-api.binance.vision/api/v3/ticker/24hr"
+        r = requests.get(url, timeout=15).json()
+        usdt_pairs = []
+        for t in r:
+            sym = t.get("symbol", "")
+            if sym.endswith("USDT"):
+                try:
+                    change = float(t.get("priceChangePercent", 0))
+                    volume = float(t.get("quoteVolume", 0))
+                    # فلتر: سيولة عالية فقط (أكثر من 1M USDT)
+                    if volume > 1000000:
+                        base = sym.replace("USDT", "")
+                        # تجاهل العملات الرقمية المستقرة
+                        if base not in ["USDC", "BUSD", "TUSD", "USDP", "DAI"]:
+                            usdt_pairs.append({
+                                "symbol": base,
+                                "change": change,
+                                "volume": volume
+                            })
+                except:
+                    continue
+        usdt_pairs.sort(key=lambda x: x["change"], reverse=True)
+        gainers = [p["symbol"] for p in usdt_pairs[:limit]]
+        losers = [p["symbol"] for p in usdt_pairs[-limit:]]
+        losers.reverse()
+        with SYMBOLS_LOCK:
+            BINANCE_SYMBOLS_CACHE["time"] = time.time()
+            BINANCE_SYMBOLS_CACHE["gainers"] = gainers
+            BINANCE_SYMBOLS_CACHE["losers"] = losers
+        print("Top gainers: " + str(len(gainers)) + ", Losers: " + str(len(losers)))
+        return gainers, losers
+    except Exception as e:
+        print("Get symbols error: " + str(e))
+        return FALLBACK_COINS[:limit], FALLBACK_COINS[:limit]
 
 
 def get_timeframe(symbol):
@@ -238,7 +285,7 @@ def save_delistings(delistings):
     save_to_gist()
 
 
-# ============== مصادر البيانات ==============
+# ============== مصادر البيانات (8 مصادر) ==============
 def get_binance_vision(symbol, timeframe="daily"):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     interval = "1d" if timeframe == "daily" else "4h"
@@ -409,6 +456,29 @@ def get_coingecko(symbol, timeframe="daily"):
         return None
 
 
+def get_mexc(symbol, timeframe="daily"):
+    """MEXC - مصدر أخير"""
+    base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
+    interval = "1d" if timeframe == "daily" else "4h"
+    try:
+        url = "https://api.mexc.com/api/v3/klines"
+        params = {"symbol": base + "USDT", "interval": interval, "limit": "200"}
+        resp = requests.get(url, params=params, timeout=15).json()
+        if not isinstance(resp, list) or len(resp) < 50:
+            return None
+        df = pd.DataFrame(resp, columns=["time", "open", "high", "low", "close",
+                                          "volume", "close_time", "quoteVol",
+                                          "trades", "takerBuyBase", "takerBuyQuote", "ignore"])
+        for c in ["open", "high", "low", "close", "volume"]:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        df["time"] = pd.to_datetime(df["time"].astype("int64"), unit="ms")
+        df = df[["time", "open", "high", "low", "close", "volume"]].dropna()
+        df.set_index("time", inplace=True)
+        return df
+    except:
+        return None
+
+
 def get_data(symbol, timeframe="daily"):
     sources = [
         ("BinanceVision", get_binance_vision),
@@ -417,7 +487,8 @@ def get_data(symbol, timeframe="daily"):
         ("Bitget", get_bitget),
         ("Kraken", get_kraken),
         ("Coinbase", get_coinbase),
-        ("CoinGecko", get_coingecko)
+        ("CoinGecko", get_coingecko),
+        ("MEXC", get_mexc)
     ]
     for name, func in sources:
         try:
@@ -520,9 +591,11 @@ def fetch_news(symbol):
         if not articles:
             return None
         pos_words = ["surge", "rally", "bullish", "gain", "pump", "high",
-                     "record", "breakout", "soar", "adoption", "partnership"]
+                     "record", "breakout", "soar", "adoption", "partnership",
+                     "listing", "launch", "upgrade", "buy"]
         neg_words = ["crash", "dump", "bearish", "drop", "fall", "plunge",
-                     "hack", "scam", "ban", "delist", "low", "warning"]
+                     "hack", "scam", "ban", "delist", "low", "warning",
+                     "loss", "decline", "sell"]
         p = 0
         n = 0
         for a in articles:
@@ -583,8 +656,7 @@ def calc_macd(df, fast=12, slow=26, signal=9):
     ema_slow = df["close"].ewm(span=slow, adjust=False).mean()
     macd_line = ema_fast - ema_slow
     signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    histogram = macd_line - signal_line
-    return macd_line, signal_line, histogram
+    return macd_line, signal_line, macd_line - signal_line
 
 
 def calc_stoch_rsi(df, period=14, smooth_k=3, smooth_d=3):
@@ -598,18 +670,18 @@ def calc_stoch_rsi(df, period=14, smooth_k=3, smooth_d=3):
 
 
 def calc_adx_atr(df, period=14):
-    high_low = df["high"] - df["low"]
-    high_close = np.abs(df["high"] - df["close"].shift())
-    low_close = np.abs(df["low"] - df["close"].shift())
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    hl = df["high"] - df["low"]
+    hc = np.abs(df["high"] - df["close"].shift())
+    lc = np.abs(df["low"] - df["close"].shift())
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
     atr = tr.rolling(period).mean()
-    plus_dm = df["high"].diff()
-    minus_dm = -df["low"].diff()
-    plus_dm[plus_dm < 0] = 0
-    minus_dm[minus_dm < 0] = 0
-    plus_di = 100 * (plus_dm.ewm(alpha=1 / period).mean() / atr)
-    minus_di = 100 * (minus_dm.ewm(alpha=1 / period).mean() / atr)
-    dx = (np.abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+    pdm = df["high"].diff()
+    mdm = -df["low"].diff()
+    pdm[pdm < 0] = 0
+    mdm[mdm < 0] = 0
+    pdi = 100 * (pdm.ewm(alpha=1 / period).mean() / atr)
+    mdi = 100 * (mdm.ewm(alpha=1 / period).mean() / atr)
+    dx = (np.abs(pdi - mdi) / (pdi + mdi)) * 100
     adx = dx.ewm(alpha=1 / period).mean()
     return adx, atr
 
@@ -618,26 +690,25 @@ def calc_cci(df, period=20):
     tp = (df["high"] + df["low"] + df["close"]) / 3
     sma = tp.rolling(period).mean()
     mad = tp.rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
-    cci = (tp - sma) / (0.015 * mad)
-    return cci
+    return (tp - sma) / (0.015 * mad)
 
 
 def calc_parabolic_sar(df, af=0.02, max_af=0.2):
     high = df["high"].values
     low = df["low"].values
     close = df["close"].values
-    length = len(df)
-    sar = np.zeros(length)
-    trend = np.zeros(length)
-    ep = np.zeros(length)
-    acc = np.zeros(length)
-    if length < 2:
+    n = len(df)
+    sar = np.zeros(n)
+    trend = np.zeros(n)
+    ep = np.zeros(n)
+    acc = np.zeros(n)
+    if n < 2:
         return pd.Series(sar, index=df.index)
     trend[0] = 1 if close[0] > close[-1] else -1
     sar[0] = low[0] if trend[0] == 1 else high[0]
     ep[0] = high[0] if trend[0] == 1 else low[0]
     acc[0] = af
-    for i in range(1, length):
+    for i in range(1, n):
         sar[i] = sar[i-1] + acc[i-1] * (ep[i-1] - sar[i-1])
         if trend[i-1] == 1:
             if low[i] < sar[i]:
@@ -678,19 +749,18 @@ def calc_mfi(df, period=14):
     pos = mf.where(tp > tp.shift(1), 0).rolling(period).sum()
     neg = mf.where(tp < tp.shift(1), 0).rolling(period).sum()
     mfr = pos / neg
-    mfi = 100 - (100 / (1 + mfr))
-    return mfi
+    return 100 - (100 / (1 + mfr))
 
 
 def calc_ichimoku(df, tenkan=9, kijun=26, senkou=52):
-    high = df["high"]
-    low = df["low"]
-    tenkan_sen = (high.rolling(tenkan).max() + low.rolling(tenkan).min()) / 2
-    kijun_sen = (high.rolling(kijun).max() + low.rolling(kijun).min()) / 2
-    senkou_a = ((tenkan_sen + kijun_sen) / 2).shift(kijun)
-    senkou_b = ((high.rolling(senkou).max() + low.rolling(senkou).min()) / 2).shift(kijun)
-    chikou = df["close"].shift(-kijun)
-    return tenkan_sen, kijun_sen, senkou_a, senkou_b, chikou
+    h = df["high"]
+    l = df["low"]
+    ts = (h.rolling(tenkan).max() + l.rolling(tenkan).min()) / 2
+    ks = (h.rolling(kijun).max() + l.rolling(kijun).min()) / 2
+    sa = ((ts + ks) / 2).shift(kijun)
+    sb = ((h.rolling(senkou).max() + l.rolling(senkou).min()) / 2).shift(kijun)
+    ch = df["close"].shift(-kijun)
+    return ts, ks, sa, sb, ch
 
 
 def calc_liquidity(df):
@@ -699,26 +769,26 @@ def calc_liquidity(df):
 
 def calc_whale_radar(df):
     recent = df.tail(30)
-    avg_vol = recent["volume"].mean()
-    if avg_vol <= 0:
+    avg = recent["volume"].mean()
+    if avg <= 0:
         return 0
-    return len(recent[recent["volume"] > avg_vol * 2.0])
+    return len(recent[recent["volume"] > avg * 2.0])
 
 
 def calc_fibonacci(df, period=100):
-    high = df["high"].tail(period).max()
-    low = df["low"].tail(period).min()
-    diff = high - low
-    return {"38.2": low + diff * 0.382, "50.0": low + diff * 0.500, "61.8": low + diff * 0.618}
+    h = df["high"].tail(period).max()
+    l = df["low"].tail(period).min()
+    d = h - l
+    return {"38.2": l + d * 0.382, "50.0": l + d * 0.500, "61.8": l + d * 0.618}
 
 
 def detect_cross(df):
-    ema50 = calc_ema(df, 50)
-    ema200 = calc_ema(df, 200)
-    if len(ema50) < 3 or len(ema200) < 3:
+    e50 = calc_ema(df, 50)
+    e200 = calc_ema(df, 200)
+    if len(e50) < 3 or len(e200) < 3:
         return None
-    pd_ = ema50.iloc[-2] - ema200.iloc[-2]
-    cd_ = ema50.iloc[-1] - ema200.iloc[-1]
+    pd_ = e50.iloc[-2] - e200.iloc[-2]
+    cd_ = e50.iloc[-1] - e200.iloc[-1]
     if pd_ <= 0 and cd_ > 0:
         return "golden"
     if pd_ >= 0 and cd_ < 0:
@@ -737,20 +807,20 @@ def detect_rsi_divergence(df, lookback=50, window=5):
     for i in range(window, len(rp) - window):
         p = rp.iloc[i]
         if p == rp.iloc[i-window:i+window+1].min():
-            pl.append((i, p))
+            pl.append(p)
             rl.append(rr.iloc[i])
     if len(pl) >= 2:
-        if pl[-1][1] < pl[-2][1] and rl[-1] > rl[-2]:
+        if pl[-1] < pl[-2] and rl[-1] > rl[-2]:
             return "bullish"
     ph = []
     rh = []
     for i in range(window, len(rp) - window):
         p = rp.iloc[i]
         if p == rp.iloc[i-window:i+window+1].max():
-            ph.append((i, p))
+            ph.append(p)
             rh.append(rr.iloc[i])
     if len(ph) >= 2:
-        if ph[-1][1] > ph[-2][1] and rh[-1] < rh[-2]:
+        if ph[-1] > ph[-2] and rh[-1] < rh[-2]:
             return "bearish"
     return None
 
@@ -803,8 +873,6 @@ def check_trend_direction(df):
         return "sideways"
     except:
         return "sideways"
-
-
 # ============== التصويت (13 مؤشر) ==============
 def confluence_vote(df, symbol=None):
     votes = {"buy": 0, "sell": 0, "details": []}
@@ -933,7 +1001,7 @@ def confluence_vote(df, symbol=None):
 
     # 11. Ichimoku
     try:
-        tenkan, kijun, sa, sb, ch = calc_ichimoku(df)
+        ts, ks, sa, sb, ch = calc_ichimoku(df)
         if not pd.isna(sa.iloc[-1]) and not pd.isna(sb.iloc[-1]):
             ct = max(sa.iloc[-1], sb.iloc[-1])
             cb = min(sa.iloc[-1], sb.iloc[-1])
@@ -1013,13 +1081,37 @@ def calculate_confidence(df, side, votes, trend):
     return max(0, min(10, score))
 
 
-# ============== رادار عملات القاع ==============
+# ============== رادار عملات القاع (مع فلتر التناقض) ==============
 def detect_bottom_coin(df):
     if len(df) < 100:
         return None
     price = df["close"].iloc[-1]
     rsi = calc_rsi(df).iloc[-1]
+    
+    # ✅ فلتر التناقض 1: RSI عالي = ليس Bottom
+    if not pd.isna(rsi) and rsi > 60:
+        return None
+    
+    # ✅ فلتر التناقض 2: EMA20 > EMA50 والزخم صاعد = ليس Bottom
+    ema20 = calc_ema(df, 20)
+    ema50 = calc_ema(df, 50)
+    if not pd.isna(ema20.iloc[-1]) and not pd.isna(ema50.iloc[-1]):
+        if ema20.iloc[-1] > ema50.iloc[-1]:
+            # صاعد، لكن ممكن يكون تصحيح عميق
+            if len(df) >= 30:
+                p30 = df["close"].iloc[-30]
+                if price > p30 * 1.05:
+                    return None
+    
+    # ✅ فلتر التناقض 3: MACD صاعد قوي = ليس Bottom
+    macd_line, signal_line, _ = calc_macd(df)
+    if not pd.isna(macd_line.iloc[-1]) and not pd.isna(signal_line.iloc[-1]):
+        if macd_line.iloc[-1] > signal_line.iloc[-1]:
+            if not pd.isna(rsi) and rsi > 45:
+                return None
+    
     divergence = detect_rsi_divergence(df)
+    
     if len(df) >= 60:
         h60 = df["high"].tail(60).max()
         d60 = ((price - h60) / h60) * 100
@@ -1030,9 +1122,11 @@ def detect_bottom_coin(df):
         d30 = ((price - h30) / h30) * 100
     else:
         d30 = 0
+    
     liq = calc_liquidity(df)
     score = 0
     reasons = []
+    
     if not pd.isna(rsi):
         if rsi < 30:
             score += 3
@@ -1043,9 +1137,11 @@ def detect_bottom_coin(df):
         elif rsi < 50:
             score += 1
             reasons.append("RSI ضعيف (" + str(round(rsi, 1)) + ")")
+    
     if divergence == "bullish":
         score += 3
         reasons.append("Divergence إيجابي ✅")
+    
     if d60 < -80:
         score += 4
         reasons.append("هبوط " + str(round(d60, 1)) + "% خلال شهرين")
@@ -1055,17 +1151,20 @@ def detect_bottom_coin(df):
     elif d60 < -40:
         score += 2
         reasons.append("هبوط " + str(round(d60, 1)) + "% خلال شهرين")
+    
     if d30 < -50:
         score += 2
         reasons.append("هبوط " + str(round(d30, 1)) + "% خلال شهر")
     elif d30 < -30:
         score += 1
         reasons.append("هبوط " + str(round(d30, 1)) + "% خلال شهر")
+    
     if liq > 1000000:
         score += 2
         reasons.append("سيولة عالية")
     elif liq > 200000:
         score += 1
+    
     if score >= 3:
         return {
             "score": score,
@@ -1180,8 +1279,7 @@ def check_delistings():
     if new_alerts:
         save_delistings(known)
         for na in new_alerts:
-            txt = "🚨 إعلان حذف جديد!\n"
-            txt += "━━━━━━━━━━━━━━━━\n"
+            txt = "🚨 إعلان حذف جديد!\n━━━━━━━━━━━━━━━━\n"
             txt += "📢 " + na["title"] + "\n"
             txt += "📰 " + na["source"] + "\n"
             try:
@@ -1226,7 +1324,8 @@ def detect_delisting_short(symbol):
     if shooting:
         signals += 2
         reasons.append("⭐ شمعة انعكاسية")
-    if signals < 4:
+    # ✅ تخفيف من 4 إلى 2
+    if signals < 2:
         return None
     atr_series, _ = calc_adx_atr(df)
     atr = atr_series.iloc[-1]
@@ -1470,12 +1569,10 @@ def handle_message(message):
                 bot.reply_to(message, "ما في مستخدمين")
                 return
             lines = ["👥 قائمة المستخدمين", "الإجمالي: " + str(len(users)), "=" * 30]
-            count = 0
-            for uid, data in users.items():
-                count += 1
+            for i, (uid, data) in enumerate(users.items(), 1):
                 name = str(data.get("name", "Unknown")).strip()
                 joined = str(data.get("joined", ""))[:10]
-                lines.append(str(count) + ". " + name + " | " + joined)
+                lines.append(str(i) + ". " + name + " | " + joined)
             full_txt = "\n".join(lines)
             try:
                 with open("users_list.txt", "w", encoding="utf-8") as f:
@@ -1519,8 +1616,9 @@ def handle_message(message):
     if text.lower() == "/bottom" and is_admin:
         try:
             bot.reply_to(message, "⏳ جاري فحص عملات القاع...")
+            _, losers = get_top_gainers_losers(50)
             results = []
-            for coin in COINS:
+            for coin in losers:
                 symbol = coin + "USDT"
                 try:
                     tf = get_timeframe(symbol)
@@ -1533,13 +1631,13 @@ def handle_message(message):
                         results.append(b)
                 except:
                     continue
-                time.sleep(0.3)
+                time.sleep(0.2)
             if not results:
                 bot.send_message(message.chat.id, "💎 ما لقيت عملات قاع حالياً")
                 return
             results.sort(key=lambda x: x["score"], reverse=True)
             txt = "💎 عملات القاع (" + str(len(results)) + ")\n━━━━━━━━━━━━━━━━\n\n"
-            for i, r in enumerate(results[:10], 1):
+            for i, r in enumerate(results[:15], 1):
                 txt += str(i) + ". " + r["symbol"] + "\n"
                 txt += "   💰 " + str(smart_round(r["price"])) + "\n"
                 txt += "   📈 RSI: " + str(r["rsi"]) + "\n"
@@ -1558,8 +1656,9 @@ def handle_message(message):
     if text.lower() == "/pump" and is_admin:
         try:
             bot.reply_to(message, "⚡ جاري فحص فرص الانفجار...")
+            gainers, _ = get_top_gainers_losers(50)
             results = []
-            for coin in COINS:
+            for coin in gainers:
                 symbol = coin + "USDT"
                 try:
                     tf = get_timeframe(symbol)
@@ -1572,13 +1671,13 @@ def handle_message(message):
                         results.append(b)
                 except:
                     continue
-                time.sleep(0.3)
+                time.sleep(0.2)
             if not results:
                 bot.send_message(message.chat.id, "⚡ ما لقيت فرص انفجار حالياً")
                 return
             results.sort(key=lambda x: x["score"], reverse=True)
             txt = "⚡ فرص الانفجار (" + str(len(results)) + ")\n━━━━━━━━━━━━━━━━\n\n"
-            for i, r in enumerate(results[:10], 1):
+            for i, r in enumerate(results[:15], 1):
                 emoji = "🟢" if r["direction"] == "bullish" else "🔴"
                 txt += str(i) + ". " + emoji + " " + r["symbol"] + "\n"
                 txt += "   💰 " + str(smart_round(r["price"])) + "\n"
@@ -1615,36 +1714,22 @@ def handle_message(message):
     if text.lower() == "/short" and is_admin:
         try:
             bot.reply_to(message, "🔴 جاري البحث عن فرص الشورت...")
-            known = load_delistings()
-            symbols = []
-            import re
-            for d in known.values():
-                matches = re.findall(r'\b([A-Z]{2,10})\b', d.get("title", ""))
-                bl = ["WILL", "THE", "AND", "FOR", "FROM", "WITH", "BINANCE",
-                      "NOTICE", "SPOT", "TRADING", "PAIR", "PAIRS", "REMOVAL",
-                      "DELIST", "DELISTING"]
-                for m in matches:
-                    if m not in bl and len(m) >= 2:
-                        s = m + "USDT"
-                        if s not in symbols:
-                            symbols.append(s)
-            if not symbols:
-                for coin in COINS:
-                    symbols.append(coin + "USDT")
+            gainers, _ = get_top_gainers_losers(50)
             results = []
-            for symbol in symbols[:15]:
+            for coin in gainers:
+                symbol = coin + "USDT"
                 try:
                     s = detect_delisting_short(symbol)
                     if s:
                         results.append(s)
                 except:
                     continue
-                time.sleep(0.3)
+                time.sleep(0.2)
             if not results:
                 bot.send_message(message.chat.id, "🔴 ما لقيت فرص شورت حالياً")
                 return
             txt = "🔴 فرص الشورت (" + str(len(results)) + ")\n━━━━━━━━━━━━━━━━\n\n"
-            for i, r in enumerate(results[:5], 1):
+            for i, r in enumerate(results[:10], 1):
                 txt += str(i) + ". " + r["symbol"] + "\n"
                 txt += "   💰 " + str(smart_round(r["entry"])) + "\n"
                 txt += "   🛑 " + str(smart_round(r["sl"])) + "\n"
@@ -1652,7 +1737,7 @@ def handle_message(message):
                 txt += "   🎯 TP2: " + str(smart_round(r["tp2"])) + "\n"
                 txt += "   📈 RSI: " + str(r["rsi"]) + "\n"
                 txt += "   📈 صعود: +" + str(r["pump_24h"]) + "%\n"
-                txt += "   ⚡ " + str(r["signals"]) + "/8\n"
+                txt += "   ⚡ " + str(r["signals"]) + "\n"
                 txt += "   📋 " + " | ".join(r["reasons"][:3]) + "\n\n"
             bot.send_message(message.chat.id, txt)
         except Exception as e:
@@ -1738,8 +1823,8 @@ def handle_message(message):
                 with open(filename, "rb") as doc:
                     bot.send_document(message.chat.id, doc, caption=txt, reply_markup=markup)
                 sent = True
-            except Exception as e2:
-                print("Send doc error: " + str(e2))
+            except:
+                pass
         if not sent:
             bot.send_message(message.chat.id, txt)
         if is_admin:
@@ -1758,8 +1843,10 @@ def handle_message(message):
 # ============== اختيار أفضل إشارة ==============
 def pick_best_signal():
     print("Scanning market...")
+    gainers, losers = get_top_gainers_losers(30)
+    scan_list = list(set(gainers + losers + MAJOR_COINS))
     results = []
-    for coin in COINS:
+    for coin in scan_list:
         symbol = coin + "USDT"
         try:
             result = analyze(symbol)
@@ -1779,7 +1866,7 @@ def pick_best_signal():
             results.append((score, result))
         except:
             continue
-        time.sleep(0.3)
+        time.sleep(0.2)
     if not results:
         print("No signals")
         return None
@@ -1835,7 +1922,7 @@ def send_price_alerts():
     if not CHANNEL_ID:
         return
     txt = "📊 تنبيهات السوق\n🕐 " + datetime.now().strftime("%Y-%m-%d %H:%M") + "\n━━━━━━━━━━━━━━━━\n\n"
-    for coin in COINS[:10]:
+    for coin in MAJOR_COINS[:10]:
         symbol = coin + "USDT"
         try:
             tf = get_timeframe(symbol)
@@ -1860,7 +1947,7 @@ def send_price_alerts():
         print(str(e))
 
 
-def send_target_hit(pos, target_name):
+def send_target_hit(pos):
     if not CHANNEL_ID:
         return
     txt = "#" + pos["symbol"] + "\n\n"
@@ -1899,24 +1986,24 @@ def track_targets():
                     if not pos.get(k) and cp >= pos["tp" + str(i)]:
                         pos[k] = True
                         updated = True
-                        send_target_hit(pos, "TP" + str(i))
+                        send_target_hit(pos)
                         break
                 if not pos.get("sl_hit") and cp <= pos["sl"]:
                     pos["sl_hit"] = True
                     updated = True
-                    send_target_hit(pos, "SL")
+                    send_target_hit(pos)
             else:
                 for i in range(1, 5):
                     k = "tp" + str(i) + "_hit"
                     if not pos.get(k) and cp <= pos["tp" + str(i)]:
                         pos[k] = True
                         updated = True
-                        send_target_hit(pos, "TP" + str(i))
+                        send_target_hit(pos)
                         break
                 if not pos.get("sl_hit") and cp >= pos["sl"]:
                     pos["sl_hit"] = True
                     updated = True
-                    send_target_hit(pos, "SL")
+                    send_target_hit(pos)
         except:
             continue
         time.sleep(0.3)
@@ -1933,23 +2020,12 @@ def check_delistings_task():
 
 def check_delisting_shorts():
     print("Checking delisting shorts...")
-    known = load_delistings()
-    import re
-    symbols = []
-    for d in known.values():
-        matches = re.findall(r'\b([A-Z]{2,10})\b', d.get("title", ""))
-        bl = ["WILL", "THE", "AND", "FOR", "FROM", "WITH", "BINANCE",
-              "NOTICE", "SPOT", "TRADING", "PAIR", "PAIRS", "REMOVAL",
-              "DELIST", "DELISTING"]
-        for m in matches:
-            if m not in bl and len(m) >= 2:
-                s = m + "USDT"
-                if s not in symbols:
-                    symbols.append(s)
-    for symbol in symbols[:5]:
+    gainers, _ = get_top_gainers_losers(30)
+    for symbol_base in gainers[:10]:
+        symbol = symbol_base + "USDT"
         try:
             s = detect_delisting_short(symbol)
-            if s:
+            if s and s["signals"] >= 4:
                 txt = "🚨 فرصة شورت ذهبية! 🚨\n━━━━━━━━━━━━━━━━\n"
                 txt += "💠 " + s["symbol"] + "\n"
                 txt += "💰 الدخول: " + str(smart_round(s["entry"])) + "\n"
@@ -1959,7 +2035,7 @@ def check_delisting_shorts():
                 txt += "🎯 TP3: " + str(smart_round(s["tp3"])) + "\n\n"
                 txt += "📊 RSI: " + str(s["rsi"]) + "\n"
                 txt += "📈 صعود: +" + str(s["pump_24h"]) + "%\n"
-                txt += "⚡ " + str(s["signals"]) + "/8\n"
+                txt += "⚡ " + str(s["signals"]) + "\n"
                 bot.send_message(ADMIN_ID, txt)
         except:
             continue
