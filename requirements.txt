@@ -4,8 +4,6 @@ numpy
 mplfinance
 matplotlib
 requests
-python-binance
 schedule
 pillow
 feedparser
-pricehub
