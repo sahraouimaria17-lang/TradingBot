@@ -1325,7 +1325,7 @@ def detect_delisting_short(symbol):
         signals += 2
         reasons.append("⭐ شمعة انعكاسية")
     # ✅ تخفيف من 4 إلى 2
-    if signals < 2:
+    if signals < 4:
         return None
     _, atr_series = calc_adx_atr(df)
     atr = atr_series.iloc[-1]
