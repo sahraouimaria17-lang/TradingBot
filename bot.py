@@ -229,7 +229,30 @@ def save_positions(positions):
     save_to_gist()
 
 
-# ============== مصادر البيانات ==============
+# ============== Binance Vision (المصدر الأول) ==============
+def get_binance_vision(symbol, timeframe="daily"):
+    base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
+    interval = "1d" if timeframe == "daily" else "4h"
+    try:
+        url = "https://data-api.binance.vision/api/v3/klines"
+        params = {"symbol": base + "USDT", "interval": interval, "limit": "200"}
+        resp = requests.get(url, params=params, timeout=15).json()
+        if not isinstance(resp, list) or len(resp) < 50:
+            return None
+        df = pd.DataFrame(resp, columns=["time", "open", "high", "low", "close",
+                                          "volume", "close_time", "quoteVol",
+                                          "trades", "takerBuyBase", "takerBuyQuote", "ignore"])
+        for c in ["open", "high", "low", "close", "volume"]:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        df["time"] = pd.to_datetime(df["time"].astype("int64"), unit="ms")
+        df = df[["time", "open", "high", "low", "close", "volume"]].dropna()
+        df.set_index("time", inplace=True)
+        return df
+    except Exception:
+        return None
+
+
+# ============== مصادر البيانات (7 مصادر) ==============
 def get_okx(symbol, timeframe="daily"):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     bar = "1D" if timeframe == "daily" else "4H"
@@ -378,31 +401,16 @@ def get_coingecko(symbol, timeframe="daily"):
         return None
 
 
-def get_pricehub(symbol, timeframe="daily"):
-    try:
-        import pricehub
-        base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
-        df = pricehub.get_klines(base, "USDT", interval=timeframe, limit=200)
-        if df is None or len(df) < 50:
-            return None
-        df = df.rename(columns={"timestamp": "time"})
-        df["time"] = pd.to_datetime(df["time"], unit="ms")
-        df = df[["time", "open", "high", "low", "close", "volume"]].dropna()
-        df.set_index("time", inplace=True)
-        return df
-    except Exception:
-        return None
-
-
+# ============== get_data (Binance Vision أولاً) ==============
 def get_data(symbol, timeframe="daily"):
     sources = [
+        ("BinanceVision", get_binance_vision),
         ("OKX", get_okx),
         ("Bybit", get_bybit),
         ("Bitget", get_bitget),
         ("Kraken", get_kraken),
         ("Coinbase", get_coinbase),
-        ("CoinGecko", get_coingecko),
-        ("pricehub", get_pricehub)
+        ("CoinGecko", get_coingecko)
     ]
     for name, func in sources:
         try:
@@ -703,300 +711,7 @@ def calculate_confidence(df, side, votes, trend):
 
     if side == "buy" and trend == "uptrend":
         score += 2
-    elif side == "sell" and trend == "downtrend":
-        score += 2
-    elif trend == "sideways":
-        score -= 1
-    else:
-        score -= 2
-
-    try:
-        avg_vol = df["volume"].tail(20).mean()
-        curr_vol = df["volume"].iloc[-1]
-        if avg_vol > 0 and curr_vol > avg_vol * 1.5:
-            score += 1
-    except:
-        pass
-
-    return max(0, min(10, score))
-
-
-# ============== التحليل الرئيسي ==============
-def analyze(symbol, timeframe=None):
-    if timeframe is None:
-        timeframe = get_timeframe(symbol)
-
-    df = get_data(symbol, timeframe)
-    if df is None or len(df) < 100:
-        return None
-
-    price = df["close"].iloc[-1]
-    if pd.isna(price) or price <= 0:
-        return None
-
-    ema20 = calc_ema(df, 20)
-    ema50 = calc_ema(df, 50)
-    ema200 = calc_ema(df, 200)
-    bb_upper, bb_mid, bb_lower = calc_bollinger(df)
-    rsi_series = calc_rsi(df)
-    adx_series, atr_series = calc_adx_atr(df)
-    fib = calc_fibonacci(df)
-    cross = detect_cross(df)
-    divergence = detect_rsi_divergence(df)
-
-    if is_major(symbol):
-        supports, resistances = find_support_resistance(df)
-        supports = [s for s in supports if abs(s - price) / price < 0.15]
-        resistances = [r for r in resistances if abs(r - price) / price < 0.15]
-    else:
-        supports, resistances = [], []
-
-    ema20_val = ema20.iloc[-1]
-    ema50_val = ema50.iloc[-1]
-    rsi_val = rsi_series.iloc[-1]
-    adx_val = adx_series.iloc[-1]
-    atr_val = atr_series.iloc[-1]
-
-    if pd.isna(atr_val) or atr_val <= 0:
-        atr_val = price * 0.02
-
-    liquidity = calc_liquidity(df)
-    whale_count = calc_whale_radar(df)
-    votes = confluence_vote(df)
-    trend = check_trend_direction(df)
-
-    if ema20_val > ema50_val:
-        side = "buy"
-    else:
-        side = "sell"
-
-    confidence = calculate_confidence(df, side, votes, trend)
-
-    if confidence < 4:
-        side = "wait"
-    elif side == "sell" and trend == "uptrend" and confidence < 7:
-        side = "wait"
-    elif side == "buy" and trend == "downtrend" and confidence < 7:
-        side = "wait"
-
-    if side == "buy":
-        entry = price
-        sl = entry - (atr_val * 1.5)
-        tp1 = entry + (atr_val * 0.8)
-        tp2 = entry + (atr_val * 1.6)
-        tp3 = entry + (atr_val * 2.5)
-        tp4 = entry + (atr_val * 4.0)
-    elif side == "sell":
-        entry = price
-        sl = entry + (atr_val * 1.5)
-        tp1 = entry - (atr_val * 0.8)
-        tp2 = entry - (atr_val * 1.6)
-        tp3 = entry - (atr_val * 2.5)
-        tp4 = entry - (atr_val * 4.0)
-    else:
-        entry = price
-        sl = price - (atr_val * 1.5)
-        tp1 = price + (atr_val * 0.8)
-        tp2 = price + (atr_val * 1.6)
-        tp3 = price + (atr_val * 2.5)
-        tp4 = price + (atr_val * 4.0)
-
-    prices = [entry, tp1, tp2, tp3, tp4, sl]
-    min_diff = entry * 0.002
-    for i in range(1, len(prices) - 1):
-        if abs(prices[i] - prices[i-1]) < min_diff:
-            if side == "sell":
-                prices[i] = prices[i-1] - min_diff
-            else:
-                prices[i] = prices[i-1] + min_diff
-
-    entry, tp1, tp2, tp3, tp4, sl = prices
-
-    return {
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "side": side,
-        "confidence": confidence,
-        "trend": trend,
-        "entry": smart_round(entry),
-        "sl": smart_round(sl),
-        "tp1": smart_round(tp1),
-        "tp2": smart_round(tp2),
-        "tp3": smart_round(tp3),
-        "tp4": smart_round(tp4),
-        "rsi": rsi_val,
-        "adx": adx_val,
-        "atr": atr_val,
-        "liquidity": liquidity,
-        "whale_count": whale_count,
-        "df": df,
-        "ema20": ema20,
-        "ema50": ema50,
-        "ema200": ema200,
-        "bb_upper": bb_upper,
-        "bb_lower": bb_lower,
-        "rsi_series": rsi_series,
-        "fib": fib,
-        "cross": cross,
-        "divergence": divergence,
-        "supports": supports,
-        "resistances": resistances,
-        "is_major": is_major(symbol),
-        "votes": votes
-    }
-
-
-# ============== الشارت ==============
-def create_chart(result, lang, is_admin):
-    t = LANG[lang]
-    df = result["df"]
-    symbol = result["symbol"]
-    timeframe = result["timeframe"]
-
-    df_plot = df.tail(80).copy()
-    df_plot["ema20"] = result["ema20"].tail(80)
-    df_plot["ema50"] = result["ema50"].tail(80)
-    df_plot["ema200"] = result["ema200"].tail(80)
-    df_plot["bb_upper"] = result["bb_upper"].tail(80)
-    df_plot["bb_lower"] = result["bb_lower"].tail(80)
-    df_plot["rsi"] = result["rsi_series"].tail(80)
-
-    apds = [
-        mpf.make_addplot(df_plot["ema20"], color="#f39c12", width=1.8, panel=0),
-        mpf.make_addplot(df_plot["ema50"], color="#8e44ad", width=1.8, panel=0),
-        mpf.make_addplot(df_plot["ema200"], color="#e74c3c", width=1.8, panel=0),
-        mpf.make_addplot(df_plot["bb_upper"], color="#5dade2", width=1.0, linestyle="--", panel=0),
-        mpf.make_addplot(df_plot["bb_lower"], color="#5dade2", width=1.0, linestyle="--", panel=0),
-        mpf.make_addplot(df_plot["rsi"], color="#c0392b", width=1.2, panel=1, ylabel="RSI (14)"),
-    ]
-
-    if is_admin:
-        targets = [result["tp1"], result["tp2"], result["tp3"], result["tp4"]]
-    else:
-        targets = [result["tp1"], result["tp2"]]
-
-    hlines_values = [result["entry"]] + targets + [result["sl"]]
-    hlines_colors = ["#1f4e79"] + ["#27ae60"] * len(targets) + ["#c0392b"]
-    hlines_styles = ["-.", "--", "--", "--", "--", "--"][:len(hlines_values)]
-    hlines_widths = [2.0] + [1.8] * len(targets) + [2.0]
-
-    hlines = dict(
-        hlines=hlines_values,
-        colors=hlines_colors,
-        linestyle=hlines_styles,
-        linewidths=hlines_widths
-    )
-
-    safe_name = symbol.replace("/", "_")
-    filename = "chart_" + safe_name + ".png"
-
-    style = mpf.make_mpf_style(
-        base_mpf_style="default",
-        gridstyle=":",
-        gridcolor="#e8e8e8",
-        facecolor="white",
-        figcolor="white",
-        edgecolor="#cccccc",
-        rc={
-            "font.size": 9,
-            "axes.labelcolor": "black",
-            "xtick.color": "black",
-            "ytick.color": "black",
-            "text.color": "black",
-            "axes.titlecolor": "black"
-        }
-    )
-
-    fig, axes = mpf.plot(
-        df_plot,
-        type="line",
-        style=style,
-        addplot=apds,
-        hlines=hlines,
-        volume=False,
-        figsize=(14, 9),
-        title=t["chart_title"] + symbol + " (" + timeframe.upper() + ")",
-        returnfig=True,
-        tight_layout=True,
-        panel_ratios=(4, 1)
-    )
-
-    ax = axes[0]
-    ax_rsi = axes[2]
-
-    ax.lines[0].set_color("#2980b9")
-    ax.lines[0].set_linewidth(2.5)
-
-    price_max = max(result["entry"], result["tp4"], result["sl"])
-    price_min = min(result["entry"], result["sl"], result["tp4"])
-    y_min = price_min * 0.98
-    y_max = price_max * 1.02
-    ax.set_ylim(y_min, y_max)
-
-    ax.text(0.5, 0.5, "Rym Crypto", transform=ax.transAxes,
-            fontsize=60, color="gray", alpha=0.10, ha="center",
-            va="center", fontweight="bold", zorder=0)
-
-    legend_handles = [
-        mlines.Line2D([], [], color="#2980b9", linewidth=2.5, label=t["price_lbl"]),
-        mlines.Line2D([], [], color="#f39c12", linewidth=1.8, label=t["ema20_lbl"]),
-        mlines.Line2D([], [], color="#8e44ad", linewidth=1.8, label=t["ema50_lbl"]),
-        mlines.Line2D([], [], color="#e74c3c", linewidth=1.8, label=t["ema200_lbl"]),
-        mlines.Line2D([], [], color="#5dade2", linewidth=1.0, linestyle="--", label=t["bb_lbl"]),
-        mlines.Line2D([], [], color="#1f4e79", linewidth=2.0, linestyle="-.", label=t["entry_lbl"] + ": " + str(result["entry"])),
-        mlines.Line2D([], [], color="#27ae60", linewidth=1.8, linestyle="--", label=t["tp1_lbl"] + ": " + str(result["tp1"])),
-        mlines.Line2D([], [], color="#27ae60", linewidth=1.8, linestyle="--", label=t["tp2_lbl"] + ": " + str(result["tp2"])),
-    ]
-    if is_admin:
-        legend_handles.append(mlines.Line2D([], [], color="#27ae60", linewidth=1.8, linestyle="--", label=t["tp3_lbl"] + ": " + str(result["tp3"])))
-        legend_handles.append(mlines.Line2D([], [], color="#27ae60", linewidth=1.8, linestyle="--", label=t["tp4_lbl"] + ": " + str(result["tp4"])))
-    legend_handles.append(mlines.Line2D([], [], color="#c0392b", linewidth=2.0, linestyle="--", label=t["sl_lbl"] + ": " + str(result["sl"])))
-
-    ax.legend(handles=legend_handles, loc="upper left", fontsize=8,
-              facecolor="white", edgecolor="#cccccc", framealpha=0.9)
-
-    fib = result["fib"]
-    fib_items = [
-        (fib["38.2"], t["fib_382"], "#a569bd"),
-        (fib["50.0"], t["fib_500"], "#c0392b"),
-        (fib["61.8"], t["fib_618"], "#a569bd"),
-    ]
-    for price_val, label, color in fib_items:
-        if price_val <= 0 or pd.isna(price_val):
-            continue
-        ax.axhline(y=price_val, color=color, linestyle=":", linewidth=0.8, alpha=0.6)
-        ax.text(0.01, price_val, label, transform=ax.get_yaxis_transform(),
-                color=color, fontsize=8, va="center", ha="left")
-
-    if result.get("is_major"):
-        for sup in result["supports"][:2]:
-            ax.axhline(y=sup, color="#27ae60", linestyle="-", linewidth=0.9, alpha=0.5)
-            ax.text(0.99, sup, t["sup_lbl"] + " " + str(smart_round(sup)),
-                    transform=ax.get_yaxis_transform(), color="#27ae60",
-                    fontsize=8, va="center", ha="right")
-        for res in result["resistances"][:2]:
-            ax.axhline(y=res, color="#c0392b", linestyle="-", linewidth=0.9, alpha=0.5)
-            ax.text(0.99, res, t["res_lbl"] + " " + str(smart_round(res)),
-                    transform=ax.get_yaxis_transform(), color="#c0392b",
-                    fontsize=8, va="center", ha="right")
-
-    ax_rsi.axhline(y=70, color="#c0392b", linestyle="--", linewidth=0.8, alpha=0.5)
-    ax_rsi.axhline(y=30, color="#27ae60", linestyle="--", linewidth=0.8, alpha=0.5)
-
-    fig.savefig(filename, dpi=100, facecolor="white")
-    plt.close(fig)
-
-    try:
-        img = Image.open(filename)
-        max_w, max_h = 1920, 1080
-        if img.width > max_w or img.height > max_h:
-            img.thumbnail((max_w, max_h), Image.LANCZOS)
-            img.save(filename)
-    except Exception as e:
-        print("Resize error: " + str(e))
-
-    return filename
-# ============== معالج الرسائل ==============
+        # ============== معالج الرسائل ==============
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     if not message.text:
