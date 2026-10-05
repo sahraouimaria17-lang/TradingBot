@@ -63,13 +63,14 @@ LANG = {
         "frame": "⏰ الفريم",
         "buy": "🟢 الإشارة: شراء",
         "sell": "🔴 الإشارة: بيع",
-        "wait": "⏸️ لا توجد إشارة قوية",
         "entry": "💰 الدخول",
         "tp": "🎯 الهدف",
         "sl": "🔴 الستوب",
         "rsi": "📈 RSI",
         "adx": "📊 ADX",
         "atr": "📉 ATR",
+        "cci": "📊 CCI",
+        "mfi": "💧 MFI",
         "ask": "أرسل عملة مثل BTC",
         "error": "⚠️ ما لقيت البيانات",
         "fib_382": "Fib 38.2%",
@@ -96,13 +97,14 @@ LANG = {
         "frame": "⏰ Timeframe",
         "buy": "🟢 Signal: BUY",
         "sell": "🔴 Signal: SELL",
-        "wait": "⏸️ No strong signal",
         "entry": "💰 Entry",
         "tp": "🎯 Target",
         "sl": "🔴 Stop Loss",
         "rsi": "📈 RSI",
         "adx": "📊 ADX",
         "atr": "📉 ATR",
+        "cci": "📊 CCI",
+        "mfi": "💧 MFI",
         "ask": "Send a coin like BTC",
         "error": "⚠️ Data not found",
         "fib_382": "Fib 38.2%",
@@ -217,7 +219,6 @@ def check_user_status(user_id, first_name="Unknown"):
         return "active"
 
 
-# ============== Positions ==============
 def load_positions():
     with CACHE_LOCK:
         return dict(DATA_CACHE.get("positions", {}))
@@ -432,7 +433,7 @@ def get_data(symbol, timeframe="daily"):
         except Exception:
             continue
     return None
-# ============== المؤشرات الفنية ==============
+# ============== المؤشرات الفنية الأساسية ==============
 def calc_ema(df, period):
     return df["close"].ewm(span=period, adjust=False).mean()
 
@@ -487,6 +488,99 @@ def calc_adx_atr(df, period=14):
     return adx, atr
 
 
+# ============== المؤشرات الجديدة ==============
+
+# 1. CCI (Commodity Channel Index)
+def calc_cci(df, period=20):
+    tp = (df["high"] + df["low"] + df["close"]) / 3
+    sma = tp.rolling(period).mean()
+    mad = tp.rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    cci = (tp - sma) / (0.015 * mad)
+    return cci
+
+
+# 2. Parabolic SAR
+def calc_parabolic_sar(df, af=0.02, max_af=0.2):
+    high = df["high"].values
+    low = df["low"].values
+    close = df["close"].values
+    length = len(df)
+    sar = np.zeros(length)
+    trend = np.zeros(length)
+    ep = np.zeros(length)
+    acc = np.zeros(length)
+
+    if length < 2:
+        return pd.Series(sar, index=df.index)
+
+    trend[0] = 1 if close[0] > close[-1] else -1
+    sar[0] = low[0] if trend[0] == 1 else high[0]
+    ep[0] = high[0] if trend[0] == 1 else low[0]
+    acc[0] = af
+
+    for i in range(1, length):
+        sar[i] = sar[i-1] + acc[i-1] * (ep[i-1] - sar[i-1])
+
+        if trend[i-1] == 1:
+            if low[i] < sar[i]:
+                trend[i] = -1
+                sar[i] = ep[i-1]
+                ep[i] = low[i]
+                acc[i] = af
+            else:
+                trend[i] = 1
+                if high[i] > ep[i-1]:
+                    ep[i] = high[i]
+                    acc[i] = min(acc[i-1] + af, max_af)
+                else:
+                    ep[i] = ep[i-1]
+                    acc[i] = acc[i-1]
+                sar[i] = min(sar[i], low[i-1], low[i])
+        else:
+            if high[i] > sar[i]:
+                trend[i] = 1
+                sar[i] = ep[i-1]
+                ep[i] = high[i]
+                acc[i] = af
+            else:
+                trend[i] = -1
+                if low[i] < ep[i-1]:
+                    ep[i] = low[i]
+                    acc[i] = min(acc[i-1] + af, max_af)
+                else:
+                    ep[i] = ep[i-1]
+                    acc[i] = acc[i-1]
+                sar[i] = max(sar[i], high[i-1], high[i])
+
+    return pd.Series(sar, index=df.index)
+
+
+# 3. MFI (Money Flow Index)
+def calc_mfi(df, period=14):
+    tp = (df["high"] + df["low"] + df["close"]) / 3
+    mf = tp * df["volume"]
+    positive_mf = mf.where(tp > tp.shift(1), 0).rolling(period).sum()
+    negative_mf = mf.where(tp < tp.shift(1), 0).rolling(period).sum()
+    mfr = positive_mf / negative_mf
+    mfi = 100 - (100 / (1 + mfr))
+    return mfi
+
+
+# 4. Ichimoku Cloud (مبسّط)
+def calc_ichimoku(df, tenkan=9, kijun=26, senkou=52):
+    high = df["high"]
+    low = df["low"]
+    
+    tenkan_sen = (high.rolling(tenkan).max() + low.rolling(tenkan).min()) / 2
+    kijun_sen = (high.rolling(kijun).max() + low.rolling(kijun).min()) / 2
+    senkou_a = ((tenkan_sen + kijun_sen) / 2).shift(kijun)
+    senkou_b = ((high.rolling(senkou).max() + low.rolling(senkou).min()) / 2).shift(kijun)
+    chikou = df["close"].shift(-kijun)
+    
+    return tenkan_sen, kijun_sen, senkou_a, senkou_b, chikou
+
+
+# ============== الدعم والمقاومة ==============
 def calc_liquidity(df):
     avg_vol = df["volume"].tail(7).mean()
     avg_price = df["close"].tail(7).mean()
@@ -556,79 +650,7 @@ def detect_rsi_divergence(df, lookback=50, window=5):
     return None
 
 
-def confluence_vote(df):
-    votes = {"buy": 0, "sell": 0, "details": []}
-    ema50 = calc_ema(df, 50)
-    ema200 = calc_ema(df, 200)
-    price = df["close"].iloc[-1]
-
-    if not pd.isna(ema50.iloc[-1]) and not pd.isna(ema200.iloc[-1]):
-        if price > ema50.iloc[-1] and ema50.iloc[-1] > ema200.iloc[-1]:
-            votes["buy"] += 1
-            votes["details"].append("EMA ✓ Buy")
-        elif price < ema50.iloc[-1] and ema50.iloc[-1] < ema200.iloc[-1]:
-            votes["sell"] += 1
-            votes["details"].append("EMA ✓ Sell")
-
-    rsi = calc_rsi(df).iloc[-1]
-    if not pd.isna(rsi):
-        if rsi > 50:
-            votes["buy"] += 1
-            votes["details"].append("RSI ✓ Buy (" + str(round(rsi, 1)) + ")")
-        elif rsi < 50:
-            votes["sell"] += 1
-            votes["details"].append("RSI ✓ Sell (" + str(round(rsi, 1)) + ")")
-
-    macd_line, signal_line, hist = calc_macd(df)
-    if not pd.isna(macd_line.iloc[-1]) and not pd.isna(signal_line.iloc[-1]):
-        if macd_line.iloc[-1] > signal_line.iloc[-1]:
-            votes["buy"] += 1
-            votes["details"].append("MACD ✓ Buy")
-        else:
-            votes["sell"] += 1
-            votes["details"].append("MACD ✓ Sell")
-
-    adx_series, _ = calc_adx_atr(df)
-    adx = adx_series.iloc[-1]
-    if not pd.isna(adx) and adx > 25:
-        if macd_line.iloc[-1] > signal_line.iloc[-1]:
-            votes["buy"] += 1
-            votes["details"].append("ADX ✓ Buy (" + str(round(adx, 1)) + ")")
-        else:
-            votes["sell"] += 1
-            votes["details"].append("ADX ✓ Sell (" + str(round(adx, 1)) + ")")
-
-    bb_upper, bb_mid, bb_lower = calc_bollinger(df)
-    if not pd.isna(bb_mid.iloc[-1]):
-        if price > bb_mid.iloc[-1]:
-            votes["buy"] += 1
-            votes["details"].append("BB ✓ Buy")
-        else:
-            votes["sell"] += 1
-            votes["details"].append("BB ✓ Sell")
-
-    avg_vol = df["volume"].tail(20).mean()
-    curr_vol = df["volume"].iloc[-1]
-    if avg_vol > 0 and curr_vol > avg_vol * 1.3:
-        if macd_line.iloc[-1] > signal_line.iloc[-1]:
-            votes["buy"] += 1
-            votes["details"].append("Volume ✓ Buy")
-        else:
-            votes["sell"] += 1
-            votes["details"].append("Volume ✓ Sell")
-
-    k, d = calc_stoch_rsi(df)
-    if not pd.isna(k.iloc[-1]) and not pd.isna(d.iloc[-1]):
-        if k.iloc[-1] > d.iloc[-1] and k.iloc[-1] < 80:
-            votes["buy"] += 1
-            votes["details"].append("StochRSI ✓ Buy")
-        elif k.iloc[-1] < d.iloc[-1] and k.iloc[-1] > 20:
-            votes["sell"] += 1
-            votes["details"].append("StochRSI ✓ Sell")
-
-    return votes
-
-
+# ============== الدعم والمقاومة ==============
 def find_support_resistance(df, lookback=80, window=5):
     recent = df.tail(lookback)
     highs = recent["high"].values
@@ -680,15 +702,165 @@ def check_trend_direction(df):
         return "sideways"
 
 
+# ============== نظام التصويت المحسّن (11 مؤشر) ==============
+def confluence_vote(df):
+    votes = {"buy": 0, "sell": 0, "details": []}
+
+    # 1. EMA (50/200)
+    ema50 = calc_ema(df, 50)
+    ema200 = calc_ema(df, 200)
+    price = df["close"].iloc[-1]
+
+    if not pd.isna(ema50.iloc[-1]) and not pd.isna(ema200.iloc[-1]):
+        if price > ema50.iloc[-1] and ema50.iloc[-1] > ema200.iloc[-1]:
+            votes["buy"] += 1
+            votes["details"].append("EMA ✓ Buy")
+        elif price < ema50.iloc[-1] and ema50.iloc[-1] < ema200.iloc[-1]:
+            votes["sell"] += 1
+            votes["details"].append("EMA ✓ Sell")
+
+    # 2. RSI (محسّن)
+    rsi = calc_rsi(df).iloc[-1]
+    if not pd.isna(rsi):
+        if 40 < rsi < 70:
+            votes["buy"] += 1
+            votes["details"].append("RSI ✓ Buy (" + str(round(rsi, 1)) + ")")
+        elif rsi >= 70:
+            votes["sell"] += 1
+            votes["details"].append("RSI ✗ Overbought (" + str(round(rsi, 1)) + ")")
+        elif 30 < rsi < 40:
+            votes["sell"] += 1
+            votes["details"].append("RSI ✓ Sell (" + str(round(rsi, 1)) + ")")
+        elif rsi <= 30:
+            votes["buy"] += 1
+            votes["details"].append("RSI ✗ Oversold (" + str(round(rsi, 1)) + ")")
+
+    # 3. MACD
+    macd_line, signal_line, hist = calc_macd(df)
+    if not pd.isna(macd_line.iloc[-1]) and not pd.isna(signal_line.iloc[-1]):
+        if macd_line.iloc[-1] > signal_line.iloc[-1]:
+            votes["buy"] += 1
+            votes["details"].append("MACD ✓ Buy")
+        else:
+            votes["sell"] += 1
+            votes["details"].append("MACD ✓ Sell")
+
+    # 4. ADX
+    adx_series, _ = calc_adx_atr(df)
+    adx = adx_series.iloc[-1]
+    if not pd.isna(adx) and adx > 25:
+        if macd_line.iloc[-1] > signal_line.iloc[-1]:
+            votes["buy"] += 1
+            votes["details"].append("ADX ✓ Buy (" + str(round(adx, 1)) + ")")
+        else:
+            votes["sell"] += 1
+            votes["details"].append("ADX ✓ Sell (" + str(round(adx, 1)) + ")")
+
+    # 5. Bollinger Bands
+    bb_upper, bb_mid, bb_lower = calc_bollinger(df)
+    if not pd.isna(bb_mid.iloc[-1]):
+        if price > bb_mid.iloc[-1]:
+            votes["buy"] += 1
+            votes["details"].append("BB ✓ Buy")
+        else:
+            votes["sell"] += 1
+            votes["details"].append("BB ✓ Sell")
+
+    # 6. Volume
+    avg_vol = df["volume"].tail(20).mean()
+    curr_vol = df["volume"].iloc[-1]
+    if avg_vol > 0 and curr_vol > avg_vol * 1.3:
+        if macd_line.iloc[-1] > signal_line.iloc[-1]:
+            votes["buy"] += 1
+            votes["details"].append("Volume ✓ Buy")
+        else:
+            votes["sell"] += 1
+            votes["details"].append("Volume ✓ Sell")
+
+    # 7. Stochastic RSI
+    k, d = calc_stoch_rsi(df)
+    if not pd.isna(k.iloc[-1]) and not pd.isna(d.iloc[-1]):
+        if k.iloc[-1] > d.iloc[-1] and k.iloc[-1] < 80:
+            votes["buy"] += 1
+            votes["details"].append("StochRSI ✓ Buy")
+        elif k.iloc[-1] < d.iloc[-1] and k.iloc[-1] > 20:
+            votes["sell"] += 1
+            votes["details"].append("StochRSI ✓ Sell")
+
+    # 8. CCI (Commodity Channel Index)
+    cci = calc_cci(df).iloc[-1]
+    if not pd.isna(cci):
+        if cci > 100:
+            votes["sell"] += 1
+            votes["details"].append("CCI ✓ Overbought (" + str(round(cci, 1)) + ")")
+        elif cci < -100:
+            votes["buy"] += 1
+            votes["details"].append("CCI ✓ Oversold (" + str(round(cci, 1)) + ")")
+        elif cci > 0:
+            votes["buy"] += 1
+            votes["details"].append("CCI ✓ Buy (" + str(round(cci, 1)) + ")")
+        else:
+            votes["sell"] += 1
+            votes["details"].append("CCI ✓ Sell (" + str(round(cci, 1)) + ")")
+
+    # 9. Parabolic SAR
+    psar = calc_parabolic_sar(df)
+    if len(psar) > 0 and not pd.isna(psar.iloc[-1]):
+        if psar.iloc[-1] < price:
+            votes["buy"] += 1
+            votes["details"].append("SAR ✓ Buy")
+        else:
+            votes["sell"] += 1
+            votes["details"].append("SAR ✓ Sell")
+
+    # 10. MFI (Money Flow Index)
+    mfi = calc_mfi(df).iloc[-1]
+    if not pd.isna(mfi):
+        if mfi > 80:
+            votes["sell"] += 1
+            votes["details"].append("MFI ✓ Overbought (" + str(round(mfi, 1)) + ")")
+        elif mfi < 20:
+            votes["buy"] += 1
+            votes["details"].append("MFI ✓ Oversold (" + str(round(mfi, 1)) + ")")
+        elif mfi > 50:
+            votes["buy"] += 1
+            votes["details"].append("MFI ✓ Buy (" + str(round(mfi, 1)) + ")")
+        else:
+            votes["sell"] += 1
+            votes["details"].append("MFI ✓ Sell (" + str(round(mfi, 1)) + ")")
+
+    # 11. Ichimoku Cloud (مبسّط: السعر فوق/تحت السحابة)
+    try:
+        tenkan, kijun, senkou_a, senkou_b, chikou = calc_ichimoku(df)
+        if not pd.isna(senkou_a.iloc[-1]) and not pd.isna(senkou_b.iloc[-1]):
+            cloud_top = max(senkou_a.iloc[-1], senkou_b.iloc[-1])
+            cloud_bottom = min(senkou_a.iloc[-1], senkou_b.iloc[-1])
+            if price > cloud_top:
+                votes["buy"] += 1
+                votes["details"].append("Ichimoku ✓ Buy (Above Cloud)")
+            elif price < cloud_bottom:
+                votes["sell"] += 1
+                votes["details"].append("Ichimoku ✓ Sell (Below Cloud)")
+    except:
+        pass
+
+    return votes
+
+
+# ============== درجة الثقة ==============
 def calculate_confidence(df, side, votes, trend):
     score = 0
     buy_votes = votes.get("buy", 0)
     sell_votes = votes.get("sell", 0)
-    if side == "buy":
-        score += min(3, buy_votes // 2)
-    elif side == "sell":
-        score += min(3, sell_votes // 2)
+    total = buy_votes + sell_votes
 
+    # عدد الأصوات (0-4)
+    if side == "buy":
+        score += min(4, buy_votes)
+    elif side == "sell":
+        score += min(4, sell_votes)
+
+    # ADX (0-2)
     try:
         adx_series, _ = calc_adx_atr(df)
         adx = adx_series.iloc[-1]
@@ -700,20 +872,22 @@ def calculate_confidence(df, side, votes, trend):
     except:
         pass
 
+    # RSI (0-2)
     try:
         rsi = calc_rsi(df).iloc[-1]
         if not pd.isna(rsi):
-            if side == "buy" and 40 < rsi < 65:
+            if side == "buy" and 40 < rsi < 70:
                 score += 2
-            elif side == "sell" and 35 < rsi < 60:
+            elif side == "sell" and 30 < rsi < 60:
                 score += 2
-            elif side == "buy" and rsi > 75:
-                score -= 1
-            elif side == "sell" and rsi < 25:
-                score -= 1
+            elif side == "buy" and rsi >= 70:
+                score -= 2
+            elif side == "sell" and rsi <= 30:
+                score -= 2
     except:
         pass
 
+    # الاتجاه العام (0-2)
     if side == "buy" and trend == "uptrend":
         score += 2
     elif side == "sell" and trend == "downtrend":
@@ -722,14 +896,6 @@ def calculate_confidence(df, side, votes, trend):
         score -= 1
     else:
         score -= 2
-
-    try:
-        avg_vol = df["volume"].tail(20).mean()
-        curr_vol = df["volume"].iloc[-1]
-        if avg_vol > 0 and curr_vol > avg_vol * 1.5:
-            score += 1
-    except:
-        pass
 
     return max(0, min(10, score))
 
@@ -769,6 +935,8 @@ def analyze(symbol, timeframe=None):
     rsi_val = rsi_series.iloc[-1]
     adx_val = adx_series.iloc[-1]
     atr_val = atr_series.iloc[-1]
+    cci_val = calc_cci(df).iloc[-1]
+    mfi_val = calc_mfi(df).iloc[-1]
 
     if pd.isna(atr_val) or atr_val <= 0:
         atr_val = price * 0.02
@@ -778,19 +946,27 @@ def analyze(symbol, timeframe=None):
     votes = confluence_vote(df)
     trend = check_trend_direction(df)
 
-    if ema20_val > ema50_val:
+    # التصويت يحدد الإشارة
+    buy_votes = votes["buy"]
+    sell_votes = votes["sell"]
+
+    if buy_votes > sell_votes:
         side = "buy"
-    else:
+    elif sell_votes > buy_votes:
         side = "sell"
+    else:
+        if ema20_val > ema50_val:
+            side = "buy"
+        else:
+            side = "sell"
+
+    # Divergence يأثر
+    if divergence == "bearish" and side == "buy":
+        side = "sell"
+    if divergence == "bullish" and side == "sell":
+        side = "buy"
 
     confidence = calculate_confidence(df, side, votes, trend)
-
-    if confidence < 4:
-        side = "wait"
-    elif side == "sell" and trend == "uptrend" and confidence < 7:
-        side = "wait"
-    elif side == "buy" and trend == "downtrend" and confidence < 7:
-        side = "wait"
 
     if side == "buy":
         entry = price
@@ -799,20 +975,13 @@ def analyze(symbol, timeframe=None):
         tp2 = entry + (atr_val * 1.6)
         tp3 = entry + (atr_val * 2.5)
         tp4 = entry + (atr_val * 4.0)
-    elif side == "sell":
+    else:
         entry = price
         sl = entry + (atr_val * 1.5)
         tp1 = entry - (atr_val * 0.8)
         tp2 = entry - (atr_val * 1.6)
         tp3 = entry - (atr_val * 2.5)
         tp4 = entry - (atr_val * 4.0)
-    else:
-        entry = price
-        sl = price - (atr_val * 1.5)
-        tp1 = price + (atr_val * 0.8)
-        tp2 = price + (atr_val * 1.6)
-        tp3 = price + (atr_val * 2.5)
-        tp4 = price + (atr_val * 4.0)
 
     prices = [entry, tp1, tp2, tp3, tp4, sl]
     min_diff = entry * 0.002
@@ -840,6 +1009,8 @@ def analyze(symbol, timeframe=None):
         "rsi": rsi_val,
         "adx": adx_val,
         "atr": atr_val,
+        "cci": cci_val,
+        "mfi": mfi_val,
         "liquidity": liquidity,
         "whale_count": whale_count,
         "df": df,
@@ -857,8 +1028,7 @@ def analyze(symbol, timeframe=None):
         "is_major": is_major(symbol),
         "votes": votes
     }
-    
-    # ============== الشارت ==============
+# ============== الشارت ==============
 def create_chart(result, lang, is_admin):
     t = LANG[lang]
     df = result["df"]
@@ -1121,6 +1291,10 @@ def handle_message(message):
             txt += t["rsi"] + ": " + str(round(result["rsi"], 2)) + "\n"
             txt += t["adx"] + ": " + str(round(result["adx"], 2)) + "\n"
             txt += t["atr"] + ": " + str(round(result["atr"], 6)) + "\n"
+            if not pd.isna(result["cci"]):
+                txt += t["cci"] + ": " + str(round(result["cci"], 2)) + "\n"
+            if not pd.isna(result["mfi"]):
+                txt += t["mfi"] + ": " + str(round(result["mfi"], 2)) + "\n"
 
             if result["cross"]:
                 cross_txt = "🌟 Golden Cross" if result["cross"] == "golden" else "💀 Death Cross"
@@ -1140,8 +1314,8 @@ def handle_message(message):
                 if result["resistances"]:
                     txt += "🔴 مقاومة: " + str(smart_round(result["resistances"][0])) + "\n"
 
-            txt += "\n📊 التصويت:\n"
-            for d in votes["details"][:7]:
+            txt += "\n📊 التصويت (" + str(votes["buy"]) + " Buy / " + str(votes["sell"]) + " Sell):\n"
+            for d in votes["details"][:11]:
                 txt += "• " + d + "\n"
 
         markup = types.InlineKeyboardMarkup()
@@ -1190,8 +1364,6 @@ def pick_best_signal():
         try:
             result = analyze(symbol)
             if result is None:
-                continue
-            if result["side"] == "wait":
                 continue
             if result["confidence"] < 5:
                 continue
