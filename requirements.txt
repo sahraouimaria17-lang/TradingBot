@@ -3,7 +3,8 @@ pandas
 numpy
 mplfinance
 matplotlib
-requests
 schedule
-pillow
-feedparser
+requests
+Pillow
+python-binance
+pricehub
