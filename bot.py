@@ -24,6 +24,13 @@ GIST_ID = os.environ.get("GIST_ID", "").strip()
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
 
 bot = telebot.TeleBot(BOT_TOKEN)
+
+try:
+    bot.delete_webhook()
+    print("Webhook deleted")
+except Exception as e:
+    print("Webhook error: " + str(e))
+
 CHANNEL_LINK = "https://t.me/rym_rima16"
 
 TRIAL_DAYS = 15
@@ -127,7 +134,7 @@ def detect_lang(text):
 
 
 # ============== Gist Storage ==============
-DATA_CACHE = {"users": {}, "positions": {}, "alerts": {}}
+DATA_CACHE = {"users": {}, "positions": {}}
 CACHE_LOCK = threading.Lock()
 
 
@@ -139,6 +146,7 @@ def load_from_gist():
             timeout=20
         )
         if r.status_code != 200:
+            print("Gist load failed: " + str(r.status_code))
             return
         files = r.json().get("files", {})
         if "data.json" in files:
@@ -146,12 +154,13 @@ def load_from_gist():
             try:
                 parsed = json.loads(content)
                 with CACHE_LOCK:
-                    DATA_CACHE["users"] = parsed.get("users", {})
-                    DATA_CACHE["positions"] = parsed.get("positions", {})
-                    DATA_CACHE["alerts"] = parsed.get("alerts", {})
+                    u = parsed.get("users", {})
+                    p = parsed.get("positions", {})
+                    DATA_CACHE["users"] = u if isinstance(u, dict) else {}
+                    DATA_CACHE["positions"] = p if isinstance(p, dict) else {}
                 print("Gist loaded: " + str(len(DATA_CACHE["users"])) + " users")
-            except:
-                pass
+            except Exception as e:
+                print("Parse error: " + str(e))
     except Exception as e:
         print("Load gist error: " + str(e))
 
@@ -196,13 +205,28 @@ def check_user_status(user_id, first_name="Unknown"):
         users[uid] = {"joined": now.isoformat(), "name": first_name}
         save_users(users)
         return "new"
-    joined = datetime.fromisoformat(users[uid]["joined"])
-    days = (now - joined).days
-    if days >= TRIAL_DAYS:
-        return "expired"
-    elif days >= WARNING_DAY:
-        return "warning"
-    return "active"
+    try:
+        joined = datetime.fromisoformat(users[uid]["joined"])
+        days = (now - joined).days
+        if days >= TRIAL_DAYS:
+            return "expired"
+        elif days >= WARNING_DAY:
+            return "warning"
+        return "active"
+    except:
+        return "active"
+
+
+# ============== Positions ==============
+def load_positions():
+    with CACHE_LOCK:
+        return dict(DATA_CACHE.get("positions", {}))
+
+
+def save_positions(positions):
+    with CACHE_LOCK:
+        DATA_CACHE["positions"] = positions
+    save_to_gist()
 
 
 # ============== مصادر البيانات ==============
@@ -228,7 +252,7 @@ def get_okx(symbol, timeframe="daily"):
         df = df[["time", "open", "high", "low", "close", "volume"]].dropna()
         df.set_index("time", inplace=True)
         return df
-    except:
+    except Exception:
         return None
 
 
@@ -253,7 +277,7 @@ def get_bybit(symbol, timeframe="daily"):
         df = df[["time", "open", "high", "low", "close", "volume"]].dropna()
         df.set_index("time", inplace=True)
         return df
-    except:
+    except Exception:
         return None
 
 
@@ -277,7 +301,7 @@ def get_bitget(symbol, timeframe="daily"):
         df = df[["time", "open", "high", "low", "close", "volume"]].dropna()
         df.set_index("time", inplace=True)
         return df
-    except:
+    except Exception:
         return None
 
 
@@ -310,7 +334,7 @@ def get_kraken(symbol, timeframe="daily"):
         df = df[["time", "open", "high", "low", "close", "volume"]].dropna()
         df.set_index("time", inplace=True)
         return df
-    except:
+    except Exception:
         return None
 
 
@@ -332,7 +356,7 @@ def get_coinbase(symbol, timeframe="daily"):
         df = df.sort_values("time").reset_index(drop=True)
         df.set_index("time", inplace=True)
         return df
-    except:
+    except Exception:
         return None
 
 
@@ -350,7 +374,23 @@ def get_coingecko(symbol, timeframe="daily"):
         df = df[["time", "open", "high", "low", "close", "volume"]].dropna()
         df.set_index("time", inplace=True)
         return df
-    except:
+    except Exception:
+        return None
+
+
+def get_pricehub(symbol, timeframe="daily"):
+    try:
+        import pricehub
+        base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
+        df = pricehub.get_klines(base, "USDT", interval=timeframe, limit=200)
+        if df is None or len(df) < 50:
+            return None
+        df = df.rename(columns={"timestamp": "time"})
+        df["time"] = pd.to_datetime(df["time"], unit="ms")
+        df = df[["time", "open", "high", "low", "close", "volume"]].dropna()
+        df.set_index("time", inplace=True)
+        return df
+    except Exception:
         return None
 
 
@@ -361,7 +401,8 @@ def get_data(symbol, timeframe="daily"):
         ("Bitget", get_bitget),
         ("Kraken", get_kraken),
         ("Coinbase", get_coinbase),
-        ("CoinGecko", get_coingecko)
+        ("CoinGecko", get_coingecko),
+        ("pricehub", get_pricehub)
     ]
     for name, func in sources:
         try:
@@ -373,8 +414,9 @@ def get_data(symbol, timeframe="daily"):
                 recent = df["close"].tail(80)
                 if recent.max() > recent.min() * 100:
                     continue
+                print("Data OK: " + name + " (" + timeframe + ")")
                 return df
-        except:
+        except Exception:
             continue
     return None
 # ============== المؤشرات الفنية ==============
@@ -458,7 +500,6 @@ def calc_fibonacci(df, period=100):
     }
 
 
-# ============== Golden / Death Cross ==============
 def detect_cross(df):
     ema50 = calc_ema(df, 50)
     ema200 = calc_ema(df, 200)
@@ -473,7 +514,6 @@ def detect_cross(df):
     return None
 
 
-# ============== RSI Divergence ==============
 def detect_rsi_divergence(df, lookback=50, window=5):
     rsi = calc_rsi(df)
     if len(rsi) < lookback:
@@ -488,11 +528,7 @@ def detect_rsi_divergence(df, lookback=50, window=5):
             price_lows.append((i, p))
             rsi_lows.append(recent_rsi.iloc[i])
     if len(price_lows) >= 2:
-        last_price_low = price_lows[-1][1]
-        prev_price_low = price_lows[-2][1]
-        last_rsi_low = rsi_lows[-1]
-        prev_rsi_low = rsi_lows[-2]
-        if last_price_low < prev_price_low and last_rsi_low > prev_rsi_low:
+        if price_lows[-1][1] < price_lows[-2][1] and rsi_lows[-1] > rsi_lows[-2]:
             return "bullish"
     price_highs = []
     rsi_highs = []
@@ -502,32 +538,25 @@ def detect_rsi_divergence(df, lookback=50, window=5):
             price_highs.append((i, p))
             rsi_highs.append(recent_rsi.iloc[i])
     if len(price_highs) >= 2:
-        last_price_high = price_highs[-1][1]
-        prev_price_high = price_highs[-2][1]
-        last_rsi_high = rsi_highs[-1]
-        prev_rsi_high = rsi_highs[-2]
-        if last_price_high > prev_price_high and last_rsi_high < prev_rsi_high:
+        if price_highs[-1][1] > price_highs[-2][1] and rsi_highs[-1] < rsi_highs[-2]:
             return "bearish"
     return None
 
 
-# ============== نظام التصويت (7 مؤشرات) ==============
 def confluence_vote(df):
     votes = {"buy": 0, "sell": 0, "details": []}
-    ema20 = calc_ema(df, 20)
     ema50 = calc_ema(df, 50)
     ema200 = calc_ema(df, 200)
     price = df["close"].iloc[-1]
 
-    # 1. EMA
-    if price > ema50.iloc[-1] and ema50.iloc[-1] > ema200.iloc[-1]:
-        votes["buy"] += 1
-        votes["details"].append("EMA ✓ Buy")
-    elif price < ema50.iloc[-1] and ema50.iloc[-1] < ema200.iloc[-1]:
-        votes["sell"] += 1
-        votes["details"].append("EMA ✓ Sell")
+    if not pd.isna(ema50.iloc[-1]) and not pd.isna(ema200.iloc[-1]):
+        if price > ema50.iloc[-1] and ema50.iloc[-1] > ema200.iloc[-1]:
+            votes["buy"] += 1
+            votes["details"].append("EMA ✓ Buy")
+        elif price < ema50.iloc[-1] and ema50.iloc[-1] < ema200.iloc[-1]:
+            votes["sell"] += 1
+            votes["details"].append("EMA ✓ Sell")
 
-    # 2. RSI
     rsi = calc_rsi(df).iloc[-1]
     if not pd.isna(rsi):
         if rsi > 50:
@@ -537,9 +566,8 @@ def confluence_vote(df):
             votes["sell"] += 1
             votes["details"].append("RSI ✓ Sell (" + str(round(rsi, 1)) + ")")
 
-    # 3. MACD
     macd_line, signal_line, hist = calc_macd(df)
-    if not pd.isna(macd_line.iloc[-1]):
+    if not pd.isna(macd_line.iloc[-1]) and not pd.isna(signal_line.iloc[-1]):
         if macd_line.iloc[-1] > signal_line.iloc[-1]:
             votes["buy"] += 1
             votes["details"].append("MACD ✓ Buy")
@@ -547,7 +575,6 @@ def confluence_vote(df):
             votes["sell"] += 1
             votes["details"].append("MACD ✓ Sell")
 
-    # 4. ADX
     adx_series, _ = calc_adx_atr(df)
     adx = adx_series.iloc[-1]
     if not pd.isna(adx) and adx > 25:
@@ -558,7 +585,6 @@ def confluence_vote(df):
             votes["sell"] += 1
             votes["details"].append("ADX ✓ Sell (" + str(round(adx, 1)) + ")")
 
-    # 5. Bollinger
     bb_upper, bb_mid, bb_lower = calc_bollinger(df)
     if not pd.isna(bb_mid.iloc[-1]):
         if price > bb_mid.iloc[-1]:
@@ -568,18 +594,16 @@ def confluence_vote(df):
             votes["sell"] += 1
             votes["details"].append("BB ✓ Sell")
 
-    # 6. Volume
     avg_vol = df["volume"].tail(20).mean()
     curr_vol = df["volume"].iloc[-1]
     if avg_vol > 0 and curr_vol > avg_vol * 1.3:
         if macd_line.iloc[-1] > signal_line.iloc[-1]:
             votes["buy"] += 1
-            votes["details"].append("Volume ✓ Buy (" + str(round(curr_vol/avg_vol, 1)) + "x)")
+            votes["details"].append("Volume ✓ Buy")
         else:
             votes["sell"] += 1
-            votes["details"].append("Volume ✓ Sell (" + str(round(curr_vol/avg_vol, 1)) + "x)")
+            votes["details"].append("Volume ✓ Sell")
 
-    # 7. Stochastic RSI
     k, d = calc_stoch_rsi(df)
     if not pd.isna(k.iloc[-1]) and not pd.isna(d.iloc[-1]):
         if k.iloc[-1] > d.iloc[-1] and k.iloc[-1] < 80:
@@ -592,7 +616,6 @@ def confluence_vote(df):
     return votes
 
 
-# ============== الدعم والمقاومة ==============
 def find_support_resistance(df, lookback=80, window=5):
     recent = df.tail(lookback)
     highs = recent["high"].values
@@ -610,7 +633,6 @@ def find_support_resistance(df, lookback=80, window=5):
     return supports, resistances
 
 
-# ============== التقريب الذكي ==============
 def smart_round(price):
     if price >= 1000:
         return round(price, 2)
@@ -628,7 +650,6 @@ def smart_round(price):
         return round(price, 8)
 
 
-# ============== الاتجاه العام ==============
 def check_trend_direction(df):
     try:
         recent_20 = df.tail(20)
@@ -646,7 +667,6 @@ def check_trend_direction(df):
         return "sideways"
 
 
-# ============== درجة الثقة ==============
 def calculate_confidence(df, side, votes, trend):
     score = 0
     buy_votes = votes.get("buy", 0)
@@ -733,7 +753,6 @@ def analyze(symbol, timeframe=None):
 
     ema20_val = ema20.iloc[-1]
     ema50_val = ema50.iloc[-1]
-    ema200_val = ema200.iloc[-1]
     rsi_val = rsi_series.iloc[-1]
     adx_val = adx_series.iloc[-1]
     atr_val = atr_series.iloc[-1]
@@ -977,8 +996,6 @@ def create_chart(result, lang, is_admin):
         print("Resize error: " + str(e))
 
     return filename
-
-
 # ============== معالج الرسائل ==============
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
@@ -1178,27 +1195,31 @@ def pick_best_signal():
             if result["divergence"] == "bearish" and result["side"] == "sell":
                 score += 20
             results.append((score, result))
-        except:
+        except Exception as e:
+            print("Scan error: " + str(e))
             continue
         time.sleep(0.3)
     if not results:
         print("No signals")
         return None
     results.sort(key=lambda x: x[0], reverse=True)
+    print("Best: " + results[0][1]["symbol"])
     return results[0][1]
 
 
 # ============== إرسال التوصية ==============
 def send_signal():
     if not CHANNEL_ID:
+        print("No CHANNEL_ID")
         return
     positions = load_positions()
-    recent = list(positions.keys())[-10:]
-    recent_symbols = [positions[k]["symbol"] for k in recent if k in positions]
+    recent_keys = list(positions.keys())[-10:]
+    recent_symbols = [positions[k]["symbol"] for k in recent_keys if k in positions]
     signal = pick_best_signal()
     if signal is None:
         return
     if signal["symbol"] in recent_symbols:
+        print("Skipped: " + signal["symbol"])
         return
 
     emoji = "🟢" if signal["side"] == "buy" else "🔴"
@@ -1222,6 +1243,7 @@ def send_signal():
 
     try:
         bot.send_message(CHANNEL_ID, txt)
+        print("Sent: " + signal["symbol"])
         sig_id = signal["symbol"] + "_" + str(int(time.time()))
         positions[sig_id] = {
             "symbol": signal["symbol"],
@@ -1245,6 +1267,7 @@ def send_signal():
 def send_price_alerts():
     if not CHANNEL_ID:
         return
+    print("Price alerts...")
     txt = "📊 تنبيهات السوق\n"
     txt += "🕐 " + datetime.now().strftime("%Y-%m-%d %H:%M") + "\n"
     txt += "━━━━━━━━━━━━━━━━\n\n"
@@ -1263,22 +1286,22 @@ def send_price_alerts():
             txt += "💠 " + coin + " — " + str(smart_round(price)) + "\n"
             txt += arrow_24 + " 24h: " + str(round(change_24h, 2)) + "%\n"
             txt += arrow_7d + " 7d: " + str(round(change_7d, 2)) + "%\n\n"
-        except:
+        except Exception:
             continue
         time.sleep(0.3)
     txt += "📣 " + CHANNEL_LINK
     try:
         bot.send_message(CHANNEL_ID, txt)
+        print("Alerts sent")
     except Exception as e:
-        print(str(e))
+        print("Alerts error: " + str(e))
 
 
 # ============== تتبع الأهداف ==============
 def send_target_hit(pos, target_name, target_price):
     if not CHANNEL_ID:
         return
-    symbol_hashtag = "#" + pos["symbol"]
-    txt = symbol_hashtag + "\n\n"
+    txt = "#" + pos["symbol"] + "\n\n"
     txt += "➡️ Entry: " + str(pos["entry"]) + "\n\n"
     for i in range(1, 5):
         k = "tp" + str(i)
@@ -1290,19 +1313,9 @@ def send_target_hit(pos, target_name, target_price):
     txt += "\n🛑 Stop Loss: " + str(pos["sl"])
     try:
         bot.send_message(CHANNEL_ID, txt)
-    except:
-        pass
-
-
-def load_positions():
-    with CACHE_LOCK:
-        return dict(DATA_CACHE.get("positions", {}))
-
-
-def save_positions(positions):
-    with CACHE_LOCK:
-        DATA_CACHE["positions"] = positions
-    save_to_gist()
+        print("Target hit: " + pos["symbol"] + " " + target_name)
+    except Exception as e:
+        print("Target error: " + str(e))
 
 
 def track_targets():
@@ -1310,7 +1323,7 @@ def track_targets():
     if not positions:
         return
     updated = False
-    for sig_id, pos in positions.items():
+    for sig_id, pos in list(positions.items()):
         if pos.get("tp4_hit") or pos.get("sl_hit"):
             continue
         try:
@@ -1325,25 +1338,25 @@ def track_targets():
                     if not pos.get(k) and cp >= pos["tp" + str(i)]:
                         pos[k] = True
                         updated = True
-                        send_target_hit(pos, "Target " + str(i), pos["tp" + str(i)])
+                        send_target_hit(pos, "TP" + str(i), pos["tp" + str(i)])
                         break
                 if not pos.get("sl_hit") and cp <= pos["sl"]:
                     pos["sl_hit"] = True
                     updated = True
-                    send_target_hit(pos, "Stop Loss", pos["sl"])
+                    send_target_hit(pos, "SL", pos["sl"])
             else:
                 for i in range(1, 5):
                     k = "tp" + str(i) + "_hit"
                     if not pos.get(k) and cp <= pos["tp" + str(i)]:
                         pos[k] = True
                         updated = True
-                        send_target_hit(pos, "Target " + str(i), pos["tp" + str(i)])
+                        send_target_hit(pos, "TP" + str(i), pos["tp" + str(i)])
                         break
                 if not pos.get("sl_hit") and cp >= pos["sl"]:
                     pos["sl_hit"] = True
                     updated = True
-                    send_target_hit(pos, "Stop Loss", pos["sl"])
-        except:
+                    send_target_hit(pos, "SL", pos["sl"])
+        except Exception:
             continue
         time.sleep(0.3)
     if updated:
@@ -1379,4 +1392,9 @@ if __name__ == "__main__":
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
     scheduler_thread.start()
     print("Bot started...")
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    bot.infinity_polling(
+        timeout=60,
+        long_polling_timeout=60,
+        none_stop=True,
+        skip_pending=True
+    )
