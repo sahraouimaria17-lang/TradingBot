@@ -1327,7 +1327,7 @@ def detect_delisting_short(symbol):
     # ✅ تخفيف من 4 إلى 2
     if signals < 2:
         return None
-    atr_series, _ = calc_adx_atr(df)
+    _, atr_series = calc_adx_atr(df)
     atr = atr_series.iloc[-1]
     if pd.isna(atr) or atr <= 0:
         atr = price_now * 0.03
