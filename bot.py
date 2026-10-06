@@ -37,17 +37,11 @@ VIP_CHANNEL_LINK = "https://t.me/+gTMJiBiiC_IyZjZk"
 CONTACT_LINK = "@rym_rima1"
 BINANCE_ID = "905142395"
 
-# ============== نظام التحذير ==============
 TRIAL_DAYS = 7
 WARNING_START_DAY = 8
 VIP_FORCE_DAY = 13
 
-# ============== أسعار VIP ==============
-VIP_PRICES = {
-    "1m": 50,
-    "3m": 100,
-    "12m": 300
-}
+VIP_PRICES = {"1m": 50, "3m": 100, "12m": 300}
 
 MAJOR_COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA",
                "DOGE", "DOT", "LINK", "AVAX", "LTC", "TRX"]
@@ -105,7 +99,7 @@ def is_major(symbol):
     return base in MAJOR_COINS
 
 
-# ============== اللغات ==============
+# ============== اللغات (بدون tp4_lbl) ==============
 LANG = {
     "ar": {
         "chart_title": "التحليل الفني: ",
@@ -341,7 +335,7 @@ def get_vip_expiry(user_id):
         return None
 
 
-# ============== مصادر البيانات (8 مصادر) ==============
+# ============== Binance Live Data (المصدر الأول) ==============
 def get_binance_vision(symbol, timeframe="daily"):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     interval = "1d" if timeframe == "daily" else "4h"
@@ -561,7 +555,7 @@ def get_data(symbol, timeframe="daily"):
     return None
 
 
-# ============== Fear & Greed Index ==============
+# ============== Fear & Greed ==============
 FNG_CACHE = {"time": 0, "value": 50, "label": "Neutral"}
 FNG_LOCK = threading.Lock()
 
@@ -583,8 +577,8 @@ def fetch_fear_greed():
                     FNG_CACHE["value"] = value
                     FNG_CACHE["label"] = label
                 return value, label
-    except Exception as e:
-        print("FNG error: " + str(e))
+    except:
+        pass
     return 50, "Neutral"
 
 
@@ -649,7 +643,7 @@ def get_liquidation_signal(symbol):
     elif sr > 60:
         return {"signal": "sell", "reason": "Short liq " + str(round(sr, 1)) + "%"}
     return None
-# ============== المؤشرات الفنية الأساسية ==============
+# ============== المؤشرات الفنية ==============
 def calc_sma(df, period):
     return df["close"].rolling(period).mean()
 
@@ -659,7 +653,6 @@ def calc_ema(df, period):
 
 
 def calc_hma(df, period):
-    """Hull Moving Average"""
     half = int(period / 2)
     sqrt_p = int(np.sqrt(period))
     wma_half = df["close"].rolling(half).apply(lambda x: np.average(x, weights=np.arange(1, half + 1)), raw=True)
@@ -670,7 +663,6 @@ def calc_hma(df, period):
 
 
 def calc_vwma(df, period=20):
-    """Volume Weighted Moving Average"""
     pv = df["close"] * df["volume"]
     return pv.rolling(period).sum() / df["volume"].rolling(period).sum()
 
@@ -809,6 +801,66 @@ def calc_fibonacci(df, period=100):
     return {"38.2": l + d * 0.382, "50.0": l + d * 0.500, "61.8": l + d * 0.618}
 
 
+def detect_cross(df):
+    e50 = calc_ema(df, 50)
+    e200 = calc_ema(df, 200)
+    if len(e50) < 3 or len(e200) < 3:
+        return None
+    pd_ = e50.iloc[-2] - e200.iloc[-2]
+    cd_ = e50.iloc[-1] - e200.iloc[-1]
+    if pd_ <= 0 and cd_ > 0:
+        return "golden"
+    if pd_ >= 0 and cd_ < 0:
+        return "death"
+    return None
+
+
+def detect_rsi_divergence(df, lookback=50, window=5):
+    rsi = calc_rsi(df)
+    if len(rsi) < lookback:
+        return None
+    rp = df["close"].tail(lookback)
+    rr = rsi.tail(lookback)
+    pl = []
+    rl = []
+    for i in range(window, len(rp) - window):
+        p = rp.iloc[i]
+        if p == rp.iloc[i-window:i+window+1].min():
+            pl.append(p)
+            rl.append(rr.iloc[i])
+    if len(pl) >= 2:
+        if pl[-1] < pl[-2] and rl[-1] > rl[-2]:
+            return "bullish"
+    ph = []
+    rh = []
+    for i in range(window, len(rp) - window):
+        p = rp.iloc[i]
+        if p == rp.iloc[i-window:i+window+1].max():
+            ph.append(p)
+            rh.append(rr.iloc[i])
+    if len(ph) >= 2:
+        if ph[-1] > ph[-2] and rh[-1] < rh[-2]:
+            return "bearish"
+    return None
+
+
+def find_support_resistance(df, lookback=80, window=5):
+    recent = df.tail(lookback)
+    highs = recent["high"].values
+    lows = recent["low"].values
+    rl = []
+    sl = []
+    for i in range(window, len(highs) - window):
+        if highs[i] == max(highs[i - window:i + window + 1]):
+            rl.append(highs[i])
+        if lows[i] == min(lows[i - window:i + window + 1]):
+            sl.append(lows[i])
+    price = df["close"].iloc[-1]
+    res = sorted([r for r in rl if r > price])[:3]
+    sup = sorted([s for s in sl if s < price], reverse=True)[:3]
+    return sup, res
+
+
 def smart_round(price):
     if price >= 1000:
         return round(price, 2)
@@ -825,46 +877,51 @@ def smart_round(price):
     return round(price, 8)
 
 
-# ============== نظام TradingView (26 مؤشر) ==============
+def check_trend_direction(df):
+    try:
+        r20 = df.tail(20)
+        p20 = df.tail(40).head(20)
+        hh = r20["high"].max() > p20["high"].max()
+        hl = r20["low"].min() > p20["low"].min()
+        lh = r20["high"].max() < p20["high"].max()
+        ll = r20["low"].min() < p20["low"].min()
+        if hh and hl:
+            return "uptrend"
+        elif lh and ll:
+            return "downtrend"
+        return "sideways"
+    except:
+        return "sideways"
+
+
+# ============== TradingView Technical Rating (26 مؤشر) ==============
 def technical_rating(df):
-    """نظام TradingView - 26 مؤشر"""
     if len(df) < 200:
         return None
-
     price = df["close"].iloc[-1]
     
     # ========== Moving Averages (15) ==========
     ma_signals = []
-    
-    # SMA 10, 20, 30, 50, 100, 200
     for period in [10, 20, 30, 50, 100, 200]:
         sma = calc_sma(df, period).iloc[-1]
         if not pd.isna(sma):
             ma_signals.append(1 if price > sma else -1)
-    
-    # EMA 10, 20, 30, 50, 100, 200
     for period in [10, 20, 30, 50, 100, 200]:
         ema = calc_ema(df, period).iloc[-1]
         if not pd.isna(ema):
             ma_signals.append(1 if price > ema else -1)
-    
-    # Hull MA 9
     try:
         hma = calc_hma(df, 9).iloc[-1]
         if not pd.isna(hma):
             ma_signals.append(1 if price > hma else -1)
     except:
         pass
-    
-    # VWMA 20
     try:
         vwma = calc_vwma(df, 20).iloc[-1]
         if not pd.isna(vwma):
             ma_signals.append(1 if price > vwma else -1)
     except:
         pass
-    
-    # Ichimoku Base Line
     try:
         ichimoku = calc_ichimoku_baseline(df).iloc[-1]
         if not pd.isna(ichimoku):
@@ -877,7 +934,6 @@ def technical_rating(df):
     # ========== Oscillators (11) ==========
     osc_signals = []
     
-    # RSI 14
     rsi = calc_rsi(df, 14).iloc[-1]
     if not pd.isna(rsi):
         if rsi < 30:
@@ -887,7 +943,6 @@ def technical_rating(df):
         else:
             osc_signals.append(0)
     
-    # Stochastic %K (14, 3, 3)
     k, d = calc_stochastic(df)
     if not pd.isna(k.iloc[-1]):
         if k.iloc[-1] < 20:
@@ -897,7 +952,6 @@ def technical_rating(df):
         else:
             osc_signals.append(0)
     
-    # CCI 20
     cci = calc_cci(df, 20).iloc[-1]
     if not pd.isna(cci):
         if cci < -100:
@@ -907,7 +961,6 @@ def technical_rating(df):
         else:
             osc_signals.append(0)
     
-    # ADX 14
     adx, _ = calc_adx_atr(df)
     adx_val = adx.iloc[-1]
     if not pd.isna(adx_val):
@@ -916,7 +969,6 @@ def technical_rating(df):
         else:
             osc_signals.append(0)
     
-    # Awesome Oscillator
     ao = calc_awesome_oscillator(df).iloc[-1]
     if not pd.isna(ao):
         if ao > 0:
@@ -924,7 +976,6 @@ def technical_rating(df):
         else:
             osc_signals.append(-1)
     
-    # Momentum 10
     mom = calc_momentum(df, 10).iloc[-1]
     if not pd.isna(mom):
         if mom > 0:
@@ -932,7 +983,6 @@ def technical_rating(df):
         else:
             osc_signals.append(-1)
     
-    # MACD
     macd_line, signal_line, _ = calc_macd(df)
     if not pd.isna(macd_line.iloc[-1]) and not pd.isna(signal_line.iloc[-1]):
         if macd_line.iloc[-1] > signal_line.iloc[-1]:
@@ -940,7 +990,6 @@ def technical_rating(df):
         else:
             osc_signals.append(-1)
     
-    # StochRSI Fast
     k_sr, d_sr = calc_stoch_rsi(df)
     if not pd.isna(k_sr.iloc[-1]):
         if k_sr.iloc[-1] < 20:
@@ -950,7 +999,6 @@ def technical_rating(df):
         else:
             osc_signals.append(0)
     
-    # Williams %R
     wr = calc_williams_r(df).iloc[-1]
     if not pd.isna(wr):
         if wr < -80:
@@ -960,7 +1008,6 @@ def technical_rating(df):
         else:
             osc_signals.append(0)
     
-    # Bull Bear Power
     try:
         bull, bear = calc_bull_bear_power(df)
         bbp = bull.iloc[-1] + bear.iloc[-1]
@@ -972,7 +1019,6 @@ def technical_rating(df):
     except:
         pass
     
-    # Ultimate Oscillator
     try:
         uo = calc_ultimate_oscillator(df).iloc[-1]
         if not pd.isna(uo):
@@ -987,7 +1033,6 @@ def technical_rating(df):
     
     osc_score = sum(osc_signals) / len(osc_signals) if osc_signals else 0
     
-    # ========== النتيجة النهائية ==========
     total_score = (ma_score + osc_score) / 2
     
     if total_score > 0.5:
@@ -1006,30 +1051,11 @@ def technical_rating(df):
         "score": round(total_score, 3),
         "ma_score": round(ma_score, 3),
         "osc_score": round(osc_score, 3),
-        "ma_count": len(ma_signals),
-        "osc_count": len(osc_signals),
         "ma_buy": sum(1 for s in ma_signals if s == 1),
         "ma_sell": sum(1 for s in ma_signals if s == -1),
         "osc_buy": sum(1 for s in osc_signals if s == 1),
         "osc_sell": sum(1 for s in osc_signals if s == -1)
     }
-
-
-# ============== الفلاتر الخارجية ==============
-def get_external_filters(symbol):
-    """Fear & Greed + Liquidations"""
-    filters = {}
-    
-    # Fear & Greed
-    fng_val, fng_label = fetch_fear_greed()
-    filters["fng"] = fng_val
-    filters["fng_label"] = fng_label
-    
-    # Liquidations
-    liq = get_liquidation_signal(symbol)
-    filters["liq"] = liq
-    
-    return filters
 
 
 # ============== التحليل الرئيسي ==============
@@ -1043,15 +1069,13 @@ def analyze(symbol, timeframe=None):
     if pd.isna(price) or price <= 0:
         return None
 
-    # نظام TradingView
     rating = technical_rating(df)
     if rating is None:
         return None
 
-    # الفلاتر الخارجية
-    filters = get_external_filters(symbol)
+    fng_val, fng_label = fetch_fear_greed()
+    liq = get_liquidation_signal(symbol)
 
-    # المعلومات الأساسية
     rsi_series = calc_rsi(df)
     adx_series, atr_series = calc_adx_atr(df)
     mfi_val = calc_mfi(df).iloc[-1]
@@ -1060,9 +1084,13 @@ def analyze(symbol, timeframe=None):
     ema200 = calc_ema(df, 200)
     bb_upper, bb_mid, bb_lower = calc_bollinger(df)
     fib = calc_fibonacci(df)
+    cross = detect_cross(df)
+    divergence = detect_rsi_divergence(df)
 
     if is_major(symbol):
-        sup, res = [], []
+        sup, res = find_support_resistance(df)
+        sup = [s for s in sup if abs(s - price) / price < 0.15]
+        res = [r for r in res if abs(r - price) / price < 0.15]
     else:
         sup, res = [], []
 
@@ -1072,69 +1100,60 @@ def analyze(symbol, timeframe=None):
 
     liquidity = calc_liquidity(df)
     whale_count = calc_whale_radar(df)
+    trend = check_trend_direction(df)
 
-    # تحديد الإشارة من TradingView rating
     if rating["rating"] in ["strong_buy", "buy"]:
         side = "buy"
     elif rating["rating"] in ["strong_sell", "sell"]:
         side = "sell"
     else:
-        # محايد: نستخدم EMA
         side = "buy" if ema20.iloc[-1] > ema50.iloc[-1] else "sell"
 
-    # فلتر Fear & Greed
-    fng = filters["fng"]
-    if fng > 80 and side == "buy":
-        # طمع شديد، ممكن تصحيح
-        pass  # نحتفظ بالإشارة
-    elif fng < 20 and side == "sell":
-        pass  # خوف شديد، ممكن ارتداد
-
-    # فلتر Liquidations
-    if filters["liq"]:
-        liq_signal = filters["liq"]["signal"]
-        if liq_signal != side:
-            # تعارض، نقلل الثقة
-            pass
-
-    # حساب الثقة
     confidence = min(10, max(1, int((rating["score"] + 1) * 5)))
 
-    # الأهداف
     if side == "buy":
         entry = price
         sl = entry - (atr_val * 1.5)
         tp1 = entry + (atr_val * 0.8)
         tp2 = entry + (atr_val * 1.6)
         tp3 = entry + (atr_val * 2.5)
-        tp4 = entry + (atr_val * 4.0)
     else:
         entry = price
         sl = entry + (atr_val * 1.5)
         tp1 = entry - (atr_val * 0.8)
         tp2 = entry - (atr_val * 1.6)
         tp3 = entry - (atr_val * 2.5)
-        tp4 = entry - (atr_val * 4.0)
+
+    prices = [entry, tp1, tp2, tp3, sl]
+    min_diff = entry * 0.002
+    for i in range(1, len(prices) - 1):
+        if abs(prices[i] - prices[i-1]) < min_diff:
+            if side == "sell":
+                prices[i] = prices[i-1] - min_diff
+            else:
+                prices[i] = prices[i-1] + min_diff
+    entry, tp1, tp2, tp3, sl = prices
 
     return {
         "symbol": symbol, "timeframe": timeframe, "side": side,
-        "confidence": confidence, "rating": rating,
-        "filters": filters,
+        "confidence": confidence, "rating": rating, "trend": trend,
+        "fng": fng_val, "fng_label": fng_label, "liq": liq,
         "entry": smart_round(entry), "sl": smart_round(sl),
         "tp1": smart_round(tp1), "tp2": smart_round(tp2),
-        "tp3": smart_round(tp3), "tp4": smart_round(tp4),
+        "tp3": smart_round(tp3),
         "rsi": rsi_series.iloc[-1], "adx": adx_series.iloc[-1],
         "atr": atr_val, "mfi": mfi_val,
         "liquidity": liquidity, "whale_count": whale_count,
         "df": df, "ema20": ema20, "ema50": ema50, "ema200": ema200,
         "bb_upper": bb_upper, "bb_lower": bb_lower,
         "rsi_series": rsi_series, "fib": fib,
+        "cross": cross, "divergence": divergence,
         "supports": sup, "resistances": res,
         "is_major": is_major(symbol)
     }
 
 
-# ============== الشارت ==============
+# ============== الشارت (Binance Live Data) ==============
 def create_chart(result, lang, is_admin):
     t = LANG[lang]
     df = result["df"]
@@ -1147,80 +1166,101 @@ def create_chart(result, lang, is_admin):
     df_plot["bb_upper"] = result["bb_upper"].tail(80)
     df_plot["bb_lower"] = result["bb_lower"].tail(80)
     df_plot["rsi"] = result["rsi_series"].tail(80)
+
     apds = [
-        mpf.make_addplot(df_plot["ema20"], color="#f39c12", width=1.8, panel=0),
-        mpf.make_addplot(df_plot["ema50"], color="#8e44ad", width=1.8, panel=0),
-        mpf.make_addplot(df_plot["ema200"], color="#e74c3c", width=1.8, panel=0),
-        mpf.make_addplot(df_plot["bb_upper"], color="#5dade2", width=1.0, linestyle="--", panel=0),
-        mpf.make_addplot(df_plot["bb_lower"], color="#5dade2", width=1.0, linestyle="--", panel=0),
-        mpf.make_addplot(df_plot["rsi"], color="#c0392b", width=1.2, panel=1, ylabel="RSI (14)"),
+        mpf.make_addplot(df_plot["ema20"], color="#f39c12", width=2.0, panel=0),
+        mpf.make_addplot(df_plot["ema50"], color="#8e44ad", width=2.0, panel=0),
+        mpf.make_addplot(df_plot["ema200"], color="#e74c3c", width=2.0, panel=0),
+        mpf.make_addplot(df_plot["bb_upper"], color="#5dade2", width=1.2, linestyle="--", panel=0),
+        mpf.make_addplot(df_plot["bb_lower"], color="#5dade2", width=1.2, linestyle="--", panel=0),
+        mpf.make_addplot(df_plot["rsi"], color="#c0392b", width=1.5, panel=1, ylabel="RSI (14)"),
     ]
-    if is_admin:
-        targets = [result["tp1"], result["tp2"], result["tp3"], result["tp4"]]
-    else:
-        targets = [result["tp1"], result["tp2"], result["tp3"]]
+
+    targets = [result["tp1"], result["tp2"], result["tp3"]]
     hv = [result["entry"]] + targets + [result["sl"]]
-    hc = ["#1f4e79"] + ["#27ae60"] * len(targets) + ["#c0392b"]
-    hs = ["-.", "--", "--", "--", "--", "--"][:len(hv)]
-    hw = [2.0] + [1.8] * len(targets) + [2.0]
+    hc = ["#1f4e79"] + ["#27ae60"] * 3 + ["#c0392b"]
+    hs = ["-.", "--", "--", "--", "--"][:len(hv)]
+    hw = [2.5] + [2.0] * 3 + [2.5]
     hlines = dict(hlines=hv, colors=hc, linestyle=hs, linewidths=hw)
+
     safe_name = symbol.replace("/", "_")
     filename = "chart_" + safe_name + ".png"
+
     style = mpf.make_mpf_style(
-        base_mpf_style="default", gridstyle=":", gridcolor="#e8e8e8",
-        facecolor="white", figcolor="white", edgecolor="#cccccc",
-        rc={"font.size": 9, "axes.labelcolor": "black", "xtick.color": "black",
-            "ytick.color": "black", "text.color": "black", "axes.titlecolor": "black"}
+        base_mpf_style="yahoo", gridstyle=":", gridcolor="#e0e0e0",
+        facecolor="white", figcolor="white", edgecolor="#888888",
+        rc={"font.size": 11, "axes.labelcolor": "black", "xtick.color": "black",
+            "ytick.color": "black", "text.color": "black", "axes.titlecolor": "black",
+            "axes.titlesize": 14, "axes.titleweight": "bold"}
     )
+
     fig, axes = mpf.plot(
-        df_plot, type="line", style=style, addplot=apds, hlines=hlines,
-        volume=False, figsize=(14, 9),
+        df_plot, type="candle", style=style, addplot=apds, hlines=hlines,
+        volume=True, volume_panel=2, figsize=(18, 12),
         title=t["chart_title"] + symbol + " (" + timeframe.upper() + ")",
-        returnfig=True, tight_layout=True, panel_ratios=(4, 1)
+        returnfig=True, tight_layout=True, panel_ratios=(5, 1, 1.5),
+        warn_too_much_data=10000
     )
+
     ax = axes[0]
-    ax_rsi = axes[2]
-    ax.lines[0].set_color("#2980b9")
-    ax.lines[0].set_linewidth(2.5)
-    pm = max(result["entry"], result["tp4"], result["sl"])
-    pn = min(result["entry"], result["sl"], result["tp4"])
+    ax_vol = axes[2]
+
+    pm = max([result["entry"], result["tp3"], result["sl"]] + targets)
+    pn = min([result["entry"], result["sl"]] + targets)
     ax.set_ylim(pn * 0.98, pm * 1.02)
+
     ax.text(0.5, 0.5, "Rym Crypto", transform=ax.transAxes,
-            fontsize=60, color="gray", alpha=0.10, ha="center",
+            fontsize=70, color="gray", alpha=0.12, ha="center",
             va="center", fontweight="bold", zorder=0)
+
     lh = [
         mlines.Line2D([], [], color="#2980b9", linewidth=2.5, label=t["price_lbl"]),
-        mlines.Line2D([], [], color="#f39c12", linewidth=1.8, label=t["ema20_lbl"]),
-        mlines.Line2D([], [], color="#8e44ad", linewidth=1.8, label=t["ema50_lbl"]),
-        mlines.Line2D([], [], color="#e74c3c", linewidth=1.8, label=t["ema200_lbl"]),
-        mlines.Line2D([], [], color="#5dade2", linewidth=1.0, linestyle="--", label=t["bb_lbl"]),
-        mlines.Line2D([], [], color="#1f4e79", linewidth=2.0, linestyle="-.", label=t["entry_lbl"] + ": " + str(result["entry"])),
-        mlines.Line2D([], [], color="#27ae60", linewidth=1.8, linestyle="--", label=t["tp1_lbl"] + ": " + str(result["tp1"])),
-        mlines.Line2D([], [], color="#27ae60", linewidth=1.8, linestyle="--", label=t["tp2_lbl"] + ": " + str(result["tp2"])),
+        mlines.Line2D([], [], color="#f39c12", linewidth=2.0, label=t["ema20_lbl"]),
+        mlines.Line2D([], [], color="#8e44ad", linewidth=2.0, label=t["ema50_lbl"]),
+        mlines.Line2D([], [], color="#e74c3c", linewidth=2.0, label=t["ema200_lbl"]),
+        mlines.Line2D([], [], color="#5dade2", linewidth=1.2, linestyle="--", label=t["bb_lbl"]),
+        mlines.Line2D([], [], color="#1f4e79", linewidth=2.5, linestyle="-.", label=t["entry_lbl"] + ": " + str(result["entry"])),
+        mlines.Line2D([], [], color="#27ae60", linewidth=2.0, linestyle="--", label=t["tp1_lbl"] + ": " + str(result["tp1"])),
+        mlines.Line2D([], [], color="#27ae60", linewidth=2.0, linestyle="--", label=t["tp2_lbl"] + ": " + str(result["tp2"])),
+        mlines.Line2D([], [], color="#27ae60", linewidth=2.0, linestyle="--", label=t["tp3_lbl"] + ": " + str(result["tp3"])),
+        mlines.Line2D([], [], color="#c0392b", linewidth=2.5, linestyle="--", label=t["sl_lbl"] + ": " + str(result["sl"])),
     ]
-    if is_admin:
-        lh.append(mlines.Line2D([], [], color="#27ae60", linewidth=1.8, linestyle="--", label=t["tp3_lbl"] + ": " + str(result["tp3"])))
-        lh.append(mlines.Line2D([], [], color="#27ae60", linewidth=1.8, linestyle="--", label=t["tp4_lbl"] + ": " + str(result["tp4"])))
-    lh.append(mlines.Line2D([], [], color="#c0392b", linewidth=2.0, linestyle="--", label=t["sl_lbl"] + ": " + str(result["sl"])))
-    ax.legend(handles=lh, loc="upper left", fontsize=8,
-              facecolor="white", edgecolor="#cccccc", framealpha=0.9)
+    ax.legend(handles=lh, loc="upper left", fontsize=10,
+              facecolor="white", edgecolor="#cccccc", framealpha=0.95)
+
     fib = result["fib"]
     for pv, lbl, clr in [(fib["38.2"], t["fib_382"], "#a569bd"),
                           (fib["50.0"], t["fib_500"], "#c0392b"),
                           (fib["61.8"], t["fib_618"], "#a569bd")]:
         if pv <= 0 or pd.isna(pv):
             continue
-        ax.axhline(y=pv, color=clr, linestyle=":", linewidth=0.8, alpha=0.6)
+        ax.axhline(y=pv, color=clr, linestyle=":", linewidth=1.0, alpha=0.7)
         ax.text(0.01, pv, lbl, transform=ax.get_yaxis_transform(),
-                color=clr, fontsize=8, va="center", ha="left")
-    ax_rsi.axhline(y=70, color="#c0392b", linestyle="--", linewidth=0.8, alpha=0.5)
-    ax_rsi.axhline(y=30, color="#27ae60", linestyle="--", linewidth=0.8, alpha=0.5)
-    fig.savefig(filename, dpi=100, facecolor="white")
+                color=clr, fontsize=9, va="center", ha="left")
+
+    if result.get("is_major"):
+        for s in result["supports"][:2]:
+            ax.axhline(y=s, color="#27ae60", linestyle="-", linewidth=1.0, alpha=0.6)
+            ax.text(0.99, s, t["sup_lbl"] + " " + str(smart_round(s)),
+                    transform=ax.get_yaxis_transform(), color="#27ae60",
+                    fontsize=9, va="center", ha="right")
+        for r in result["resistances"][:2]:
+            ax.axhline(y=r, color="#c0392b", linestyle="-", linewidth=1.0, alpha=0.6)
+            ax.text(0.99, r, t["res_lbl"] + " " + str(smart_round(r)),
+                    transform=ax.get_yaxis_transform(), color="#c0392b",
+                    fontsize=9, va="center", ha="right")
+
+    ax_rsi = axes[3]
+    ax_rsi.axhline(y=70, color="#c0392b", linestyle="--", linewidth=1.0, alpha=0.6)
+    ax_rsi.axhline(y=30, color="#27ae60", linestyle="--", linewidth=1.0, alpha=0.6)
+
+    fig.savefig(filename, dpi=110, facecolor="white", bbox_inches="tight", pad_inches=0.3)
     plt.close(fig)
+
     try:
         img = Image.open(filename)
-        if img.width > 1920 or img.height > 1080:
-            img.thumbnail((1920, 1080), Image.LANCZOS)
+        if img.width > 2000 or img.height > 1500:
+            img.thumbnail((2000, 1500), Image.LANCZOS)
             img.save(filename)
     except:
         pass
@@ -1507,7 +1547,6 @@ def handle_message(message):
                     df = get_data(symbol, tf)
                     if df is None or len(df) < 100:
                         continue
-                    # detect bottom - simplified
                     price = df["close"].iloc[-1]
                     rsi = calc_rsi(df).iloc[-1]
                     if pd.isna(rsi):
@@ -1683,7 +1722,7 @@ def handle_message(message):
         tf_label = "Daily" if result["timeframe"] == "daily" else "4H"
         rating_key = result["rating"]["rating"]
         rating_txt = t.get(rating_key, "Neutral")
-        
+
         txt = t["report"] + " - " + symbol + "\n"
         txt += t["frame"] + ": " + tf_label + "\n"
         txt += "📊 " + rating_txt + " (" + str(result["confidence"]) + "/10)\n\n"
@@ -1709,26 +1748,33 @@ def handle_message(message):
             txt += t["atr"] + ": " + str(round(result["atr"], 6)) + "\n"
             if not pd.isna(result["mfi"]):
                 txt += t["mfi"] + ": " + str(round(result["mfi"], 2)) + "\n"
-            
-            # نظام TradingView
+
             r = result["rating"]
             txt += "\n📊 TradingView (26):\n"
             txt += "• MA: " + str(r["ma_buy"]) + " Buy / " + str(r["ma_sell"]) + " Sell\n"
             txt += "• OSC: " + str(r["osc_buy"]) + " Buy / " + str(r["osc_sell"]) + " Sell\n"
             txt += "• Score: " + str(r["score"]) + "\n"
-            
-            # الفلاتر
-            f = result["filters"]
+
             txt += "\n🌐 Filters:\n"
-            txt += "• F&G: " + str(f["fng"]) + " (" + f["fng_label"] + ")\n"
-            if f["liq"]:
-                txt += "• Liq: " + f["liq"]["reason"] + "\n"
-            
+            txt += "• F&G: " + str(result["fng"]) + " (" + result["fng_label"] + ")\n"
+            if result["liq"]:
+                txt += "• Liq: " + result["liq"]["reason"] + "\n"
+
+            if result["cross"]:
+                txt += "🔀 " + ("🌟 Golden Cross" if result["cross"] == "golden" else "💀 Death Cross") + "\n"
+            if result["divergence"]:
+                txt += "🔀 Divergence: " + ("📈 Bullish" if result["divergence"] == "bullish" else "📉 Bearish") + "\n"
+
             txt += "\n━━━━━━━━━━━━━━━━\n"
             txt += "🔒 ADMIN\n" if is_admin else "💎 VIP\n"
             txt += "━━━━━━━━━━━━━━━━\n"
             txt += "💧 Liq: " + "{:,.0f}".format(result["liquidity"]) + "\n"
             txt += "🐋 Whales: " + str(result["whale_count"]) + "\n"
+            if result.get("is_major"):
+                if result["supports"]:
+                    txt += "🟢 Support: " + str(smart_round(result["supports"][0])) + "\n"
+                if result["resistances"]:
+                    txt += "🔴 Resistance: " + str(smart_round(result["resistances"][0])) + "\n"
 
         markup = types.InlineKeyboardMarkup()
         btn = types.InlineKeyboardButton(text="📣 Free Crypto Signals", url=CHANNEL_LINK)
@@ -1751,7 +1797,6 @@ def handle_message(message):
         if not sent:
             bot.send_message(message.chat.id, txt)
 
-        # نسخة قابلة للنسخ (VIP + Admin فقط)
         if show_full:
             copy_txt = make_copy_version(result)
             bot.send_message(message.chat.id, copy_txt)
