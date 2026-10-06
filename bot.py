@@ -13,12 +13,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import schedule
-from datetime import datetime
+from datetime import datetime, timedelta
 from PIL import Image
 
 # ============== الإعدادات الأساسية ==============
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "").strip()
+VIP_CHANNEL_ID = os.environ.get("VIP_CHANNEL_ID", "").strip()
 ADMIN_ID = 7002618091
 GIST_ID = os.environ.get("GIST_ID", "").strip()
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
@@ -32,24 +33,33 @@ except Exception as e:
     print("Webhook error: " + str(e))
 
 CHANNEL_LINK = "https://t.me/rym_rima16"
+VIP_CHANNEL_LINK = "https://t.me/+gTMJiBiiC_IyZjZk"
+BINANCE_ID = "905142395"
 
-TRIAL_DAYS = 15
-WARNING_DAY = 7
+# ============== نظام التحذير ==============
+TRIAL_DAYS = 7
+WARNING_START_DAY = 8
+WARNING_END_DAY = 12
+VIP_FORCE_DAY = 13
+
+# ============== أسعار VIP ==============
+VIP_PRICES = {
+    "1m": 50,
+    "3m": 100,
+    "12m": 300
+}
 
 MAJOR_COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA",
                "DOGE", "DOT", "LINK", "AVAX", "LTC", "TRX"]
 
-# قائمة احتياطية
 FALLBACK_COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT",
                   "LINK", "AVAX", "LTC", "TRX", "ATOM", "UNI", "XLM"]
 
-# Cache لعملات Binance
 BINANCE_SYMBOLS_CACHE = {"time": 0, "gainers": [], "losers": []}
 SYMBOLS_LOCK = threading.Lock()
 
 
 def get_top_gainers_losers(limit=50):
-    """يجيب أفضل 50 صاعدة + 50 هابطة من Binance"""
     with SYMBOLS_LOCK:
         if time.time() - BINANCE_SYMBOLS_CACHE["time"] < 600:
             return BINANCE_SYMBOLS_CACHE["gainers"], BINANCE_SYMBOLS_CACHE["losers"]
@@ -63,16 +73,10 @@ def get_top_gainers_losers(limit=50):
                 try:
                     change = float(t.get("priceChangePercent", 0))
                     volume = float(t.get("quoteVolume", 0))
-                    # فلتر: سيولة عالية فقط (أكثر من 1M USDT)
                     if volume > 1000000:
                         base = sym.replace("USDT", "")
-                        # تجاهل العملات الرقمية المستقرة
                         if base not in ["USDC", "BUSD", "TUSD", "USDP", "DAI"]:
-                            usdt_pairs.append({
-                                "symbol": base,
-                                "change": change,
-                                "volume": volume
-                            })
+                            usdt_pairs.append({"symbol": base, "change": change})
                 except:
                     continue
         usdt_pairs.sort(key=lambda x: x["change"], reverse=True)
@@ -83,7 +87,6 @@ def get_top_gainers_losers(limit=50):
             BINANCE_SYMBOLS_CACHE["time"] = time.time()
             BINANCE_SYMBOLS_CACHE["gainers"] = gainers
             BINANCE_SYMBOLS_CACHE["losers"] = losers
-        print("Top gainers: " + str(len(gainers)) + ", Losers: " + str(len(losers)))
         return gainers, losers
     except Exception as e:
         print("Get symbols error: " + str(e))
@@ -183,7 +186,7 @@ def detect_lang(text):
 
 
 # ============== Gist Storage ==============
-DATA_CACHE = {"users": {}, "positions": {}, "delistings": {}}
+DATA_CACHE = {"users": {}, "positions": {}, "delistings": {}, "vip": {}}
 CACHE_LOCK = threading.Lock()
 
 
@@ -205,9 +208,11 @@ def load_from_gist():
                     u = parsed.get("users", {})
                     p = parsed.get("positions", {})
                     d = parsed.get("delistings", {})
+                    v = parsed.get("vip", {})
                     DATA_CACHE["users"] = u if isinstance(u, dict) else {}
                     DATA_CACHE["positions"] = p if isinstance(p, dict) else {}
                     DATA_CACHE["delistings"] = d if isinstance(d, dict) else {}
+                    DATA_CACHE["vip"] = v if isinstance(v, dict) else {}
             except:
                 pass
     except Exception as e:
@@ -232,6 +237,7 @@ def save_to_gist():
         print("Save gist error: " + str(e))
 
 
+# ============== Users ==============
 def load_users():
     with CACHE_LOCK:
         return dict(DATA_CACHE.get("users", {}))
@@ -241,6 +247,29 @@ def save_users(users):
     with CACHE_LOCK:
         DATA_CACHE["users"] = users
     save_to_gist()
+
+
+def get_user_days(user_id):
+    users = load_users()
+    uid = str(user_id)
+    if uid not in users:
+        return 0
+    try:
+        joined = datetime.fromisoformat(users[uid]["joined"])
+        return (datetime.now() - joined).days
+    except:
+        return 0
+
+
+def register_user(user_id, first_name="Unknown"):
+    users = load_users()
+    uid = str(user_id)
+    now = datetime.now()
+    if uid not in users:
+        users[uid] = {"joined": now.isoformat(), "name": first_name}
+        save_users(users)
+        return "new"
+    return "existing"
 
 
 def check_user_status(user_id, first_name="Unknown"):
@@ -254,15 +283,16 @@ def check_user_status(user_id, first_name="Unknown"):
     try:
         joined = datetime.fromisoformat(users[uid]["joined"])
         days = (now - joined).days
-        if days >= TRIAL_DAYS:
+        if days >= VIP_FORCE_DAY:
             return "expired"
-        elif days >= WARNING_DAY:
+        elif days >= WARNING_START_DAY:
             return "warning"
         return "active"
     except:
         return "active"
 
 
+# ============== Positions ==============
 def load_positions():
     with CACHE_LOCK:
         return dict(DATA_CACHE.get("positions", {}))
@@ -285,7 +315,42 @@ def save_delistings(delistings):
     save_to_gist()
 
 
-# ============== مصادر البيانات (8 مصادر) ==============
+# ============== VIP Storage ==============
+def load_vip():
+    with CACHE_LOCK:
+        return dict(DATA_CACHE.get("vip", {}))
+
+
+def save_vip(vip):
+    with CACHE_LOCK:
+        DATA_CACHE["vip"] = vip
+    save_to_gist()
+
+
+def is_vip(user_id):
+    vip = load_vip()
+    uid = str(user_id)
+    if uid not in vip:
+        return False
+    try:
+        exp = datetime.fromisoformat(vip[uid]["expires"])
+        return datetime.now() < exp
+    except:
+        return False
+
+
+def get_vip_expiry(user_id):
+    vip = load_vip()
+    uid = str(user_id)
+    if uid not in vip:
+        return None
+    try:
+        return datetime.fromisoformat(vip[uid]["expires"])
+    except:
+        return None
+
+
+# ============== مصادر البيانات ==============
 def get_binance_vision(symbol, timeframe="daily"):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     interval = "1d" if timeframe == "daily" else "4h"
@@ -457,7 +522,6 @@ def get_coingecko(symbol, timeframe="daily"):
 
 
 def get_mexc(symbol, timeframe="daily"):
-    """MEXC - مصدر أخير"""
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     interval = "1d" if timeframe == "daily" else "4h"
     try:
@@ -591,11 +655,9 @@ def fetch_news(symbol):
         if not articles:
             return None
         pos_words = ["surge", "rally", "bullish", "gain", "pump", "high",
-                     "record", "breakout", "soar", "adoption", "partnership",
-                     "listing", "launch", "upgrade", "buy"]
+                     "record", "breakout", "soar", "adoption", "partnership"]
         neg_words = ["crash", "dump", "bearish", "drop", "fall", "plunge",
-                     "hack", "scam", "ban", "delist", "low", "warning",
-                     "loss", "decline", "sell"]
+                     "hack", "scam", "ban", "delist", "low", "warning"]
         p = 0
         n = 0
         for a in articles:
@@ -873,6 +935,8 @@ def check_trend_direction(df):
         return "sideways"
     except:
         return "sideways"
+
+
 # ============== التصويت (13 مؤشر) ==============
 def confluence_vote(df, symbol=None):
     votes = {"buy": 0, "sell": 0, "details": []}
@@ -880,7 +944,6 @@ def confluence_vote(df, symbol=None):
     ema200 = calc_ema(df, 200)
     price = df["close"].iloc[-1]
 
-    # 1. EMA
     if not pd.isna(ema50.iloc[-1]) and not pd.isna(ema200.iloc[-1]):
         if price > ema50.iloc[-1] and ema50.iloc[-1] > ema200.iloc[-1]:
             votes["buy"] += 1
@@ -889,7 +952,6 @@ def confluence_vote(df, symbol=None):
             votes["sell"] += 1
             votes["details"].append("EMA ✓ Sell")
 
-    # 2. RSI
     rsi = calc_rsi(df).iloc[-1]
     if not pd.isna(rsi):
         if 40 < rsi < 70:
@@ -905,7 +967,6 @@ def confluence_vote(df, symbol=None):
             votes["buy"] += 1
             votes["details"].append("RSI ✗ Oversold (" + str(round(rsi, 1)) + ")")
 
-    # 3. MACD
     macd_line, signal_line, hist = calc_macd(df)
     if not pd.isna(macd_line.iloc[-1]) and not pd.isna(signal_line.iloc[-1]):
         if macd_line.iloc[-1] > signal_line.iloc[-1]:
@@ -915,7 +976,6 @@ def confluence_vote(df, symbol=None):
             votes["sell"] += 1
             votes["details"].append("MACD ✓ Sell")
 
-    # 4. ADX
     adx_series, _ = calc_adx_atr(df)
     adx = adx_series.iloc[-1]
     if not pd.isna(adx) and adx > 25:
@@ -926,7 +986,6 @@ def confluence_vote(df, symbol=None):
             votes["sell"] += 1
             votes["details"].append("ADX ✓ Sell (" + str(round(adx, 1)) + ")")
 
-    # 5. BB
     bb_upper, bb_mid, bb_lower = calc_bollinger(df)
     if not pd.isna(bb_mid.iloc[-1]):
         if price > bb_mid.iloc[-1]:
@@ -936,7 +995,6 @@ def confluence_vote(df, symbol=None):
             votes["sell"] += 1
             votes["details"].append("BB ✓ Sell")
 
-    # 6. Volume
     avg_vol = df["volume"].tail(20).mean()
     curr_vol = df["volume"].iloc[-1]
     if avg_vol > 0 and curr_vol > avg_vol * 1.3:
@@ -947,7 +1005,6 @@ def confluence_vote(df, symbol=None):
             votes["sell"] += 1
             votes["details"].append("Volume ✓ Sell")
 
-    # 7. StochRSI
     k, d = calc_stoch_rsi(df)
     if not pd.isna(k.iloc[-1]) and not pd.isna(d.iloc[-1]):
         if k.iloc[-1] > d.iloc[-1] and k.iloc[-1] < 80:
@@ -957,7 +1014,6 @@ def confluence_vote(df, symbol=None):
             votes["sell"] += 1
             votes["details"].append("StochRSI ✓ Sell")
 
-    # 8. CCI
     cci = calc_cci(df).iloc[-1]
     if not pd.isna(cci):
         if cci > 100:
@@ -973,7 +1029,6 @@ def confluence_vote(df, symbol=None):
             votes["sell"] += 1
             votes["details"].append("CCI ✓ Sell (" + str(round(cci, 1)) + ")")
 
-    # 9. SAR
     psar = calc_parabolic_sar(df)
     if len(psar) > 0 and not pd.isna(psar.iloc[-1]):
         if psar.iloc[-1] < price:
@@ -983,7 +1038,6 @@ def confluence_vote(df, symbol=None):
             votes["sell"] += 1
             votes["details"].append("SAR ✓ Sell")
 
-    # 10. MFI
     mfi = calc_mfi(df).iloc[-1]
     if not pd.isna(mfi):
         if mfi > 80:
@@ -999,7 +1053,6 @@ def confluence_vote(df, symbol=None):
             votes["sell"] += 1
             votes["details"].append("MFI ✓ Sell (" + str(round(mfi, 1)) + ")")
 
-    # 11. Ichimoku
     try:
         ts, ks, sa, sb, ch = calc_ichimoku(df)
         if not pd.isna(sa.iloc[-1]) and not pd.isna(sb.iloc[-1]):
@@ -1014,7 +1067,6 @@ def confluence_vote(df, symbol=None):
     except:
         pass
 
-    # 12. Liquidations
     if symbol:
         liq = get_liquidation_signal(symbol)
         if liq:
@@ -1025,7 +1077,6 @@ def confluence_vote(df, symbol=None):
                 votes["sell"] += 1
                 votes["details"].append("Liq ✓ " + liq["reason"])
 
-    # 13. News Sentiment
     if symbol:
         news = get_news_signal(symbol)
         if news:
@@ -1081,37 +1132,33 @@ def calculate_confidence(df, side, votes, trend):
     return max(0, min(10, score))
 
 
-# ============== رادار عملات القاع (مع فلتر التناقض) ==============
+# ============== رادار عملات القاع ==============
 def detect_bottom_coin(df):
     if len(df) < 100:
         return None
     price = df["close"].iloc[-1]
     rsi = calc_rsi(df).iloc[-1]
-    
-    # ✅ فلتر التناقض 1: RSI عالي = ليس Bottom
+
     if not pd.isna(rsi) and rsi > 60:
         return None
-    
-    # ✅ فلتر التناقض 2: EMA20 > EMA50 والزخم صاعد = ليس Bottom
+
     ema20 = calc_ema(df, 20)
     ema50 = calc_ema(df, 50)
     if not pd.isna(ema20.iloc[-1]) and not pd.isna(ema50.iloc[-1]):
         if ema20.iloc[-1] > ema50.iloc[-1]:
-            # صاعد، لكن ممكن يكون تصحيح عميق
             if len(df) >= 30:
                 p30 = df["close"].iloc[-30]
                 if price > p30 * 1.05:
                     return None
-    
-    # ✅ فلتر التناقض 3: MACD صاعد قوي = ليس Bottom
+
     macd_line, signal_line, _ = calc_macd(df)
     if not pd.isna(macd_line.iloc[-1]) and not pd.isna(signal_line.iloc[-1]):
         if macd_line.iloc[-1] > signal_line.iloc[-1]:
             if not pd.isna(rsi) and rsi > 45:
                 return None
-    
+
     divergence = detect_rsi_divergence(df)
-    
+
     if len(df) >= 60:
         h60 = df["high"].tail(60).max()
         d60 = ((price - h60) / h60) * 100
@@ -1122,11 +1169,11 @@ def detect_bottom_coin(df):
         d30 = ((price - h30) / h30) * 100
     else:
         d30 = 0
-    
+
     liq = calc_liquidity(df)
     score = 0
     reasons = []
-    
+
     if not pd.isna(rsi):
         if rsi < 30:
             score += 3
@@ -1137,11 +1184,11 @@ def detect_bottom_coin(df):
         elif rsi < 50:
             score += 1
             reasons.append("RSI ضعيف (" + str(round(rsi, 1)) + ")")
-    
+
     if divergence == "bullish":
         score += 3
         reasons.append("Divergence إيجابي ✅")
-    
+
     if d60 < -80:
         score += 4
         reasons.append("هبوط " + str(round(d60, 1)) + "% خلال شهرين")
@@ -1151,20 +1198,20 @@ def detect_bottom_coin(df):
     elif d60 < -40:
         score += 2
         reasons.append("هبوط " + str(round(d60, 1)) + "% خلال شهرين")
-    
+
     if d30 < -50:
         score += 2
         reasons.append("هبوط " + str(round(d30, 1)) + "% خلال شهر")
     elif d30 < -30:
         score += 1
         reasons.append("هبوط " + str(round(d30, 1)) + "% خلال شهر")
-    
+
     if liq > 1000000:
         score += 2
         reasons.append("سيولة عالية")
     elif liq > 200000:
         score += 1
-    
+
     if score >= 3:
         return {
             "score": score,
@@ -1295,18 +1342,36 @@ def detect_delisting_short(symbol):
     if df is None or len(df) < 100:
         return None
     price_now = df["close"].iloc[-1]
+
+    ema20 = calc_ema(df, 20)
+    ema50 = calc_ema(df, 50)
+    if not pd.isna(ema20.iloc[-1]) and not pd.isna(ema50.iloc[-1]):
+        if ema20.iloc[-1] > ema50.iloc[-1] and price_now > ema20.iloc[-1]:
+            return None
+
+    rsi_series = calc_rsi(df)
+    rsi_now = rsi_series.iloc[-1]
+    rsi_prev = rsi_series.iloc[-2]
+    if not pd.isna(rsi_now) and not pd.isna(rsi_prev):
+        if rsi_now > rsi_prev:
+            return None
+
+    avg_vol = df["volume"].tail(24).mean()
+    curr_vol = df["volume"].iloc[-1]
+    if avg_vol > 0 and curr_vol > avg_vol * 2:
+        return None
+
     p24 = df["close"].iloc[-6] if len(df) > 6 else price_now
     p7d = df["close"].iloc[-42] if len(df) > 42 else price_now
     pump_24h = ((price_now - p24) / p24) * 100 if p24 > 0 else 0
     drop_7d = ((price_now - p7d) / p7d) * 100 if p7d > 0 else 0
-    rsi = calc_rsi(df).iloc[-1]
-    avg_vol = df["volume"].tail(24).mean()
-    curr_vol = df["volume"].tail(3).mean()
+    rsi = rsi_now
     vol_spike = curr_vol > avg_vol * 2.5 if avg_vol > 0 else False
     last = df.iloc[-1]
     body = abs(last["close"] - last["open"])
     upper_wick = last["high"] - max(last["close"], last["open"])
     shooting = upper_wick > body * 2 if body > 0 else False
+
     signals = 0
     reasons = []
     if pump_24h > 25:
@@ -1324,13 +1389,15 @@ def detect_delisting_short(symbol):
     if shooting:
         signals += 2
         reasons.append("⭐ شمعة انعكاسية")
-    # ✅ تخفيف من 4 إلى 2
+
     if signals < 4:
         return None
+
     _, atr_series = calc_adx_atr(df)
     atr = atr_series.iloc[-1]
     if pd.isna(atr) or atr <= 0:
         atr = price_now * 0.03
+
     return {
         "symbol": symbol,
         "entry": price_now,
@@ -1344,6 +1411,8 @@ def detect_delisting_short(symbol):
         "rsi": rsi if not pd.isna(rsi) else 0,
         "pump_24h": round(pump_24h, 1)
     }
+
+
 # ============== التحليل الرئيسي ==============
 def analyze(symbol, timeframe=None):
     if timeframe is None:
@@ -1538,8 +1607,6 @@ def create_chart(result, lang, is_admin):
     except:
         pass
     return filename
-
-
 # ============== معالج الرسائل ==============
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
@@ -1549,19 +1616,25 @@ def handle_message(message):
     user_id = message.from_user.id
     is_admin = (user_id == ADMIN_ID)
 
+    # ============ /stats ============
     if text.lower() == "/stats" and is_admin:
         try:
             users = load_users()
-            total = len(users)
+            vip = load_vip()
             now = datetime.now()
             wa = now.timestamp() - (7 * 24 * 60 * 60)
             recent = sum(1 for u in users.values() if "joined" in u and datetime.fromisoformat(u["joined"]).timestamp() > wa)
-            stats = "📊 إحصائيات\n━━━━━━━━━━━━━━━━\n👥 إجمالي: " + str(total) + "\n🆕 آخر 7 أيام: " + str(recent)
+            active_vip = sum(1 for v in vip.values() if datetime.fromisoformat(v["expires"]) > now)
+            stats = "📊 إحصائيات\n━━━━━━━━━━━━━━━━\n"
+            stats += "👥 إجمالي: " + str(len(users)) + "\n"
+            stats += "🆕 آخر 7 أيام: " + str(recent) + "\n"
+            stats += "💎 VIP نشط: " + str(active_vip) + "\n"
             bot.reply_to(message, stats)
         except Exception as e:
             print("Stats error: " + str(e))
         return
 
+    # ============ /users ============
     if text.lower() == "/users" and is_admin:
         try:
             users = load_users()
@@ -1585,12 +1658,16 @@ def handle_message(message):
             print("Users error: " + str(e))
         return
 
+    # ============ /dashboard ============
     if text.lower() == "/dashboard" and is_admin:
         try:
             users = load_users()
             positions = load_positions()
+            vip = load_vip()
+            now = datetime.now()
             total_users = len(users)
             total_positions = len(positions)
+            active_vip = sum(1 for v in vip.values() if datetime.fromisoformat(v["expires"]) > now)
             wins = 0
             losses = 0
             for p in positions.values():
@@ -1602,7 +1679,8 @@ def handle_message(message):
             txt = "📊 لوحة الإحصائيات\n"
             txt += "━━━━━━━━━━━━━━━━\n\n"
             txt += "👥 المستخدمون\n"
-            txt += "   الإجمالي: " + str(total_users) + "\n\n"
+            txt += "   الإجمالي: " + str(total_users) + "\n"
+            txt += "   VIP نشط: " + str(active_vip) + "\n\n"
             txt += "📈 الصفقات\n"
             txt += "   الإجمالي: " + str(total_positions) + "\n"
             txt += "   ✅ رابحة: " + str(wins) + "\n"
@@ -1613,6 +1691,156 @@ def handle_message(message):
             print("Dashboard error: " + str(e))
         return
 
+    # ============ /vip — عرض الأسعار ============
+    if text.lower() == "/vip":
+        txt = "💎 *اشتراك VIP*\n"
+        txt += "━━━━━━━━━━━━━━━━\n\n"
+        txt += "📌 *المزايا:*\n"
+        txt += "• 4 أهداف لكل توصية\n"
+        txt += "• إشارات شورت حصرية\n"
+        txt += "• رادار الانفجارات\n"
+        txt += "• عملات القاع\n"
+        txt += "• تحذيرات فيبوناتشي\n"
+        txt += "• Golden/Death Cross\n"
+        txt += "• تحليل أعمق (ADX + CCI + MFI)\n"
+        txt += "• دخول قناة VIP الخاصة\n\n"
+        txt += "💰 *الأسعار:*\n"
+        txt += "• شهر: *50 USDT*\n"
+        txt += "• 3 أشهر: *100 USDT*\n"
+        txt += "• سنوي: *300 USDT*\n\n"
+        txt += "📤 *طريقة الدفع:*\n"
+        txt += "1. افتح Binance\n"
+        txt += "2. اذهب إلى Pay\n"
+        txt += "3. أرسل USDT إلى:\n"
+        txt += "   `Binance ID: " + BINANCE_ID + "`\n\n"
+        txt += "4. بعد التحويل، أرسل صورة الإيصال إلى:\n"
+        txt += "   @rym_rima16\n\n"
+        txt += "⏳ سيتم تفعيل حسابك خلال 30 دقيقة\n\n"
+        txt += "📌 *للحصول على ID الخاص بك:* /myid"
+        try:
+            bot.reply_to(message, txt, parse_mode="Markdown")
+        except:
+            bot.reply_to(message, txt)
+        return
+
+    # ============ /myid ============
+    if text.lower() in ["/myid", "/id", "ايدي", "معرفي"]:
+        uid = str(message.from_user.id)
+        name = message.from_user.first_name or "Unknown"
+        is_v = is_vip(message.from_user.id)
+        exp = get_vip_expiry(message.from_user.id)
+        days = get_user_days(message.from_user.id)
+        txt = "🆔 *معلومات حسابك*\n"
+        txt += "━━━━━━━━━━━━━━━━\n"
+        txt += "👤 الاسم: " + name + "\n"
+        txt += "🆔 الـ ID: `" + uid + "`\n"
+        txt += "📅 أيام الاستخدام: " + str(days) + "\n"
+        txt += "💎 VIP: " + ("✅ مفعّل" if is_v else "❌ غير مفعّل") + "\n"
+        if exp and is_v:
+            txt += "📅 ينتهي: " + exp.strftime("%Y-%m-%d") + "\n"
+        txt += "\n💡 احتفظ بالـ ID وأرسله للأدمن للاشتراك."
+        try:
+            bot.reply_to(message, txt, parse_mode="Markdown")
+        except:
+            bot.reply_to(message, txt)
+        return
+
+    # ============ /addvip ============
+    if text.lower().startswith("/addvip") and is_admin:
+        try:
+            parts = text.split()
+            if len(parts) < 3:
+                bot.reply_to(message, "📌 الاستخدام: `/addvip <ID> <days>`\nمثال: `/addvip 123456789 30`", parse_mode="Markdown")
+                return
+            target_id = parts[1].strip()
+            days = int(parts[2])
+            vip = load_vip()
+            exp = datetime.now() + timedelta(days=days)
+            vip[target_id] = {
+                "expires": exp.isoformat(),
+                "added_at": datetime.now().isoformat(),
+                "added_by": str(message.from_user.id)
+            }
+            save_vip(vip)
+            txt = "✅ *تم تفعيل VIP*\n"
+            txt += "━━━━━━━━━━━━━━━━\n"
+            txt += "🆔 المستخدم: `" + target_id + "`\n"
+            txt += "📅 المدة: " + str(days) + " يوم\n"
+            txt += "⏰ ينتهي: " + exp.strftime("%Y-%m-%d")
+            bot.reply_to(message, txt, parse_mode="Markdown")
+            # إرسال رسالة ترحيب للمستخدم
+            welcome = "🎉 *مرحباً بك في RYMA VIP!* 🎉\n"
+            welcome += "━━━━━━━━━━━━━━━━\n\n"
+            welcome += "✨ *تم تفعيل اشتراكك بنجاح!*\n\n"
+            welcome += "🎁 *مزاياك الآن:*\n"
+            welcome += "━━━━━━━━━━━━━━━━\n"
+            welcome += "💎 4 أهداف لكل توصية\n"
+            welcome += "🔴 إشارات شورت حصرية\n"
+            welcome += "⚡ رادار الانفجارات\n"
+            welcome += "💎 عملات القاع\n"
+            welcome += "📊 تحليل أعمق\n"
+            welcome += "🔔 تنبيهات فيبوناتشي\n"
+            welcome += "🌟 Golden/Death Cross\n"
+            welcome += "📢 قناة VIP الخاصة\n\n"
+            welcome += "🔗 *رابط قناة VIP:*\n"
+            welcome += VIP_CHANNEL_LINK + "\n\n"
+            welcome += "━━━━━━━━━━━━━━━━\n"
+            welcome += "📅 اشتراكك ينتهي: *" + exp.strftime("%Y-%m-%d") + "*\n"
+            welcome += "🎯 استمتع بالخدمة! 🚀"
+            try:
+                bot.send_message(int(target_id), welcome, parse_mode="Markdown")
+            except:
+                pass
+        except Exception as e:
+            bot.reply_to(message, "❌ خطأ: " + str(e)[:100])
+        return
+
+    # ============ /removevip ============
+    if text.lower().startswith("/removevip") and is_admin:
+        try:
+            parts = text.split()
+            if len(parts) < 2:
+                bot.reply_to(message, "📌 الاستخدام: `/removevip <ID>`", parse_mode="Markdown")
+                return
+            target_id = parts[1].strip()
+            vip = load_vip()
+            if target_id in vip:
+                del vip[target_id]
+                save_vip(vip)
+                bot.reply_to(message, "✅ تم حذف المستخدم من VIP")
+            else:
+                bot.reply_to(message, "⚠️ المستخدم غير موجود في VIP")
+        except Exception as e:
+            bot.reply_to(message, "❌ خطأ: " + str(e)[:100])
+        return
+
+    # ============ /viplist ============
+    if text.lower() == "/viplist" and is_admin:
+        try:
+            vip = load_vip()
+            if not vip:
+                bot.reply_to(message, "💎 ما في مشتركين VIP")
+                return
+            txt = "💎 *قائمة مشتركين VIP* (" + str(len(vip)) + ")\n"
+            txt += "━━━━━━━━━━━━━━━━\n\n"
+            active = 0
+            for uid, data in vip.items():
+                try:
+                    exp = datetime.fromisoformat(data["expires"])
+                    is_active = datetime.now() < exp
+                    status = "✅" if is_active else "❌"
+                    if is_active:
+                        active += 1
+                    txt += status + " `" + uid + "` — " + exp.strftime("%Y-%m-%d") + "\n"
+                except:
+                    txt += "⚠️ `" + uid + "` — خطأ\n"
+            txt += "\n📊 النشط: " + str(active) + "/" + str(len(vip))
+            bot.reply_to(message, txt, parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, "❌ خطأ: " + str(e)[:100])
+        return
+
+    # ============ /bottom ============
     if text.lower() == "/bottom" and is_admin:
         try:
             bot.reply_to(message, "⏳ جاري فحص عملات القاع...")
@@ -1653,6 +1881,7 @@ def handle_message(message):
             print("Bottom error: " + str(e))
         return
 
+    # ============ /pump ============
     if text.lower() == "/pump" and is_admin:
         try:
             bot.reply_to(message, "⚡ جاري فحص فرص الانفجار...")
@@ -1693,6 +1922,7 @@ def handle_message(message):
             print("Pump error: " + str(e))
         return
 
+    # ============ /delist ============
     if text.lower() == "/delist" and is_admin:
         try:
             bot.reply_to(message, "🚨 جاري فحص إعلانات الحذف...")
@@ -1711,6 +1941,7 @@ def handle_message(message):
             print("Delist error: " + str(e))
         return
 
+    # ============ /short ============
     if text.lower() == "/short" and is_admin:
         try:
             bot.reply_to(message, "🔴 جاري البحث عن فرص الشورت...")
@@ -1744,14 +1975,52 @@ def handle_message(message):
             print("Short error: " + str(e))
         return
 
+    # ============ /start ============
     if text.lower() in ["/start", "start", "help", "/help", "بدأ", "مساعدة"]:
         lang = detect_lang(message.from_user.language_code or "en")
+        user_status = check_user_status(user_id, message.from_user.first_name or "Unknown")
+        if user_status == "expired" and not is_vip(user_id):
+            txt = "🔒 انتهت فترتك المجانية.\n\n"
+            txt += "للاستمرار في استخدام البوت، اشترك في VIP:\n/vip"
+            bot.reply_to(message, txt)
+            return
         bot.reply_to(message, LANG[lang]["ask"])
         return
 
     if text.startswith("/"):
         return
 
+    # ============ فحص الحساب ============
+    user_status = check_user_status(user_id, message.from_user.first_name or "Unknown")
+    user_is_vip = is_vip(user_id)
+
+    if user_status == "expired" and not user_is_vip:
+        txt = "🔒 *انتهت فترتك المجانية*\n"
+        txt += "━━━━━━━━━━━━━━━━\n\n"
+        txt += "للاستمرار في استخدام البوت، اشترك في VIP:\n\n"
+        txt += "💎 /vip\n\n"
+        txt += "أو تواصل مع: @rym_rima16"
+        try:
+            bot.reply_to(message, txt, parse_mode="Markdown")
+        except:
+            bot.reply_to(message, txt)
+        return
+
+    if user_status == "warning" and not user_is_vip:
+        days = get_user_days(user_id)
+        remaining = VIP_FORCE_DAY - days
+        if remaining < 0:
+            remaining = 0
+        warn = "⚠️ *تنبيه*\n"
+        warn += "━━━━━━━━━━━━━━━━\n"
+        warn += "باقي لك *" + str(remaining) + " يوم* على انتهاء فترتك المجانية.\n\n"
+        warn += "💎 للاستمرار، اشترك في VIP:\n/vip"
+        try:
+            bot.send_message(message.chat.id, warn, parse_mode="Markdown")
+        except:
+            pass
+
+    # ============ تحليل عملة ============
     lang = detect_lang(text)
     t = LANG[lang]
     symbol = text.upper()
@@ -1772,12 +2041,15 @@ def handle_message(message):
         txt += "🎯 الثقة: " + str(result["confidence"]) + "/10\n\n"
         txt += t[result["side"]] + "\n\n"
         txt += t["entry"] + ": " + str(result["entry"]) + "\n"
-        if not is_admin:
-            user_status = check_user_status(user_id, message.from_user.first_name or "Unknown")
+
+        show_full = is_admin or user_is_vip
+
+        if not show_full:
             txt += t["tp"] + " 1: " + str(result["tp1"]) + "\n"
             txt += t["tp"] + " 2: " + str(result["tp2"]) + "\n"
             txt += t["sl"] + ": " + str(result["sl"]) + "\n\n"
             txt += t["rsi"] + ": " + str(round(result["rsi"], 2)) + "\n"
+            txt += "\n💎 للاشتراك في VIP: /vip"
             txt += t["channel_promo"]
         else:
             votes = result["votes"]
@@ -1797,7 +2069,12 @@ def handle_message(message):
                 txt += "🔀 " + ("🌟 Golden Cross" if result["cross"] == "golden" else "💀 Death Cross") + "\n"
             if result["divergence"]:
                 txt += "🔀 Divergence: " + ("📈 Bullish" if result["divergence"] == "bullish" else "📉 Bearish") + "\n"
-            txt += "\n━━━━━━━━━━━━━━━━\n🔒 ADMIN\n━━━━━━━━━━━━━━━━\n"
+            txt += "\n━━━━━━━━━━━━━━━━\n"
+            if is_admin:
+                txt += "🔒 ADMIN\n"
+            else:
+                txt += "💎 VIP\n"
+            txt += "━━━━━━━━━━━━━━━━\n"
             txt += "💧 السيولة: " + "{:,.0f}".format(result["liquidity"]) + "\n"
             txt += "🐋 الحيتان: " + str(result["whale_count"]) + "\n"
             if result.get("is_major"):
@@ -1808,9 +2085,11 @@ def handle_message(message):
             txt += "\n📊 التصويت (" + str(votes["buy"]) + " Buy / " + str(votes["sell"]) + " Sell):\n"
             for d in votes["details"][:13]:
                 txt += "• " + d + "\n"
+
         markup = types.InlineKeyboardMarkup()
         btn = types.InlineKeyboardButton(text="📣 Free Crypto Signals", url=CHANNEL_LINK)
         markup.add(btn)
+
         sent = False
         try:
             with open(filename, "rb") as photo:
@@ -1827,14 +2106,6 @@ def handle_message(message):
                 pass
         if not sent:
             bot.send_message(message.chat.id, txt)
-        if is_admin:
-            ct = "#" + symbol + "\n"
-            ct += "➡️ Entry: " + str(result["entry"]) + "\n"
-            ct += "🎯 TP1: " + str(result["tp1"]) + "\n"
-            ct += "🎯 TP2: " + str(result["tp2"]) + "\n"
-            ct += "🎯 TP3: " + str(result["tp3"]) + "\n"
-            ct += "🛑 SL: " + str(result["sl"])
-            bot.send_message(message.chat.id, ct)
     except Exception as e:
         print("Analyze error: " + str(e))
         bot.reply_to(message, "Error: " + str(e)[:200])
@@ -2018,28 +2289,55 @@ def check_delistings_task():
         print("Delist task error: " + str(e))
 
 
+# ============== إشارات الشورت (Cache + كل ساعتين) ==============
+SHORT_CACHE = {}
+SHORT_LOCK = threading.Lock()
+
+
 def check_delisting_shorts():
     print("Checking delisting shorts...")
     gainers, _ = get_top_gainers_losers(30)
-    for symbol_base in gainers[:10]:
+    now = time.time()
+    sent_count = 0
+    for symbol_base in gainers[:15]:
         symbol = symbol_base + "USDT"
         try:
+            with SHORT_LOCK:
+                if symbol in SHORT_CACHE:
+                    if now - SHORT_CACHE[symbol] < 7200:
+                        continue
             s = detect_delisting_short(symbol)
-            if s and s["signals"] >= 4:
-                txt = "🚨 فرصة شورت ذهبية! 🚨\n━━━━━━━━━━━━━━━━\n"
-                txt += "💠 " + s["symbol"] + "\n"
-                txt += "💰 الدخول: " + str(smart_round(s["entry"])) + "\n"
-                txt += "🛑 الستوب: " + str(smart_round(s["sl"])) + "\n\n"
-                txt += "🎯 TP1: " + str(smart_round(s["tp1"])) + "\n"
-                txt += "🎯 TP2: " + str(smart_round(s["tp2"])) + "\n"
-                txt += "🎯 TP3: " + str(smart_round(s["tp3"])) + "\n\n"
-                txt += "📊 RSI: " + str(s["rsi"]) + "\n"
-                txt += "📈 صعود: +" + str(s["pump_24h"]) + "%\n"
-                txt += "⚡ " + str(s["signals"]) + "\n"
+            if not s:
+                continue
+            if s["signals"] < 4:
+                continue
+            if s["rsi"] < 75:
+                continue
+            txt = "🚨 فرصة شورت ذهبية! 🚨\n"
+            txt += "━━━━━━━━━━━━━━━━\n"
+            txt += "💠 " + s["symbol"] + "\n"
+            txt += "💰 الدخول: " + str(smart_round(s["entry"])) + "\n"
+            txt += "🛑 الستوب: " + str(smart_round(s["sl"])) + "\n\n"
+            txt += "🎯 TP1: " + str(smart_round(s["tp1"])) + "\n"
+            txt += "🎯 TP2: " + str(smart_round(s["tp2"])) + "\n"
+            txt += "🎯 TP3: " + str(smart_round(s["tp3"])) + "\n\n"
+            txt += "📊 RSI: " + str(round(s["rsi"], 1)) + "\n"
+            txt += "📈 صعود: +" + str(s["pump_24h"]) + "%\n"
+            txt += "⚡ " + str(s["signals"]) + "/8\n"
+            txt += "📋 " + " | ".join(s["reasons"][:3]) + "\n"
+            try:
                 bot.send_message(ADMIN_ID, txt)
+                if VIP_CHANNEL_ID:
+                    bot.send_message(VIP_CHANNEL_ID, txt)
+                with SHORT_LOCK:
+                    SHORT_CACHE[symbol] = now
+                sent_count += 1
+            except Exception as e:
+                print("Short send error: " + str(e))
         except:
             continue
         time.sleep(0.3)
+    print("Short signals sent: " + str(sent_count))
 
 
 # ============== المجدول ==============
@@ -2055,7 +2353,7 @@ def run_scheduler():
     schedule.every(6).hours.do(send_price_alerts)
     schedule.every(5).minutes.do(track_targets)
     schedule.every(30).minutes.do(check_delistings_task)
-    schedule.every(15).minutes.do(check_delisting_shorts)
+    schedule.every(2).hours.do(check_delisting_shorts)
     schedule.every(30).minutes.do(load_from_gist)
     while True:
         try:
