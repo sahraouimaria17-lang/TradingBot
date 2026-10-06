@@ -34,12 +34,12 @@ except Exception as e:
 
 CHANNEL_LINK = "https://t.me/rym_rima16"
 VIP_CHANNEL_LINK = "https://t.me/+gTMJiBiiC_IyZjZk"
+CONTACT_LINK = "@rym_rima1"
 BINANCE_ID = "905142395"
 
 # ============== نظام التحذير ==============
 TRIAL_DAYS = 7
 WARNING_START_DAY = 8
-WARNING_END_DAY = 12
 VIP_FORCE_DAY = 13
 
 # ============== أسعار VIP ==============
@@ -105,7 +105,7 @@ def is_major(symbol):
     return base in MAJOR_COINS
 
 
-# ============== اللغات ==============
+# ============== اللغات (عربي + إنجليزي) ==============
 LANG = {
     "ar": {
         "chart_title": "التحليل الفني: ",
@@ -261,17 +261,6 @@ def get_user_days(user_id):
         return 0
 
 
-def register_user(user_id, first_name="Unknown"):
-    users = load_users()
-    uid = str(user_id)
-    now = datetime.now()
-    if uid not in users:
-        users[uid] = {"joined": now.isoformat(), "name": first_name}
-        save_users(users)
-        return "new"
-    return "existing"
-
-
 def check_user_status(user_id, first_name="Unknown"):
     users = load_users()
     uid = str(user_id)
@@ -350,7 +339,7 @@ def get_vip_expiry(user_id):
         return None
 
 
-# ============== مصادر البيانات ==============
+# ============== مصادر البيانات (8 مصادر) ==============
 def get_binance_vision(symbol, timeframe="daily"):
     base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
     interval = "1d" if timeframe == "daily" else "4h"
@@ -721,16 +710,6 @@ def calc_macd(df, fast=12, slow=26, signal=9):
     return macd_line, signal_line, macd_line - signal_line
 
 
-def calc_stoch_rsi(df, period=14, smooth_k=3, smooth_d=3):
-    rsi = calc_rsi(df, period)
-    rsi_min = rsi.rolling(period).min()
-    rsi_max = rsi.rolling(period).max()
-    stoch = (rsi - rsi_min) / (rsi_max - rsi_min) * 100
-    k = stoch.rolling(smooth_k).mean()
-    d = k.rolling(smooth_d).mean()
-    return k, d
-
-
 def calc_adx_atr(df, period=14):
     hl = df["high"] - df["low"]
     hc = np.abs(df["high"] - df["close"].shift())
@@ -748,63 +727,6 @@ def calc_adx_atr(df, period=14):
     return adx, atr
 
 
-def calc_cci(df, period=20):
-    tp = (df["high"] + df["low"] + df["close"]) / 3
-    sma = tp.rolling(period).mean()
-    mad = tp.rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
-    return (tp - sma) / (0.015 * mad)
-
-
-def calc_parabolic_sar(df, af=0.02, max_af=0.2):
-    high = df["high"].values
-    low = df["low"].values
-    close = df["close"].values
-    n = len(df)
-    sar = np.zeros(n)
-    trend = np.zeros(n)
-    ep = np.zeros(n)
-    acc = np.zeros(n)
-    if n < 2:
-        return pd.Series(sar, index=df.index)
-    trend[0] = 1 if close[0] > close[-1] else -1
-    sar[0] = low[0] if trend[0] == 1 else high[0]
-    ep[0] = high[0] if trend[0] == 1 else low[0]
-    acc[0] = af
-    for i in range(1, n):
-        sar[i] = sar[i-1] + acc[i-1] * (ep[i-1] - sar[i-1])
-        if trend[i-1] == 1:
-            if low[i] < sar[i]:
-                trend[i] = -1
-                sar[i] = ep[i-1]
-                ep[i] = low[i]
-                acc[i] = af
-            else:
-                trend[i] = 1
-                if high[i] > ep[i-1]:
-                    ep[i] = high[i]
-                    acc[i] = min(acc[i-1] + af, max_af)
-                else:
-                    ep[i] = ep[i-1]
-                    acc[i] = acc[i-1]
-                sar[i] = min(sar[i], low[i-1], low[i])
-        else:
-            if high[i] > sar[i]:
-                trend[i] = 1
-                sar[i] = ep[i-1]
-                ep[i] = high[i]
-                acc[i] = af
-            else:
-                trend[i] = -1
-                if low[i] < ep[i-1]:
-                    ep[i] = low[i]
-                    acc[i] = min(acc[i-1] + af, max_af)
-                else:
-                    ep[i] = ep[i-1]
-                    acc[i] = acc[i-1]
-                sar[i] = max(sar[i], high[i-1], high[i])
-    return pd.Series(sar, index=df.index)
-
-
 def calc_mfi(df, period=14):
     tp = (df["high"] + df["low"] + df["close"]) / 3
     mf = tp * df["volume"]
@@ -814,15 +736,44 @@ def calc_mfi(df, period=14):
     return 100 - (100 / (1 + mfr))
 
 
-def calc_ichimoku(df, tenkan=9, kijun=26, senkou=52):
-    h = df["high"]
-    l = df["low"]
-    ts = (h.rolling(tenkan).max() + l.rolling(tenkan).min()) / 2
-    ks = (h.rolling(kijun).max() + l.rolling(kijun).min()) / 2
-    sa = ((ts + ks) / 2).shift(kijun)
-    sb = ((h.rolling(senkou).max() + l.rolling(senkou).min()) / 2).shift(kijun)
-    ch = df["close"].shift(-kijun)
-    return ts, ks, sa, sb, ch
+def calc_vwap(df, period=20):
+    """VWAP - Volume Weighted Average Price"""
+    tp = (df["high"] + df["low"] + df["close"]) / 3
+    vwap = (tp * df["volume"]).rolling(period).sum() / df["volume"].rolling(period).sum()
+    return vwap
+
+
+def calc_volume_signal(df):
+    """Volume Spike"""
+    avg_vol = df["volume"].tail(20).mean()
+    curr_vol = df["volume"].iloc[-1]
+    if avg_vol <= 0:
+        return None
+    ratio = curr_vol / avg_vol
+    if ratio > 3:
+        return {"signal": "strong", "ratio": ratio}
+    elif ratio > 1.5:
+        return {"signal": "medium", "ratio": ratio}
+    return None
+
+
+def calc_ema_cross(df, fast=9, slow=21):
+    """EMA 9/21 Cross"""
+    ema_fast = calc_ema(df, fast)
+    ema_slow = calc_ema(df, slow)
+    if len(ema_fast) < 3 or len(ema_slow) < 3:
+        return None
+    prev_diff = ema_fast.iloc[-2] - ema_slow.iloc[-2]
+    curr_diff = ema_fast.iloc[-1] - ema_slow.iloc[-1]
+    if prev_diff <= 0 and curr_diff > 0:
+        return "golden"
+    if prev_diff >= 0 and curr_diff < 0:
+        return "death"
+    if curr_diff > 0:
+        return "buy"
+    if curr_diff < 0:
+        return "sell"
+    return None
 
 
 def calc_liquidity(df):
@@ -937,36 +888,65 @@ def check_trend_direction(df):
         return "sideways"
 
 
-# ============== التصويت (13 مؤشر) ==============
+# ============== التصويت (11 مؤشر) ==============
 def confluence_vote(df, symbol=None):
     votes = {"buy": 0, "sell": 0, "details": []}
-    ema50 = calc_ema(df, 50)
-    ema200 = calc_ema(df, 200)
     price = df["close"].iloc[-1]
 
+    # 1. EMA 20/50/200 (وزن 3)
+    ema20 = calc_ema(df, 20)
+    ema50 = calc_ema(df, 50)
+    ema200 = calc_ema(df, 200)
     if not pd.isna(ema50.iloc[-1]) and not pd.isna(ema200.iloc[-1]):
-        if price > ema50.iloc[-1] and ema50.iloc[-1] > ema200.iloc[-1]:
-            votes["buy"] += 1
-            votes["details"].append("EMA ✓ Buy")
+        if price > ema20.iloc[-1] and ema20.iloc[-1] > ema50.iloc[-1] and ema50.iloc[-1] > ema200.iloc[-1]:
+            votes["buy"] += 3
+            votes["details"].append("EMA ✓✓ Buy (3)")
+        elif price < ema20.iloc[-1] and ema20.iloc[-1] < ema50.iloc[-1] and ema50.iloc[-1] < ema200.iloc[-1]:
+            votes["sell"] += 3
+            votes["details"].append("EMA ✓✓ Sell (3)")
+        elif price > ema50.iloc[-1] and ema50.iloc[-1] > ema200.iloc[-1]:
+            votes["buy"] += 2
+            votes["details"].append("EMA ✓ Buy (2)")
         elif price < ema50.iloc[-1] and ema50.iloc[-1] < ema200.iloc[-1]:
-            votes["sell"] += 1
-            votes["details"].append("EMA ✓ Sell")
+            votes["sell"] += 2
+            votes["details"].append("EMA ✓ Sell (2)")
 
+    # 2. EMA 9/21 (وزن 2)
+    ema_cross = calc_ema_cross(df, 9, 21)
+    if ema_cross:
+        if ema_cross == "golden":
+            votes["buy"] += 2
+            votes["details"].append("EMA 9/21 🌟 Golden (2)")
+        elif ema_cross == "death":
+            votes["sell"] += 2
+            votes["details"].append("EMA 9/21 💀 Death (2)")
+        elif ema_cross == "buy":
+            votes["buy"] += 1
+            votes["details"].append("EMA 9/21 ✓ Buy")
+        elif ema_cross == "sell":
+            votes["sell"] += 1
+            votes["details"].append("EMA 9/21 ✓ Sell")
+
+    # 3. RSI (وزن 3)
     rsi = calc_rsi(df).iloc[-1]
     if not pd.isna(rsi):
-        if 40 < rsi < 70:
-            votes["buy"] += 1
+        if 40 < rsi < 65:
+            votes["buy"] += 2
             votes["details"].append("RSI ✓ Buy (" + str(round(rsi, 1)) + ")")
-        elif rsi >= 70:
+        elif 65 <= rsi < 85:
             votes["sell"] += 1
-            votes["details"].append("RSI ✗ Overbought (" + str(round(rsi, 1)) + ")")
-        elif 30 < rsi < 40:
+            votes["details"].append("RSI ✓ Overbought (" + str(round(rsi, 1)) + ")")
+        elif rsi >= 85:
+            votes["sell"] += 3
+            votes["details"].append("RSI ✗✗ Extreme OB (" + str(round(rsi, 1)) + ")")
+        elif 15 < rsi <= 40:
             votes["sell"] += 1
             votes["details"].append("RSI ✓ Sell (" + str(round(rsi, 1)) + ")")
-        elif rsi <= 30:
-            votes["buy"] += 1
-            votes["details"].append("RSI ✗ Oversold (" + str(round(rsi, 1)) + ")")
+        elif rsi <= 15:
+            votes["buy"] += 3
+            votes["details"].append("RSI ✗✗ Extreme OS (" + str(round(rsi, 1)) + ")")
 
+    # 4. MACD (وزن 1)
     macd_line, signal_line, hist = calc_macd(df)
     if not pd.isna(macd_line.iloc[-1]) and not pd.isna(signal_line.iloc[-1]):
         if macd_line.iloc[-1] > signal_line.iloc[-1]:
@@ -976,16 +956,21 @@ def confluence_vote(df, symbol=None):
             votes["sell"] += 1
             votes["details"].append("MACD ✓ Sell")
 
+    # 5. ADX (وزن 2)
     adx_series, _ = calc_adx_atr(df)
     adx = adx_series.iloc[-1]
-    if not pd.isna(adx) and adx > 25:
-        if macd_line.iloc[-1] > signal_line.iloc[-1]:
-            votes["buy"] += 1
-            votes["details"].append("ADX ✓ Buy (" + str(round(adx, 1)) + ")")
-        else:
-            votes["sell"] += 1
-            votes["details"].append("ADX ✓ Sell (" + str(round(adx, 1)) + ")")
+    if not pd.isna(adx):
+        if adx > 25:
+            if macd_line.iloc[-1] > signal_line.iloc[-1]:
+                votes["buy"] += 1
+                votes["details"].append("ADX ✓ Buy (" + str(round(adx, 1)) + ")")
+            else:
+                votes["sell"] += 1
+                votes["details"].append("ADX ✓ Sell (" + str(round(adx, 1)) + ")")
+        elif adx < 20:
+            votes["details"].append("⚠️ ADX ضعيف (" + str(round(adx, 1)) + ")")
 
+    # 6. BB (وزن 1)
     bb_upper, bb_mid, bb_lower = calc_bollinger(df)
     if not pd.isna(bb_mid.iloc[-1]):
         if price > bb_mid.iloc[-1]:
@@ -995,55 +980,33 @@ def confluence_vote(df, symbol=None):
             votes["sell"] += 1
             votes["details"].append("BB ✓ Sell")
 
-    avg_vol = df["volume"].tail(20).mean()
-    curr_vol = df["volume"].iloc[-1]
-    if avg_vol > 0 and curr_vol > avg_vol * 1.3:
+    # 7. Volume Spike (وزن 2)
+    vol_sig = calc_volume_signal(df)
+    if vol_sig:
         if macd_line.iloc[-1] > signal_line.iloc[-1]:
-            votes["buy"] += 1
-            votes["details"].append("Volume ✓ Buy")
+            votes["buy"] += 2
+            votes["details"].append("Vol Spike ✓ Buy (" + str(round(vol_sig["ratio"], 1)) + "x)")
         else:
-            votes["sell"] += 1
-            votes["details"].append("Volume ✓ Sell")
+            votes["sell"] += 2
+            votes["details"].append("Vol Spike ✓ Sell (" + str(round(vol_sig["ratio"], 1)) + "x)")
 
-    k, d = calc_stoch_rsi(df)
-    if not pd.isna(k.iloc[-1]) and not pd.isna(d.iloc[-1]):
-        if k.iloc[-1] > d.iloc[-1] and k.iloc[-1] < 80:
-            votes["buy"] += 1
-            votes["details"].append("StochRSI ✓ Buy")
-        elif k.iloc[-1] < d.iloc[-1] and k.iloc[-1] > 20:
-            votes["sell"] += 1
-            votes["details"].append("StochRSI ✓ Sell")
-
-    cci = calc_cci(df).iloc[-1]
-    if not pd.isna(cci):
-        if cci > 100:
-            votes["sell"] += 1
-            votes["details"].append("CCI ✗ Overbought (" + str(round(cci, 1)) + ")")
-        elif cci < -100:
-            votes["buy"] += 1
-            votes["details"].append("CCI ✗ Oversold (" + str(round(cci, 1)) + ")")
-        elif cci > 0:
-            votes["buy"] += 1
-            votes["details"].append("CCI ✓ Buy (" + str(round(cci, 1)) + ")")
+    # 8. VWAP (وزن 2)
+    vwap = calc_vwap(df, 20)
+    if not pd.isna(vwap.iloc[-1]):
+        if price > vwap.iloc[-1]:
+            votes["buy"] += 2
+            votes["details"].append("VWAP ✓ Buy")
         else:
-            votes["sell"] += 1
-            votes["details"].append("CCI ✓ Sell (" + str(round(cci, 1)) + ")")
+            votes["sell"] += 2
+            votes["details"].append("VWAP ✓ Sell")
 
-    psar = calc_parabolic_sar(df)
-    if len(psar) > 0 and not pd.isna(psar.iloc[-1]):
-        if psar.iloc[-1] < price:
-            votes["buy"] += 1
-            votes["details"].append("SAR ✓ Buy")
-        else:
-            votes["sell"] += 1
-            votes["details"].append("SAR ✓ Sell")
-
+    # 9. MFI (وزن 1)
     mfi = calc_mfi(df).iloc[-1]
     if not pd.isna(mfi):
-        if mfi > 80:
+        if mfi > 85:
             votes["sell"] += 1
             votes["details"].append("MFI ✗ Overbought (" + str(round(mfi, 1)) + ")")
-        elif mfi < 20:
+        elif mfi < 15:
             votes["buy"] += 1
             votes["details"].append("MFI ✗ Oversold (" + str(round(mfi, 1)) + ")")
         elif mfi > 50:
@@ -1053,30 +1016,18 @@ def confluence_vote(df, symbol=None):
             votes["sell"] += 1
             votes["details"].append("MFI ✓ Sell (" + str(round(mfi, 1)) + ")")
 
-    try:
-        ts, ks, sa, sb, ch = calc_ichimoku(df)
-        if not pd.isna(sa.iloc[-1]) and not pd.isna(sb.iloc[-1]):
-            ct = max(sa.iloc[-1], sb.iloc[-1])
-            cb = min(sa.iloc[-1], sb.iloc[-1])
-            if price > ct:
-                votes["buy"] += 1
-                votes["details"].append("Ichimoku ✓ Above Cloud")
-            elif price < cb:
-                votes["sell"] += 1
-                votes["details"].append("Ichimoku ✓ Below Cloud")
-    except:
-        pass
-
+    # 10. Liquidations (وزن 2)
     if symbol:
         liq = get_liquidation_signal(symbol)
         if liq:
             if liq["signal"] == "buy":
-                votes["buy"] += 1
+                votes["buy"] += 2
                 votes["details"].append("Liq ✓ " + liq["reason"])
             else:
-                votes["sell"] += 1
+                votes["sell"] += 2
                 votes["details"].append("Liq ✓ " + liq["reason"])
 
+    # 11. News Sentiment (وزن 1)
     if symbol:
         news = get_news_signal(symbol)
         if news:
@@ -1095,9 +1046,9 @@ def calculate_confidence(df, side, votes, trend):
     bv = votes.get("buy", 0)
     sv = votes.get("sell", 0)
     if side == "buy":
-        score += min(4, bv)
+        score += min(5, bv)
     elif side == "sell":
-        score += min(4, sv)
+        score += min(5, sv)
     try:
         adx_series, _ = calc_adx_atr(df)
         adx = adx_series.iloc[-1]
@@ -1106,19 +1057,8 @@ def calculate_confidence(df, side, votes, trend):
                 score += 2
             elif adx > 25:
                 score += 1
-    except:
-        pass
-    try:
-        rsi = calc_rsi(df).iloc[-1]
-        if not pd.isna(rsi):
-            if side == "buy" and 40 < rsi < 70:
-                score += 2
-            elif side == "sell" and 30 < rsi < 60:
-                score += 2
-            elif side == "buy" and rsi >= 70:
-                score -= 2
-            elif side == "sell" and rsi <= 30:
-                score -= 2
+            elif adx < 20:
+                score -= 3
     except:
         pass
     if side == "buy" and trend == "uptrend":
@@ -1128,7 +1068,7 @@ def calculate_confidence(df, side, votes, trend):
     elif trend == "sideways":
         score -= 1
     else:
-        score -= 2
+        score -= 3
     return max(0, min(10, score))
 
 
@@ -1443,8 +1383,8 @@ def analyze(symbol, timeframe=None):
     rsi_val = rsi_series.iloc[-1]
     adx_val = adx_series.iloc[-1]
     atr_val = atr_series.iloc[-1]
-    cci_val = calc_cci(df).iloc[-1]
     mfi_val = calc_mfi(df).iloc[-1]
+    vwap_val = calc_vwap(df, 20).iloc[-1]
     if pd.isna(atr_val) or atr_val <= 0:
         atr_val = price * 0.02
     liquidity = calc_liquidity(df)
@@ -1453,17 +1393,49 @@ def analyze(symbol, timeframe=None):
     trend = check_trend_direction(df)
     bv = votes["buy"]
     sv = votes["sell"]
+    total = bv + sv
+    diff = abs(bv - sv)
+    
     if bv > sv:
         side = "buy"
     elif sv > bv:
         side = "sell"
     else:
         side = "buy" if ema20_val > ema50_val else "sell"
-    if divergence == "bearish" and side == "buy":
-        side = "sell"
-    if divergence == "bullish" and side == "sell":
-        side = "buy"
+    
+    # فلتر 1: Divergence يأثر فقط إذا الفرق صغير
+    if diff <= 3:
+        if divergence == "bearish" and side == "buy":
+            side = "sell"
+        if divergence == "bullish" and side == "sell":
+            side = "buy"
+    
     confidence = calculate_confidence(df, side, votes, trend)
+    
+    # فلتر 2: الاتجاه العام صارم
+    if side == "sell" and trend == "uptrend":
+        if diff < 5:
+            if bv > sv:
+                side = "buy"
+            else:
+                confidence = max(0, confidence - 2)
+    if side == "buy" and trend == "downtrend":
+        if diff < 5:
+            if sv > bv:
+                side = "sell"
+            else:
+                confidence = max(0, confidence - 2)
+    
+    # فلتر 3: RSI معاكس
+    if side == "sell" and not pd.isna(rsi_val):
+        if 45 < rsi_val < 60 and bv > sv:
+            side = "buy"
+    if side == "buy" and not pd.isna(rsi_val):
+        if rsi_val > 85:
+            side = "sell"
+        elif rsi_val < 15:
+            side = "buy"
+    
     if side == "buy":
         entry = price
         sl = entry - (atr_val * 1.5)
@@ -1494,7 +1466,7 @@ def analyze(symbol, timeframe=None):
         "tp1": smart_round(tp1), "tp2": smart_round(tp2),
         "tp3": smart_round(tp3), "tp4": smart_round(tp4),
         "rsi": rsi_val, "adx": adx_val, "atr": atr_val,
-        "cci": cci_val, "mfi": mfi_val,
+        "mfi": mfi_val, "vwap": vwap_val,
         "liquidity": liquidity, "whale_count": whale_count,
         "df": df, "ema20": ema20, "ema50": ema50, "ema200": ema200,
         "bb_upper": bb_upper, "bb_lower": bb_lower,
@@ -1691,32 +1663,59 @@ def handle_message(message):
             print("Dashboard error: " + str(e))
         return
 
-    # ============ /vip — عرض الأسعار ============
+    # ============ /vip ============
     if text.lower() == "/vip":
-        txt = "💎 *اشتراك VIP*\n"
-        txt += "━━━━━━━━━━━━━━━━\n\n"
-        txt += "📌 *المزايا:*\n"
-        txt += "• 4 أهداف لكل توصية\n"
-        txt += "• إشارات شورت حصرية\n"
-        txt += "• رادار الانفجارات\n"
-        txt += "• عملات القاع\n"
-        txt += "• تحذيرات فيبوناتشي\n"
-        txt += "• Golden/Death Cross\n"
-        txt += "• تحليل أعمق (ADX + CCI + MFI)\n"
-        txt += "• دخول قناة VIP الخاصة\n\n"
-        txt += "💰 *الأسعار:*\n"
-        txt += "• شهر: *50 USDT*\n"
-        txt += "• 3 أشهر: *100 USDT*\n"
-        txt += "• سنوي: *300 USDT*\n\n"
-        txt += "📤 *طريقة الدفع:*\n"
-        txt += "1. افتح Binance\n"
-        txt += "2. اذهب إلى Pay\n"
-        txt += "3. أرسل USDT إلى:\n"
-        txt += "   `Binance ID: " + BINANCE_ID + "`\n\n"
-        txt += "4. بعد التحويل، أرسل صورة الإيصال إلى:\n"
-        txt += "   @rym_rima16\n\n"
-        txt += "⏳ سيتم تفعيل حسابك خلال 30 دقيقة\n\n"
-        txt += "📌 *للحصول على ID الخاص بك:* /myid"
+        lang = detect_lang(text)
+        if lang == "ar":
+            txt = "💎 *اشتراك VIP*\n"
+            txt += "━━━━━━━━━━━━━━━━\n\n"
+            txt += "📌 *المزايا:*\n"
+            txt += "• 4 أهداف لكل توصية\n"
+            txt += "• إشارات شورت حصرية\n"
+            txt += "• رادار الانفجارات\n"
+            txt += "• عملات القاع\n"
+            txt += "• تحذيرات فيبوناتشي\n"
+            txt += "• Golden/Death Cross\n"
+            txt += "• تحليل أعمق (ADX + MFI + VWAP)\n"
+            txt += "• دخول قناة VIP الخاصة\n\n"
+            txt += "💰 *الأسعار:*\n"
+            txt += "• شهر: *50 USDT*\n"
+            txt += "• 3 أشهر: *100 USDT*\n"
+            txt += "• سنوي: *300 USDT*\n\n"
+            txt += "📤 *طريقة الدفع:*\n"
+            txt += "1. افتح Binance\n"
+            txt += "2. اذهب إلى Pay\n"
+            txt += "3. أرسل USDT إلى:\n"
+            txt += "   `Binance ID: " + BINANCE_ID + "`\n\n"
+            txt += "4. بعد التحويل، أرسل صورة الإيصال + ID تبعتك إلى:\n"
+            txt += "   " + CONTACT_LINK + "\n\n"
+            txt += "⏳ سيتم تفعيل حسابك خلال 30 دقيقة\n\n"
+            txt += "📌 *للحصول على ID الخاص بك:* /myid"
+        else:
+            txt = "💎 *VIP Subscription*\n"
+            txt += "━━━━━━━━━━━━━━━━\n\n"
+            txt += "📌 *Features:*\n"
+            txt += "• 4 Targets per signal\n"
+            txt += "• Exclusive Short signals\n"
+            txt += "• Breakout Radar\n"
+            txt += "• Bottom Coins\n"
+            txt += "• Fibonacci alerts\n"
+            txt += "• Golden/Death Cross\n"
+            txt += "• Deeper analysis (ADX + MFI + VWAP)\n"
+            txt += "• Access to VIP Channel\n\n"
+            txt += "💰 *Pricing:*\n"
+            txt += "• 1 Month: *50 USDT*\n"
+            txt += "• 3 Months: *100 USDT*\n"
+            txt += "• Yearly: *300 USDT*\n\n"
+            txt += "📤 *Payment Method:*\n"
+            txt += "1. Open Binance\n"
+            txt += "2. Go to Pay\n"
+            txt += "3. Send USDT to:\n"
+            txt += "   `Binance ID: " + BINANCE_ID + "`\n\n"
+            txt += "4. After payment, send receipt + your ID to:\n"
+            txt += "   " + CONTACT_LINK + "\n\n"
+            txt += "⏳ Activated within 30 minutes\n\n"
+            txt += "📌 *To get your ID:* /myid"
         try:
             bot.reply_to(message, txt, parse_mode="Markdown")
         except:
@@ -1725,20 +1724,32 @@ def handle_message(message):
 
     # ============ /myid ============
     if text.lower() in ["/myid", "/id", "ايدي", "معرفي"]:
+        lang = detect_lang(text)
         uid = str(message.from_user.id)
         name = message.from_user.first_name or "Unknown"
         is_v = is_vip(message.from_user.id)
         exp = get_vip_expiry(message.from_user.id)
         days = get_user_days(message.from_user.id)
-        txt = "🆔 *معلومات حسابك*\n"
-        txt += "━━━━━━━━━━━━━━━━\n"
-        txt += "👤 الاسم: " + name + "\n"
-        txt += "🆔 الـ ID: `" + uid + "`\n"
-        txt += "📅 أيام الاستخدام: " + str(days) + "\n"
-        txt += "💎 VIP: " + ("✅ مفعّل" if is_v else "❌ غير مفعّل") + "\n"
-        if exp and is_v:
-            txt += "📅 ينتهي: " + exp.strftime("%Y-%m-%d") + "\n"
-        txt += "\n💡 احتفظ بالـ ID وأرسله للأدمن للاشتراك."
+        if lang == "ar":
+            txt = "🆔 *معلومات حسابك*\n"
+            txt += "━━━━━━━━━━━━━━━━\n"
+            txt += "👤 الاسم: " + name + "\n"
+            txt += "🆔 الـ ID: `" + uid + "`\n"
+            txt += "📅 أيام الاستخدام: " + str(days) + "\n"
+            txt += "💎 VIP: " + ("✅ مفعّل" if is_v else "❌ غير مفعّل") + "\n"
+            if exp and is_v:
+                txt += "📅 ينتهي: " + exp.strftime("%Y-%m-%d") + "\n"
+            txt += "\n💡 احتفظ بالـ ID وأرسله للأدمن للاشتراك."
+        else:
+            txt = "🆔 *Your Account Info*\n"
+            txt += "━━━━━━━━━━━━━━━━\n"
+            txt += "👤 Name: " + name + "\n"
+            txt += "🆔 ID: `" + uid + "`\n"
+            txt += "📅 Days Used: " + str(days) + "\n"
+            txt += "💎 VIP: " + ("✅ Active" if is_v else "❌ Inactive") + "\n"
+            if exp and is_v:
+                txt += "📅 Expires: " + exp.strftime("%Y-%m-%d") + "\n"
+            txt += "\n💡 Save your ID and send it to the admin."
         try:
             bot.reply_to(message, txt, parse_mode="Markdown")
         except:
@@ -1750,7 +1761,7 @@ def handle_message(message):
         try:
             parts = text.split()
             if len(parts) < 3:
-                bot.reply_to(message, "📌 الاستخدام: `/addvip <ID> <days>`\nمثال: `/addvip 123456789 30`", parse_mode="Markdown")
+                bot.reply_to(message, "📌 `/addvip <ID> <days>`\nمثال: `/addvip 123456789 30`", parse_mode="Markdown")
                 return
             target_id = parts[1].strip()
             days = int(parts[2])
@@ -1762,31 +1773,29 @@ def handle_message(message):
                 "added_by": str(message.from_user.id)
             }
             save_vip(vip)
-            txt = "✅ *تم تفعيل VIP*\n"
+            txt = "✅ *VIP Activated*\n"
             txt += "━━━━━━━━━━━━━━━━\n"
-            txt += "🆔 المستخدم: `" + target_id + "`\n"
-            txt += "📅 المدة: " + str(days) + " يوم\n"
-            txt += "⏰ ينتهي: " + exp.strftime("%Y-%m-%d")
+            txt += "🆔 User: `" + target_id + "`\n"
+            txt += "📅 Days: " + str(days) + "\n"
+            txt += "⏰ Expires: " + exp.strftime("%Y-%m-%d")
             bot.reply_to(message, txt, parse_mode="Markdown")
-            # إرسال رسالة ترحيب للمستخدم
-            welcome = "🎉 *مرحباً بك في RYMA VIP!* 🎉\n"
+            welcome = "🎉 *Welcome to RYMA VIP!* 🎉\n"
             welcome += "━━━━━━━━━━━━━━━━\n\n"
-            welcome += "✨ *تم تفعيل اشتراكك بنجاح!*\n\n"
-            welcome += "🎁 *مزاياك الآن:*\n"
-            welcome += "━━━━━━━━━━━━━━━━\n"
-            welcome += "💎 4 أهداف لكل توصية\n"
-            welcome += "🔴 إشارات شورت حصرية\n"
-            welcome += "⚡ رادار الانفجارات\n"
-            welcome += "💎 عملات القاع\n"
-            welcome += "📊 تحليل أعمق\n"
-            welcome += "🔔 تنبيهات فيبوناتشي\n"
+            welcome += "✨ *Your subscription is active!*\n\n"
+            welcome += "🎁 *Your Benefits:*\n"
+            welcome += "💎 4 Targets per signal\n"
+            welcome += "🔴 Exclusive Short signals\n"
+            welcome += "⚡ Breakout Radar\n"
+            welcome += "💎 Bottom Coins\n"
+            welcome += "📊 Deeper analysis\n"
+            welcome += "🔔 Fibonacci alerts\n"
             welcome += "🌟 Golden/Death Cross\n"
-            welcome += "📢 قناة VIP الخاصة\n\n"
-            welcome += "🔗 *رابط قناة VIP:*\n"
+            welcome += "📢 VIP Channel access\n\n"
+            welcome += "🔗 *VIP Channel Link:*\n"
             welcome += VIP_CHANNEL_LINK + "\n\n"
             welcome += "━━━━━━━━━━━━━━━━\n"
-            welcome += "📅 اشتراكك ينتهي: *" + exp.strftime("%Y-%m-%d") + "*\n"
-            welcome += "🎯 استمتع بالخدمة! 🚀"
+            welcome += "📅 Expires: *" + exp.strftime("%Y-%m-%d") + "*\n"
+            welcome += "🎯 Enjoy! 🚀"
             try:
                 bot.send_message(int(target_id), welcome, parse_mode="Markdown")
             except:
@@ -1800,16 +1809,16 @@ def handle_message(message):
         try:
             parts = text.split()
             if len(parts) < 2:
-                bot.reply_to(message, "📌 الاستخدام: `/removevip <ID>`", parse_mode="Markdown")
+                bot.reply_to(message, "📌 `/removevip <ID>`", parse_mode="Markdown")
                 return
             target_id = parts[1].strip()
             vip = load_vip()
             if target_id in vip:
                 del vip[target_id]
                 save_vip(vip)
-                bot.reply_to(message, "✅ تم حذف المستخدم من VIP")
+                bot.reply_to(message, "✅ Removed from VIP")
             else:
-                bot.reply_to(message, "⚠️ المستخدم غير موجود في VIP")
+                bot.reply_to(message, "⚠️ User not in VIP")
         except Exception as e:
             bot.reply_to(message, "❌ خطأ: " + str(e)[:100])
         return
@@ -1819,9 +1828,9 @@ def handle_message(message):
         try:
             vip = load_vip()
             if not vip:
-                bot.reply_to(message, "💎 ما في مشتركين VIP")
+                bot.reply_to(message, "💎 No VIP subscribers")
                 return
-            txt = "💎 *قائمة مشتركين VIP* (" + str(len(vip)) + ")\n"
+            txt = "💎 *VIP List* (" + str(len(vip)) + ")\n"
             txt += "━━━━━━━━━━━━━━━━\n\n"
             active = 0
             for uid, data in vip.items():
@@ -1833,17 +1842,17 @@ def handle_message(message):
                         active += 1
                     txt += status + " `" + uid + "` — " + exp.strftime("%Y-%m-%d") + "\n"
                 except:
-                    txt += "⚠️ `" + uid + "` — خطأ\n"
-            txt += "\n📊 النشط: " + str(active) + "/" + str(len(vip))
+                    txt += "⚠️ `" + uid + "` — Error\n"
+            txt += "\n📊 Active: " + str(active) + "/" + str(len(vip))
             bot.reply_to(message, txt, parse_mode="Markdown")
         except Exception as e:
-            bot.reply_to(message, "❌ خطأ: " + str(e)[:100])
+            bot.reply_to(message, "❌ Error: " + str(e)[:100])
         return
 
     # ============ /bottom ============
     if text.lower() == "/bottom" and is_admin:
         try:
-            bot.reply_to(message, "⏳ جاري فحص عملات القاع...")
+            bot.reply_to(message, "⏳ Checking bottom coins...")
             _, losers = get_top_gainers_losers(50)
             results = []
             for coin in losers:
@@ -1861,18 +1870,18 @@ def handle_message(message):
                     continue
                 time.sleep(0.2)
             if not results:
-                bot.send_message(message.chat.id, "💎 ما لقيت عملات قاع حالياً")
+                bot.send_message(message.chat.id, "💎 No bottom coins now")
                 return
             results.sort(key=lambda x: x["score"], reverse=True)
-            txt = "💎 عملات القاع (" + str(len(results)) + ")\n━━━━━━━━━━━━━━━━\n\n"
+            txt = "💎 Bottom Coins (" + str(len(results)) + ")\n━━━━━━━━━━━━━━━━\n\n"
             for i, r in enumerate(results[:15], 1):
                 txt += str(i) + ". " + r["symbol"] + "\n"
                 txt += "   💰 " + str(smart_round(r["price"])) + "\n"
                 txt += "   📈 RSI: " + str(r["rsi"]) + "\n"
-                txt += "   📉 هبوط شهرين: " + str(r["drop_60d"]) + "%\n"
-                txt += "   📉 هبوط شهر: " + str(r["drop_30d"]) + "%\n"
-                txt += "   💧 سيولة: " + "{:,.0f}".format(r["liquidity"]) + "\n"
-                txt += "   🎯 النقاط: " + str(r["score"]) + "\n"
+                txt += "   📉 2M Drop: " + str(r["drop_60d"]) + "%\n"
+                txt += "   📉 1M Drop: " + str(r["drop_30d"]) + "%\n"
+                txt += "   💧 Liq: " + "{:,.0f}".format(r["liquidity"]) + "\n"
+                txt += "   🎯 Score: " + str(r["score"]) + "\n"
                 for reason in r["reasons"][:3]:
                     txt += "   • " + reason + "\n"
                 txt += "\n"
@@ -1884,7 +1893,7 @@ def handle_message(message):
     # ============ /pump ============
     if text.lower() == "/pump" and is_admin:
         try:
-            bot.reply_to(message, "⚡ جاري فحص فرص الانفجار...")
+            bot.reply_to(message, "⚡ Checking breakout opportunities...")
             gainers, _ = get_top_gainers_losers(50)
             results = []
             for coin in gainers:
@@ -1902,18 +1911,18 @@ def handle_message(message):
                     continue
                 time.sleep(0.2)
             if not results:
-                bot.send_message(message.chat.id, "⚡ ما لقيت فرص انفجار حالياً")
+                bot.send_message(message.chat.id, "⚡ No breakout signals now")
                 return
             results.sort(key=lambda x: x["score"], reverse=True)
-            txt = "⚡ فرص الانفجار (" + str(len(results)) + ")\n━━━━━━━━━━━━━━━━\n\n"
+            txt = "⚡ Breakout Signals (" + str(len(results)) + ")\n━━━━━━━━━━━━━━━━\n\n"
             for i, r in enumerate(results[:15], 1):
                 emoji = "🟢" if r["direction"] == "bullish" else "🔴"
                 txt += str(i) + ". " + emoji + " " + r["symbol"] + "\n"
                 txt += "   💰 " + str(smart_round(r["price"])) + "\n"
                 txt += "   📈 RSI: " + str(r["rsi"]) + "\n"
                 txt += "   📊 ADX: " + str(r["adx"]) + "\n"
-                txt += "   🔥 حجم: " + str(r["vol_ratio"]) + "x\n"
-                txt += "   🎯 النقاط: " + str(r["score"]) + "\n"
+                txt += "   🔥 Vol: " + str(r["vol_ratio"]) + "x\n"
+                txt += "   🎯 Score: " + str(r["score"]) + "\n"
                 for reason in r["reasons"][:3]:
                     txt += "   • " + reason + "\n"
                 txt += "\n"
@@ -1925,14 +1934,14 @@ def handle_message(message):
     # ============ /delist ============
     if text.lower() == "/delist" and is_admin:
         try:
-            bot.reply_to(message, "🚨 جاري فحص إعلانات الحذف...")
+            bot.reply_to(message, "🚨 Checking delisting announcements...")
             check_delistings()
             known = load_delistings()
             if not known:
-                bot.send_message(message.chat.id, "🚨 ما في إعلانات حذف محفوظة")
+                bot.send_message(message.chat.id, "🚨 No delisting announcements")
                 return
             items = list(known.values())[-10:]
-            txt = "🚨 إعلانات الحذف (" + str(len(items)) + ")\n━━━━━━━━━━━━━━━━\n\n"
+            txt = "🚨 Delisting (" + str(len(items)) + ")\n━━━━━━━━━━━━━━━━\n\n"
             for i, d in enumerate(reversed(items), 1):
                 txt += str(i) + ". " + d.get("title", "")[:80] + "\n"
                 txt += "   📰 " + d.get("source", "") + "\n\n"
@@ -1944,7 +1953,7 @@ def handle_message(message):
     # ============ /short ============
     if text.lower() == "/short" and is_admin:
         try:
-            bot.reply_to(message, "🔴 جاري البحث عن فرص الشورت...")
+            bot.reply_to(message, "🔴 Scanning short opportunities...")
             gainers, _ = get_top_gainers_losers(50)
             results = []
             for coin in gainers:
@@ -1957,17 +1966,17 @@ def handle_message(message):
                     continue
                 time.sleep(0.2)
             if not results:
-                bot.send_message(message.chat.id, "🔴 ما لقيت فرص شورت حالياً")
+                bot.send_message(message.chat.id, "🔴 No short signals now")
                 return
-            txt = "🔴 فرص الشورت (" + str(len(results)) + ")\n━━━━━━━━━━━━━━━━\n\n"
+            txt = "🔴 Short Opportunities (" + str(len(results)) + ")\n━━━━━━━━━━━━━━━━\n\n"
             for i, r in enumerate(results[:10], 1):
                 txt += str(i) + ". " + r["symbol"] + "\n"
-                txt += "   💰 " + str(smart_round(r["entry"])) + "\n"
-                txt += "   🛑 " + str(smart_round(r["sl"])) + "\n"
+                txt += "   💰 Entry: " + str(smart_round(r["entry"])) + "\n"
+                txt += "   🛑 SL: " + str(smart_round(r["sl"])) + "\n"
                 txt += "   🎯 TP1: " + str(smart_round(r["tp1"])) + "\n"
                 txt += "   🎯 TP2: " + str(smart_round(r["tp2"])) + "\n"
                 txt += "   📈 RSI: " + str(r["rsi"]) + "\n"
-                txt += "   📈 صعود: +" + str(r["pump_24h"]) + "%\n"
+                txt += "   📈 Pump: +" + str(r["pump_24h"]) + "%\n"
                 txt += "   ⚡ " + str(r["signals"]) + "\n"
                 txt += "   📋 " + " | ".join(r["reasons"][:3]) + "\n\n"
             bot.send_message(message.chat.id, txt)
@@ -1977,11 +1986,13 @@ def handle_message(message):
 
     # ============ /start ============
     if text.lower() in ["/start", "start", "help", "/help", "بدأ", "مساعدة"]:
-        lang = detect_lang(message.from_user.language_code or "en")
+        lang = detect_lang(text)
         user_status = check_user_status(user_id, message.from_user.first_name or "Unknown")
         if user_status == "expired" and not is_vip(user_id):
-            txt = "🔒 انتهت فترتك المجانية.\n\n"
-            txt += "للاستمرار في استخدام البوت، اشترك في VIP:\n/vip"
+            if lang == "ar":
+                txt = "🔒 انتهت فترتك المجانية.\n\nللاستمرار: /vip"
+            else:
+                txt = "🔒 Your free trial expired.\n\nTo continue: /vip"
             bot.reply_to(message, txt)
             return
         bot.reply_to(message, LANG[lang]["ask"])
@@ -1993,13 +2004,15 @@ def handle_message(message):
     # ============ فحص الحساب ============
     user_status = check_user_status(user_id, message.from_user.first_name or "Unknown")
     user_is_vip = is_vip(user_id)
+    lang = detect_lang(text)
 
     if user_status == "expired" and not user_is_vip:
-        txt = "🔒 *انتهت فترتك المجانية*\n"
-        txt += "━━━━━━━━━━━━━━━━\n\n"
-        txt += "للاستمرار في استخدام البوت، اشترك في VIP:\n\n"
-        txt += "💎 /vip\n\n"
-        txt += "أو تواصل مع: @rym_rima16"
+        if lang == "ar":
+            txt = "🔒 *انتهت فترتك المجانية*\n━━━━━━━━━━━━━━━━\n\n"
+            txt += "للاستمرار في استخدام البوت، اشترك في VIP:\n\n💎 /vip"
+        else:
+            txt = "🔒 *Your trial expired*\n━━━━━━━━━━━━━━━━\n\n"
+            txt += "To continue using the bot, subscribe to VIP:\n\n💎 /vip"
         try:
             bot.reply_to(message, txt, parse_mode="Markdown")
         except:
@@ -2011,17 +2024,20 @@ def handle_message(message):
         remaining = VIP_FORCE_DAY - days
         if remaining < 0:
             remaining = 0
-        warn = "⚠️ *تنبيه*\n"
-        warn += "━━━━━━━━━━━━━━━━\n"
-        warn += "باقي لك *" + str(remaining) + " يوم* على انتهاء فترتك المجانية.\n\n"
-        warn += "💎 للاستمرار، اشترك في VIP:\n/vip"
+        if lang == "ar":
+            warn = "⚠️ *تنبيه*\n━━━━━━━━━━━━━━━━\n"
+            warn += "باقي لك *" + str(remaining) + " يوم* على انتهاء فترتك المجانية.\n\n"
+            warn += "💎 للاستمرار، اشترك في VIP:\n/vip"
+        else:
+            warn = "⚠️ *Warning*\n━━━━━━━━━━━━━━━━\n"
+            warn += "*" + str(remaining) + " days* left in your free trial.\n\n"
+            warn += "💎 To continue, subscribe to VIP:\n/vip"
         try:
             bot.send_message(message.chat.id, warn, parse_mode="Markdown")
         except:
             pass
 
     # ============ تحليل عملة ============
-    lang = detect_lang(text)
     t = LANG[lang]
     symbol = text.upper()
     if not symbol.endswith("USDT"):
@@ -2033,12 +2049,12 @@ def handle_message(message):
             bot.reply_to(message, t["error"] + ": " + symbol)
             return
         filename = create_chart(result, lang, is_admin)
-        tf_label = "يومي" if result["timeframe"] == "daily" else "4 ساعات"
-        tr_label = {"uptrend": "صاعد 📈", "downtrend": "هابط 📉", "sideways": "عرضي ↔️"}.get(result["trend"], "—")
+        tf_label = "Daily" if result["timeframe"] == "daily" else "4H"
+        tr_label = {"uptrend": "Uptrend 📈", "downtrend": "Downtrend 📉", "sideways": "Sideways ↔️"}.get(result["trend"], "—")
         txt = t["report"] + " - " + symbol + "\n"
         txt += t["frame"] + ": " + tf_label + "\n"
-        txt += "📊 الاتجاه: " + tr_label + "\n"
-        txt += "🎯 الثقة: " + str(result["confidence"]) + "/10\n\n"
+        txt += "📊 Trend: " + tr_label + "\n"
+        txt += "🎯 Confidence: " + str(result["confidence"]) + "/10\n\n"
         txt += t[result["side"]] + "\n\n"
         txt += t["entry"] + ": " + str(result["entry"]) + "\n"
 
@@ -2049,7 +2065,7 @@ def handle_message(message):
             txt += t["tp"] + " 2: " + str(result["tp2"]) + "\n"
             txt += t["sl"] + ": " + str(result["sl"]) + "\n\n"
             txt += t["rsi"] + ": " + str(round(result["rsi"], 2)) + "\n"
-            txt += "\n💎 للاشتراك في VIP: /vip"
+            txt += "\n💎 VIP: /vip"
             txt += t["channel_promo"]
         else:
             votes = result["votes"]
@@ -2061,10 +2077,10 @@ def handle_message(message):
             txt += t["rsi"] + ": " + str(round(result["rsi"], 2)) + "\n"
             txt += t["adx"] + ": " + str(round(result["adx"], 2)) + "\n"
             txt += t["atr"] + ": " + str(round(result["atr"], 6)) + "\n"
-            if not pd.isna(result["cci"]):
-                txt += t["cci"] + ": " + str(round(result["cci"], 2)) + "\n"
             if not pd.isna(result["mfi"]):
                 txt += t["mfi"] + ": " + str(round(result["mfi"], 2)) + "\n"
+            if not pd.isna(result["vwap"]):
+                txt += "📊 VWAP: " + str(smart_round(result["vwap"])) + "\n"
             if result["cross"]:
                 txt += "🔀 " + ("🌟 Golden Cross" if result["cross"] == "golden" else "💀 Death Cross") + "\n"
             if result["divergence"]:
@@ -2075,15 +2091,15 @@ def handle_message(message):
             else:
                 txt += "💎 VIP\n"
             txt += "━━━━━━━━━━━━━━━━\n"
-            txt += "💧 السيولة: " + "{:,.0f}".format(result["liquidity"]) + "\n"
-            txt += "🐋 الحيتان: " + str(result["whale_count"]) + "\n"
+            txt += "💧 Liq: " + "{:,.0f}".format(result["liquidity"]) + "\n"
+            txt += "🐋 Whales: " + str(result["whale_count"]) + "\n"
             if result.get("is_major"):
                 if result["supports"]:
-                    txt += "🟢 دعم: " + str(smart_round(result["supports"][0])) + "\n"
+                    txt += "🟢 Support: " + str(smart_round(result["supports"][0])) + "\n"
                 if result["resistances"]:
-                    txt += "🔴 مقاومة: " + str(smart_round(result["resistances"][0])) + "\n"
-            txt += "\n📊 التصويت (" + str(votes["buy"]) + " Buy / " + str(votes["sell"]) + " Sell):\n"
-            for d in votes["details"][:13]:
+                    txt += "🔴 Resistance: " + str(smart_round(result["resistances"][0])) + "\n"
+            txt += "\n📊 Votes (" + str(votes["buy"]) + " Buy / " + str(votes["sell"]) + " Sell):\n"
+            for d in votes["details"][:11]:
                 txt += "• " + d + "\n"
 
         markup = types.InlineKeyboardMarkup()
