@@ -102,7 +102,6 @@ def is_major(symbol):
 
 # ============== كشف اللغة ==============
 def detect_lang_by_telegram(message):
-    """كشف اللغة من إعدادات تيليجرام"""
     try:
         code = message.from_user.language_code or ""
         if code.startswith("ar"):
@@ -113,7 +112,6 @@ def detect_lang_by_telegram(message):
 
 
 def detect_lang_by_text(text):
-    """كشف اللغة من النص"""
     for ch in text:
         if ch in "ابتثجحخدذرزسشصضطظعغفقكلمنهوي":
             return "ar"
@@ -143,17 +141,17 @@ LANG = {
         "fib_382": "Fib 38.2%",
         "fib_500": "Fib 50.0%",
         "fib_618": "Fib 61.8%",
-        "price_lbl": "السعر",
+        "price_lbl": "السعر (Binance)",
         "ema20_lbl": "EMA 20",
         "ema50_lbl": "EMA 50",
         "ema200_lbl": "EMA 200",
         "bb_lbl": "Bollinger",
-        "entry_lbl": "الدخول",
-        "tp1_lbl": "هدف 1",
-        "tp2_lbl": "هدف 2",
-        "tp3_lbl": "هدف 3",
-        "tp4_lbl": "هدف 4",
-        "sl_lbl": "ستوب",
+        "entry_lbl": "سعر الدخول",
+        "tp1_lbl": "الهدف 1",
+        "tp2_lbl": "الهدف 2",
+        "tp3_lbl": "الهدف 3",
+        "tp4_lbl": "الهدف 4",
+        "sl_lbl": "وقف الخسارة",
         "sup_lbl": "دعم",
         "res_lbl": "مقاومة",
         "channel_promo": "\n\n📣 @rym_rima16"
@@ -179,17 +177,17 @@ LANG = {
         "fib_382": "Fib 38.2%",
         "fib_500": "Fib 50.0%",
         "fib_618": "Fib 61.8%",
-        "price_lbl": "Price",
+        "price_lbl": "Price (Binance)",
         "ema20_lbl": "EMA 20",
         "ema50_lbl": "EMA 50",
         "ema200_lbl": "EMA 200",
         "bb_lbl": "Bollinger",
         "entry_lbl": "Entry",
-        "tp1_lbl": "TP1",
-        "tp2_lbl": "TP2",
-        "tp3_lbl": "TP3",
-        "tp4_lbl": "TP4",
-        "sl_lbl": "SL",
+        "tp1_lbl": "Target 1",
+        "tp2_lbl": "Target 2",
+        "tp3_lbl": "Target 3",
+        "tp4_lbl": "Target 4",
+        "sl_lbl": "Stop Loss",
         "sup_lbl": "Support",
         "res_lbl": "Resistance",
         "channel_promo": "\n\n📣 @rym_rima16"
@@ -541,6 +539,28 @@ def get_mexc(symbol, timeframe="daily"):
         return None
 
 
+def get_gateio(symbol, timeframe="daily"):
+    """Gate.io - مصدر إضافي"""
+    base = symbol.replace("USDT", "").replace("USDC", "").strip().upper()
+    interval = "1d" if timeframe == "daily" else "4h"
+    try:
+        url = "https://api.gateio.ws/api/v4/spot/candlesticks"
+        params = {"currency_pair": base + "_USDT", "interval": interval, "limit": "200"}
+        resp = requests.get(url, params=params, timeout=15).json()
+        if not isinstance(resp, list) or len(resp) < 50:
+            return None
+        df = pd.DataFrame(resp, columns=["time", "quoteVol", "close", "high", "low", "open", "baseVol", "confirm"])
+        for c in ["open", "high", "low", "close", "baseVol"]:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        df = df.rename(columns={"baseVol": "volume"})
+        df["time"] = pd.to_datetime(df["time"].astype("int64"), unit="s")
+        df = df[["time", "open", "high", "low", "close", "volume"]].dropna()
+        df.set_index("time", inplace=True)
+        return df
+    except:
+        return None
+
+
 def get_data(symbol, timeframe="daily"):
     sources = [
         ("BinanceVision", get_binance_vision),
@@ -550,7 +570,8 @@ def get_data(symbol, timeframe="daily"):
         ("Kraken", get_kraken),
         ("Coinbase", get_coinbase),
         ("CoinGecko", get_coingecko),
-        ("MEXC", get_mexc)
+        ("MEXC", get_mexc),
+        ("GateIO", get_gateio)
     ]
     for name, func in sources:
         try:
@@ -1120,7 +1141,7 @@ def technical_rating(df):
     }
 
 
-# ============== التحليل الرئيسي ==============
+# ============== التحليل الرئيسي (مع الفلاتر الجديدة) ==============
 def analyze(symbol, timeframe=None):
     if timeframe is None:
         timeframe = get_timeframe(symbol)
@@ -1164,6 +1185,8 @@ def analyze(symbol, timeframe=None):
     whale_count = calc_whale_radar(df)
     trend = check_trend_direction(df)
 
+    rsi_val = rsi_series.iloc[-1]
+
     if rating["rating"] in ["strong_buy", "buy"]:
         side = "buy"
     elif rating["rating"] in ["strong_sell", "sell"]:
@@ -1173,21 +1196,60 @@ def analyze(symbol, timeframe=None):
 
     confidence = min(10, max(1, int((rating["score"] + 1) * 5)))
 
-    # ============ الأهداف المنطقية (%) ============
+    # ============ فلتر 1: RSI Overbought ============
+    if not pd.isna(rsi_val):
+        if rsi_val > 80 and side == "buy":
+            side = "sell"
+            confidence = max(3, confidence - 2)
+        elif rsi_val < 20 and side == "sell":
+            side = "buy"
+            confidence = max(3, confidence - 2)
+
+    # ============ فلتر 2: Rating محايد ============
+    if rating["rating"] == "neutral":
+        confidence = max(2, confidence - 2)
+
+    # ============ فلتر 3: Divergence Bearish ============
+    if divergence == "bearish" and side == "buy":
+        confidence = max(1, confidence - 2)
+
+    # ============ فلتر 4: السيولة الضعيفة ============
+    if liquidity < 500000:
+        confidence = max(1, confidence - 1)
+
+    # ============ الأهداف المنطقية ============
+    is_4h = (timeframe == "4h")
+
     if side == "buy":
         entry = price
-        sl = entry * 0.97          # -3%
-        tp1 = entry * 1.01          # +1%
-        tp2 = entry * 1.02          # +2%
-        tp3 = entry * 1.03          # +3%
-        tp4 = entry * 1.05          # +5%
+        if is_4h:
+            # 4H: قريبة (تتحقق بسرعة)
+            sl = entry * 0.985    # -1.5%
+            tp1 = entry * 1.005   # +0.5%
+            tp2 = entry * 1.01    # +1%
+            tp3 = entry * 1.015   # +1.5%
+            tp4 = entry * 1.025   # +2.5%
+        else:
+            # Daily: منطقية (أوسع)
+            sl = entry * 0.96     # -4%
+            tp1 = entry * 1.02    # +2%
+            tp2 = entry * 1.04    # +4%
+            tp3 = entry * 1.06    # +6%
+            tp4 = entry * 1.10    # +10%
     else:
         entry = price
-        sl = entry * 1.03          # +3%
-        tp1 = entry * 0.99          # -1%
-        tp2 = entry * 0.98          # -2%
-        tp3 = entry * 0.97          # -3%
-        tp4 = entry * 0.95          # -5%
+        if is_4h:
+            sl = entry * 1.015    # +1.5%
+            tp1 = entry * 0.995   # -0.5%
+            tp2 = entry * 0.99    # -1%
+            tp3 = entry * 0.985   # -1.5%
+            tp4 = entry * 0.975   # -2.5%
+        else:
+            sl = entry * 1.04     # +4%
+            tp1 = entry * 0.98    # -2%
+            tp2 = entry * 0.96    # -4%
+            tp3 = entry * 0.94    # -6%
+            tp4 = entry * 0.90    # -10%
 
     return {
         "symbol": symbol, "timeframe": timeframe, "side": side,
@@ -1196,7 +1258,7 @@ def analyze(symbol, timeframe=None):
         "entry": smart_round(entry), "sl": smart_round(sl),
         "tp1": smart_round(tp1), "tp2": smart_round(tp2),
         "tp3": smart_round(tp3), "tp4": smart_round(tp4),
-        "rsi": rsi_series.iloc[-1], "adx": adx_series.iloc[-1],
+        "rsi": rsi_val, "adx": adx_series.iloc[-1],
         "atr": atr_val, "mfi": mfi_val,
         "liquidity": liquidity, "whale_count": whale_count,
         "df": df, "ema20": ema20, "ema50": ema50, "ema200": ema200,
@@ -1273,11 +1335,11 @@ def detect_delisting_short(symbol):
     return {
         "symbol": symbol,
         "entry": price_now,
-        "sl": price_now * 1.03,
-        "tp1": price_now * 0.99,
-        "tp2": price_now * 0.98,
-        "tp3": price_now * 0.97,
-        "tp4": price_now * 0.95,
+        "sl": price_now * 1.015,
+        "tp1": price_now * 0.995,
+        "tp2": price_now * 0.99,
+        "tp3": price_now * 0.985,
+        "tp4": price_now * 0.975,
         "signals": signals,
         "reasons": reasons,
         "rsi": rsi if not pd.isna(rsi) else 0,
@@ -1285,20 +1347,15 @@ def detect_delisting_short(symbol):
     }
 
 
-# ============== الشارت (Heikin Ashi) ==============
+# ============== الشارت (زي أبو تركي - Heikin Ashi) ==============
 def create_chart(result, lang, user_type):
-    """
-    user_type: "admin" / "vip" / "normal"
-    admin + vip = 4 أهداف
-    normal = 2 أهداف
-    """
     t = LANG[lang]
     df = result["df"]
     symbol = result["symbol"]
     timeframe = result["timeframe"]
     df_plot = df.tail(80).copy()
 
-    # Heikin Ashi
+    # ============ Heikin Ashi ============
     ha_close = (df_plot["open"] + df_plot["high"] + df_plot["low"] + df_plot["close"]) / 4
     ha_open = ha_close.copy()
     ha_open.iloc[0] = (df_plot["open"].iloc[0] + df_plot["close"].iloc[0]) / 2
@@ -1362,9 +1419,17 @@ def create_chart(result, lang, user_type):
 
     ax = axes[0]
 
+    # ✅ y-limits ذكية (تحل مشكلة ONE و AKE)
     pm = max([result["entry"], result["sl"]] + targets)
     pn = min([result["entry"], result["sl"]] + targets)
-    ax.set_ylim(pn * 0.98, pm * 1.02)
+    price_range = pm - pn
+    if price_range < result["entry"] * 0.02:
+        # العملات الصغيرة: نضمن عرض 2% على الأقل
+        center = (pm + pn) / 2
+        margin = result["entry"] * 0.03
+        ax.set_ylim(center - margin, center + margin)
+    else:
+        ax.set_ylim(pn * 0.995, pm * 1.005)
 
     ax.text(0.5, 0.5, "Rym Crypto", transform=ax.transAxes,
             fontsize=70, color="gray", alpha=0.12, ha="center",
@@ -1425,21 +1490,17 @@ def create_chart(result, lang, user_type):
     except:
         pass
     return filename
-# ============== النسخة القابلة للنسخ ==============
+# ============== النسخة القابلة للنسخ (للأدمن فقط) ==============
 def make_copy_version(result, user_type):
-    """
-    user_type: "admin" / "vip" / "normal"
-    normal = هدفين
-    admin + vip = 4 أهداف
-    """
+    if user_type != "admin":
+        return None
     symbol = result["symbol"]
     txt = "#" + symbol + "\n"
     txt += "➡️ Entry: " + str(result["entry"]) + "\n"
     txt += "🎯 TP1: " + str(result["tp1"]) + "\n"
     txt += "🎯 TP2: " + str(result["tp2"]) + "\n"
-    if user_type != "normal":
-        txt += "🎯 TP3: " + str(result["tp3"]) + "\n"
-        txt += "🎯 TP4: " + str(result["tp4"]) + "\n"
+    txt += "🎯 TP3: " + str(result["tp3"]) + "\n"
+    txt += "🎯 TP4: " + str(result["tp4"]) + "\n"
     txt += "🛑 SL: " + str(result["sl"])
     return txt
 
@@ -1453,9 +1514,7 @@ def handle_message(message):
     user_id = message.from_user.id
     is_admin = (user_id == ADMIN_ID)
 
-    # كشف اللغة حسب تيليجرام
     lang = detect_lang_by_telegram(message)
-    # لو المستخدم كتب بالعربي، نرد بالعربي
     if detect_lang_by_text(text) == "ar":
         lang = "ar"
     t = LANG[lang]
@@ -1539,9 +1598,9 @@ def handle_message(message):
             txt = "💎 *اشتراك VIP*\n"
             txt += "━━━━━━━━━━━━━━━━\n\n"
             txt += "📌 *المزايا:*\n"
-            txt += "• نظام TradingView (26 مؤشر)\n"
+            txt += "• صفقات مدروسة بدقة عالية\n"
+            txt += "• نسبة نجاح تصل إلى 90%\n"
             txt += "• 4 أهداف لكل توصية\n"
-            txt += "• نسخة قابلة للنسخ\n"
             txt += "• إشارات شورت حصرية\n"
             txt += "• رادار الانفجارات\n"
             txt += "• عملات القاع\n"
@@ -1560,9 +1619,9 @@ def handle_message(message):
             txt = "💎 *VIP Subscription*\n"
             txt += "━━━━━━━━━━━━━━━━\n\n"
             txt += "📌 *Features:*\n"
-            txt += "• TradingView System (26 indicators)\n"
+            txt += "• Studied high-accuracy trades\n"
+            txt += "• Win rate up to 90%\n"
             txt += "• 4 Targets per signal\n"
-            txt += "• Copyable version\n"
             txt += "• Exclusive Short signals\n"
             txt += "• Breakout Radar\n"
             txt += "• Bottom Coins\n"
@@ -1642,9 +1701,8 @@ def handle_message(message):
             welcome += "━━━━━━━━━━━━━━━━\n\n"
             welcome += "✨ *Your subscription is active!*\n\n"
             welcome += "🎁 *Your Benefits:*\n"
-            welcome += "💎 TradingView System (26 indicators)\n"
+            welcome += "📊 Studied high-accuracy trades\n"
             welcome += "🎯 4 Targets per signal\n"
-            welcome += "📋 Copyable version\n"
             welcome += "🔴 Exclusive Short signals\n"
             welcome += "⚡ Breakout Radar\n"
             welcome += "💎 Bottom Coins\n"
@@ -1886,7 +1944,7 @@ def handle_message(message):
     # ============ /start ============
     if text.lower() in ["/start", "start", "help", "/help", "بدأ", "مساعدة"]:
         user_status = check_user_status(user_id, message.from_user.first_name or "Unknown")
-        if user_status == "expired" and not is_vip(user_id):
+        if user_status == "expired" and not is_vip(user_id) and not is_admin:
             if lang == "ar":
                 txt = "🔒 انتهت فترتك المجانية.\n\nللاستمرار: /vip"
             else:
@@ -1983,12 +2041,6 @@ def handle_message(message):
             if not pd.isna(result["mfi"]):
                 txt += t["mfi"] + ": " + str(round(result["mfi"], 2)) + "\n"
 
-            r = result["rating"]
-            txt += "\n📊 TradingView (26):\n"
-            txt += "• MA: " + str(r["ma_buy"]) + " Buy / " + str(r["ma_sell"]) + " Sell\n"
-            txt += "• OSC: " + str(r["osc_buy"]) + " Buy / " + str(r["osc_sell"]) + " Sell\n"
-            txt += "• Score: " + str(r["score"]) + "\n"
-
             txt += "\n🌐 Filters:\n"
             txt += "• F&G: " + str(result["fng"]) + " (" + result["fng_label"] + ")\n"
             if result["liq"]:
@@ -2031,10 +2083,11 @@ def handle_message(message):
         if not sent:
             bot.send_message(message.chat.id, txt)
 
-        # النسخة القابلة للنسخ (admin + vip فقط)
-        if user_type != "normal":
+        # النسخة القابلة للنسخ (للأدمن فقط)
+        if user_type == "admin":
             copy_txt = make_copy_version(result, user_type)
-            bot.send_message(message.chat.id, copy_txt)
+            if copy_txt:
+                bot.send_message(message.chat.id, copy_txt)
 
     except Exception as e:
         print("Analyze error: " + str(e))
@@ -2252,7 +2305,11 @@ def check_delisting_shorts():
             try:
                 bot.send_message(ADMIN_ID, txt)
                 if VIP_CHANNEL_ID:
-                    bot.send_message(VIP_CHANNEL_ID, txt)
+                    try:
+                        bot.send_message(VIP_CHANNEL_ID, txt)
+                        print("VIP channel: sent " + s["symbol"])
+                    except Exception as e:
+                        print("VIP channel error: " + str(e))
                 with SHORT_LOCK:
                     SHORT_CACHE[symbol] = now
                 sent_count += 1
