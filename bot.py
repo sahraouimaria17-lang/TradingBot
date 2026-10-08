@@ -306,7 +306,6 @@ BINANCE_BASES = ["https://data-api.binance.vision","https://api.binance.com"]
 class PairNotFound(Exception): pass
 class Unsupported(Exception): pass
 
-# ✅ v7.8: إصلاح تعارض timeout
 def _get(url, timeout=15, **kw): return requests.get(url, timeout=timeout, **kw)
 def _num(rows): return [[int(r[0])]+[float(x) for x in r[1:6]] for r in rows]
 
@@ -648,6 +647,15 @@ def fmt(x):
     if x >= 0.01: return f"{x:.5f}"
     return f"{x:.8f}".rstrip("0")
 
+def smart_fmt(x):
+    """v7.9: تنسيق بدون أصفار زائدة — 121.00 → 121.0"""
+    s = fmt(x)
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    if "." not in s and not s.endswith("0"):
+        s += ".0"
+    return s
+
 def render_chart(res, vip=False):
     if not plt_ok: return None
     df = res["df"].tail(CANDLES_IN_CHART).reset_index(drop=True)
@@ -747,6 +755,7 @@ def render_chart(res, vip=False):
     plt.close(fig); buf.seek(0)
     return buf
 
+# v7.9: رسالة المستخدم المجاني (هدفان فقط)
 def format_signal_free(res):
     sym = res["sym"]; side = res["side"]; plan = res["plan"]
     tf = res["base_tf"]
@@ -772,6 +781,7 @@ def format_signal_free(res):
     ]
     return "\n".join(lines)
 
+# v7.9: رسالة VIP (4 أهداف)
 def format_signal_vip(res):
     sym = res["sym"]; side = res["side"]; plan = res["plan"]
     tf = res["base_tf"]
@@ -795,18 +805,20 @@ def format_signal_vip(res):
               "⚠️ تحليل فني وليس نصيحة مالية."]
     return "\n".join(lines)
 
+# v7.9: رسالة الأدمن = VIP + بلوك نسخ (3 أهداف، صيغة نظيفة)
 def format_signal_admin(res):
     plan = res["plan"]; side = res["side"]; sym = res["sym"]
     base = format_signal_vip(res)
     if not plan or not side: return base
-    tf_ar = {"1d":"يومي","4h":"4 ساعات","1h":"ساعة","15m":"15 دقيقة"}.get(res["base_tf"], res["base_tf"])
-    side_icon = "🟢" if side == 1 else "🔴"
-    side_txt = "شراء" if side == 1 else "بيع"
-    copy_lines = [f"#{sym}/USDT · {tf_ar}", f"{side_icon} {side_txt}",
-                  f"دخول: {fmt(plan['entry'])}"]
-    for i, tp in enumerate(plan["tps"][:4], 1):
-        copy_lines.append(f"🎯{i}: {fmt(tp[0])}")
-    copy_lines.append(f"🛑: {fmt(plan['sl'])}")
+    entry = plan["entry"]; sl = plan["sl"]
+    tps = plan["tps"][:3]  # 3 أهداف فقط في بلوك النسخ
+    copy_lines = [
+        f"#{sym}USDT",
+        f"➡️ Entry: {smart_fmt(entry)}",
+    ]
+    for i, tp in enumerate(tps, 1):
+        copy_lines.append(f"🎯 TP{i}: {smart_fmt(tp[0])}")
+    copy_lines.append(f"🛑 SL: {smart_fmt(sl)}")
     copy_block = "\n".join(copy_lines)
     return base + f"\n\n📋 <b>للنسخ:</b>\n<pre>{copy_block}</pre>"
 
@@ -822,7 +834,7 @@ def keyboard(sym, tf, tier):
         kb.row(types.InlineKeyboardButton("💎 اشترك VIP", callback_data="vip"))
     return kb
 
-def send_signal(bot, chat_id, res, tier, protect=False):
+def send_signal(bot, chat_id, res, tier, protect=False, kb=None):
     vip = tier in ("vip", "admin")
     img = render_chart(res, vip=vip)
     if tier == "admin":
@@ -832,11 +844,11 @@ def send_signal(bot, chat_id, res, tier, protect=False):
     else:
         text = format_signal_free(res)
     if img is None:
-        return bot.send_message(chat_id, text, protect_content=protect)
+        return bot.send_message(chat_id, text, reply_markup=kb, protect_content=protect)
     if len(text) <= 1024:
-        return bot.send_photo(chat_id, img, caption=text, protect_content=protect)
+        return bot.send_photo(chat_id, img, caption=text, reply_markup=kb, protect_content=protect)
     bot.send_photo(chat_id, img, protect_content=protect)
-    return bot.send_message(chat_id, text, protect_content=protect)
+    return bot.send_message(chat_id, text, reply_markup=kb, protect_content=protect)
 
 _pool = ThreadPoolExecutor(6)
 _cache = {}
@@ -1125,7 +1137,8 @@ def deliver(bot, chat_id, user, sym, tf=None):
     try:
         res = get_analysis(sym, tf)
         tier = tier_of(st)
-        send_signal(bot, chat_id, res, tier, protect=(st != "admin"))
+        kb = keyboard(sym, tf, tier)
+        send_signal(bot, chat_id, res, tier, protect=(st != "admin"), kb=kb)
         if st == "trial":
             bot.send_message(chat_id, f"🆓 تجربة: اليوم {day} من {TRIAL_DAYS}")
         elif st == "warning":
@@ -1415,7 +1428,7 @@ def make_bot(token=None):
     def dashboard(m):
         c = counts(store)
         src = ", ".join(f"{k}:{'✅' if v=='ok' else '❌'}" for k,v in source_status().items())
-        bot.reply_to(m, f"🖥 <b>v7.8</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
+        bot.reply_to(m, f"🖥 <b>v7.9</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
                         f"🆓 {c['trial']} | 💎 {c['vip']}\n\n🌐 {src}\n💾 {store.remote_msg}\n"
                         f"⚙️ SL 4% | TP 3/6/9/12% | 4 أهداف")
 
@@ -1466,7 +1479,7 @@ def make_bot(token=None):
                 bot.send_message(m.chat.id, "لا توجد إشارات شورت حالياً.")
             else:
                 for res in rows[:5]:
-                    send_signal(bot, m.chat.id, res, "admin")
+                    send_signal(bot, m.chat.id, res, "admin", kb=keyboard(res["sym"], res["base_tf"], "admin"))
                 bot.send_message(m.chat.id, f"✅ {len(rows)} إشارة شورت")
         finally:
             try: bot.delete_message(m.chat.id, wait.message_id)
@@ -1510,7 +1523,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: pass
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v7.8 started")
+    log.info("bot v7.9 started")
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
