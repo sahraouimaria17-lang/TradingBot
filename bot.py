@@ -372,7 +372,6 @@ def _gate(sym, iv, limit):
     r.raise_for_status()
     data = r.json()
     if not data: raise PairNotFound(sym)
-    # [ts_s, quote_vol, close, high, low, open, base_vol, closed]
     return sorted([[int(k[0])*1000, float(k[5]), float(k[3]), float(k[4]), float(k[2]), float(k[6])]
                    for k in data], key=lambda x: x[0])
 
@@ -386,7 +385,6 @@ def _kucoin(sym, iv, limit):
     if j.get("code") != "200000": raise PairNotFound(sym)
     data = j.get("data") or []
     if not data: raise PairNotFound(sym)
-    # [time, open, close, high, low, volume, turnover]
     return sorted([[int(float(k[0]))*1000, float(k[1]), float(k[3]), float(k[4]), float(k[2]), float(k[5])]
                    for k in data], key=lambda x: x[0])
 
@@ -455,9 +453,7 @@ def _cached(key, ttl, fn):
     _misc[key] = (time.time(), val)
     return val
 
-# v8.1: جلب السعر الحي — 9 مصادر + retries
 def fetch_live_price(sym):
-    # 1. Binance Spot (retries)
     for attempt in range(3):
         for base in BINANCE_BASES:
             try:
@@ -470,14 +466,12 @@ def fetch_live_price(sym):
             except Exception as e:
                 log.warning("binance retry %d: %s", attempt, str(e)[:60])
                 time.sleep(0.5)
-    # 2. Binance Futures
     try:
         r = _get("https://fapi.binance.com/fapi/v1/ticker/price", params={"symbol": sym+"USDT"}, timeout=15)
         if r.status_code == 200:
             p = float(r.json().get("price", 0))
             if p > 0: return p, "binance_fut"
     except Exception: pass
-    # 3. OKX
     try:
         r = _get("https://www.okx.com/api/v5/market/ticker", params={"instId": f"{sym}-USDT"}, timeout=15)
         d = r.json().get("data") or []
@@ -485,7 +479,6 @@ def fetch_live_price(sym):
             p = float(d[0].get("last", 0))
             if p > 0: return p, "okx"
     except Exception: pass
-    # 4. Bybit
     try:
         r = _get("https://api.bybit.com/v5/market/tickers", params={"category": "spot", "symbol": sym+"USDT"}, timeout=15)
         d = r.json().get("result", {}).get("list") or []
@@ -493,14 +486,12 @@ def fetch_live_price(sym):
             p = float(d[0].get("lastPrice", 0))
             if p > 0: return p, "bybit"
     except Exception: pass
-    # 5. MEXC
     try:
         r = _get("https://api.mexc.com/api/v3/ticker/price", params={"symbol": sym+"USDT"}, timeout=15)
         if r.status_code == 200:
             p = float(r.json().get("price", 0))
             if p > 0: return p, "mexc"
     except Exception: pass
-    # 6. KuCoin
     try:
         r = _get("https://api.kucoin.com/api/v1/market/orderbook/level1", params={"symbol": f"{sym}-USDT"}, timeout=15)
         j = r.json()
@@ -508,7 +499,6 @@ def fetch_live_price(sym):
             p = float(j["data"].get("price", 0))
             if p > 0: return p, "kucoin"
     except Exception: pass
-    # 7. Gate.io
     try:
         r = _get("https://api.gateio.ws/api/v4/spot/tickers", params={"currency_pair": f"{sym}_USDT"}, timeout=15)
         if r.status_code == 200:
@@ -517,7 +507,6 @@ def fetch_live_price(sym):
                 p = float(data[0].get("last", 0))
                 if p > 0: return p, "gate"
     except Exception: pass
-    # 8. Bitget
     try:
         r = _get("https://api.bitget.com/api/v2/spot/market/tickers", params={"symbol": f"{sym}USDT"}, timeout=15)
         j = r.json()
@@ -527,7 +516,6 @@ def fetch_live_price(sym):
             p = float(d.get("lastPr", 0))
             if p > 0: return p, "bitget"
     except Exception: pass
-    # 9. CoinGecko
     try:
         r = requests.get("https://api.coingecko.com/api/v3/search", params={"query": sym}, timeout=10).json()
         coins = [c for c in r.get("coins", []) if c.get("symbol","").upper() == sym]
@@ -756,59 +744,39 @@ def smart_fmt(x):
         s += ".0"
     return s
 
-# v8.1: شارت خطي — مثل أبو تركي بالضبط
 def render_chart(res, vip=False, n_tps=None):
     if not plt_ok: return None
     df = res["df"].tail(CANDLES_IN_CHART).reset_index(drop=True)
     if len(df) < 10: return None
-
-    # خلفية بيضاء
     bg = "#ffffff"
     fg = "#1a1a1a"
     grid_c = "#dddddd"
     spine_c = "#999999"
-
-    # ألوان زاهية
-    price_c = "#1f77b4"      # أزرق Price
-    ema20_c = "#ff9800"      # برتقالي
-    ema50_c = "#9c27b0"      # بنفسجي
-    ema200_c = "#795548"     # بني
-    bb_c = "#1e88e5"         # أزرق Bollinger
-    entry_c = "#0d47a1"      # أزرق غامق
-    sl_c = "#d32f2f"         # أحمر
-    tp_c = "#2e7d32"         # أخضر
-    rsi_c = "#c2185b"        # وردي
-
+    price_c = "#1f77b4"
+    ema20_c = "#ff9800"
+    ema50_c = "#9c27b0"
+    ema200_c = "#795548"
+    bb_c = "#1e88e5"
+    entry_c = "#0d47a1"
+    sl_c = "#d32f2f"
+    tp_c = "#2e7d32"
+    rsi_c = "#c2185b"
     side = res["side"]; plan = res["plan"]
     if n_tps is None:
         n_tps = 4 if vip else 2
-
     fig = plt.figure(figsize=(12 if vip else 11, 8.5 if vip else 7.5), facecolor=bg)
-    if vip:
-        gs = fig.add_gridspec(2, 1, height_ratios=[4, 1], hspace=0.08)
-        ax = fig.add_subplot(gs[0], facecolor=bg)
-        axr = fig.add_subplot(gs[1], facecolor=bg, sharex=ax)
-    else:
-        gs = fig.add_gridspec(2, 1, height_ratios=[4, 1], hspace=0.08)
-        ax = fig.add_subplot(gs[0], facecolor=bg)
-        axr = fig.add_subplot(gs[1], facecolor=bg, sharex=ax)
-
-    # Bollinger fill (أزرق شفاف)
+    gs = fig.add_gridspec(2, 1, height_ratios=[4, 1], hspace=0.08)
+    ax = fig.add_subplot(gs[0], facecolor=bg)
+    axr = fig.add_subplot(gs[1], facecolor=bg, sharex=ax)
     if not df["bb_up"].isna().all():
         ax.fill_between(df.index, df["bb_lo"], df["bb_up"], color=bb_c, alpha=0.10, lw=0, zorder=1)
         ax.plot(df.index, df["bb_up"], color=bb_c, lw=1.0, ls="--", alpha=0.6, zorder=2)
         ax.plot(df.index, df["bb_lo"], color=bb_c, lw=1.0, ls="--", alpha=0.6, zorder=2)
-
-    # EMA 20 + 50 + 200
     ax.plot(df.index, df["ema20"], color=ema20_c, lw=1.8, label="EMA 20", zorder=3)
     ax.plot(df.index, df["ema50"], color=ema50_c, lw=1.8, label="EMA 50", zorder=3)
     if not df["ema200"].isna().all():
         ax.plot(df.index, df["ema200"], color=ema200_c, lw=1.5, label="EMA 200", zorder=3, alpha=0.9)
-
-    # السعر كخط (Price line) — على كل شيء
     ax.plot(df.index, df["close"], color=price_c, lw=2.5, label="Price", zorder=5)
-
-    # Levels
     levels = []
     if plan and side:
         levels = [(plan["entry"], "Entry", entry_c, "-."),
@@ -821,22 +789,18 @@ def render_chart(res, vip=False, n_tps=None):
         ax.text(x_end + 0.5, p, f" {name}: {fmt(p)}", color=col,
                 fontsize=8.5 if vip else 8, va="center", fontweight="bold",
                 bbox=dict(boxstyle="round,pad=0.15", fc="white", ec=col, alpha=0.9, lw=0.6))
-
     lo = float(df["low"].min()); hi = float(df["high"].max())
     if levels:
         lo = min(lo, min(v[0] for v in levels))
         hi = max(hi, max(v[0] for v in levels))
     pad = (hi-lo)*0.06
     ax.set_ylim(lo-pad, hi+pad); ax.set_xlim(-1, len(df)+16)
-
-    # RSI panel (أسفل)
     axr.plot(df.index, df["rsi"], color=rsi_c, lw=1.5, label="RSI (14)")
     axr.axhline(70, color="#e53935", lw=0.7, ls=":")
     axr.axhline(30, color="#43a047", lw=0.7, ls=":")
     axr.fill_between(df.index, 30, 70, color="#f48fb1", alpha=0.10)
     axr.set_ylim(15, 90)
     axr.text(0.005, 0.8, "RSI", transform=axr.transAxes, color=fg, fontsize=8, fontweight="bold")
-
     for a_ in (ax, axr):
         a_.tick_params(colors=fg, labelsize=8)
         a_.grid(color=grid_c, lw=0.6, alpha=0.9)
@@ -849,24 +813,18 @@ def render_chart(res, vip=False, n_tps=None):
                           for i in range(0, len(df), step)], fontsize=8)
     ax.yaxis.tick_right()
     axr.yaxis.tick_right()
-
-    # Title — اسم العملة + الفريم + الاتجاه
     tf_lbl = {"1d":"1D","4h":"4H","1h":"1H","15m":"15m"}.get(res["base_tf"], res["base_tf"].upper())
     side_lbl = "SHORT Signal" if side == -1 else ("LONG Signal" if side == 1 else "")
     src_lbl = res.get("live_src", "binance").capitalize()
     title_txt = f"{res['sym']}USDT · {tf_lbl} · {src_lbl}"
     if side_lbl: title_txt += f" · {side_lbl}"
     ax.set_title(title_txt, color="#111111", fontsize=14, fontweight="bold", loc="center", pad=12)
-
     ax.legend(loc="upper left", fontsize=8, facecolor=bg, edgecolor=spine_c, labelcolor=fg, framealpha=0.95)
     axr.legend(loc="upper left", fontsize=7.5, facecolor=bg, edgecolor=spine_c, labelcolor=fg, framealpha=0.95)
-
-    # العلامة المائية
     fig.text(0.5, 0.55, BRAND, fontsize=72, color="#888888", alpha=0.15,
              ha="center", va="center", rotation=25, fontweight="bold")
     fig.text(0.985, 0.012, BRAND, fontsize=11, color="#c9a227",
              ha="right", va="bottom", fontweight="bold")
-
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=130, facecolor=bg, bbox_inches="tight")
     plt.close(fig); buf.seek(0)
@@ -1161,6 +1119,7 @@ def _daily(sym):
 def _h4(sym):
     return sym, get_analysis(sym, "4h")["df"]
 
+# v8.2: scan_bottom — شروط مرنة
 def scan_bottom(top=15):
     out = []
     syms = top_symbols(SCAN_TOP_N)
@@ -1176,13 +1135,15 @@ def scan_bottom(top=15):
             rsi_v = float(a["rsi"]); rsi_prev = float(b["rsi"])
             rvol = float(a["rvol"]) if not pd.isna(a["rvol"]) else 1.0
         except Exception: continue
-        if rsi_v >= 55 or near_low >= 40 or rsi_v <= rsi_prev: continue
+        # v8.2: شروط مرنة
+        if rsi_v >= 65 or near_low >= 60 or rsi_v <= rsi_prev: continue
         if not (a["close"] > a["open"] or a["close"] > b["close"]): continue
-        score = (55 - rsi_v) + (40 - near_low) + 5 * max(rvol - 1, 0)
+        score = (65 - rsi_v) + (60 - near_low) + 5 * max(rvol - 1, 0)
         out.append(dict(sym=sym, price=float(a["close"]), rsi=rsi_v, near_low=float(near_low),
                         drop=float((a["close"]/hi90-1)*100), rvol=rvol, score=float(score)))
     return sorted(out, key=lambda r: -r["score"])[:top]
 
+# v8.2: scan_pump — شروط مرنة
 def scan_pump(top=15):
     out = []
     syms = top_symbols(SCAN_TOP_N)
@@ -1197,7 +1158,8 @@ def scan_pump(top=15):
             brk = bool(a["close"] > a["hh20"]) if not pd.isna(a["hh20"]) else False
             up_bb = bool(a["close"] > a["bb_up"]) if not pd.isna(a["bb_up"]) else False
         except Exception: continue
-        if rvol < 1.8 or chg3 < 2: continue
+        # v8.2: شروط مرنة
+        if rvol < 1.4 or chg3 < 1.5: continue
         if not (brk or up_bb): continue
         score = rvol * max(chg3, 0.1)
         out.append(dict(sym=sym, price=float(a["close"]), rvol=rvol, chg3=float(chg3),
@@ -1525,7 +1487,6 @@ def make_bot(token=None):
             lines.append(f"{emoji} {side} <b>#{x['coin']}</b> · {x['tf']} · R {x['R']:+.2f}")
         bot.reply_to(m, "\n".join(lines))
 
-    # v8.1: /users — أسماء + أوقات نشاط مفصلة
     @bot.message_handler(commands=["users"])
     @admin_only
     def users_cmd(m):
@@ -1569,9 +1530,9 @@ def make_bot(token=None):
     def dashboard(m):
         c = counts(store)
         src = ", ".join(f"{k}:{'✅' if v=='ok' else '❌'}" for k,v in source_status().items())
-        bot.reply_to(m, f"🖥 <b>v8.1</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
+        bot.reply_to(m, f"🖥 <b>v8.2</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
                         f"🆓 {c['trial']} | 💎 {c['vip']}\n\n🌐 {src}\n💾 {store.remote_msg}\n"
-                        f"⚙️ SL 4% | TP 3/6/9/12% | Chart: Line+BB | Free=2 VIP=4")
+                        f"⚙️ SL 4% | TP 3/6/9/12% | Chart: Line+BB")
 
     @bot.message_handler(commands=["price"])
     @admin_only
@@ -1655,7 +1616,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: pass
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v8.1 started")
+    log.info("bot v8.2 started")
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
