@@ -49,25 +49,24 @@ STABLES = {"USDT","USDC","FDUSD","TUSD","DAI","BUSD","USDP","USDD","USDE","PYUSD
 
 FEE, SLIP = 0.001, 0.0005
 
-RISK_MODELS = {
-    "daily":  dict(fixed_sl=4.0, tps=[(0.75,.35),(1.5,.30),(2.25,.20),(3.0,.15)]),
-    "4h":     dict(fixed_sl=4.0, tps=[(0.75,.35),(1.5,.30),(2.25,.20),(3.0,.15)]),
-    "scalp":  dict(fixed_sl=2.5, tps=[(0.75,.35),(1.5,.30),(2.25,.20),(3.0,.15)]),
-    "daily_tight": dict(fixed_sl=3.5, tps=[(0.75,.35),(1.5,.30),(2.25,.20),(3.0,.15)]),
-    "daily_wide":  dict(fixed_sl=5.0, tps=[(0.75,.35),(1.5,.30),(2.25,.20),(3.0,.15)]),
-}
-BE_AFTER_TP1 = True
+# ═══════════════════════════ v9.0 — نظام مخاطر مزدوج ═══════════════════════════
+# MAJORS: SL 3% | TPs = 1R / 2R / 3R / 4R (أهداف واقعية للسعر الثقيل)
+# ALTCOINS: SL 4.5% | TPs = 1R / 2.5R / 4R / 6R (يسمح بحركة أكبر)
+RISK_MAJORS = dict(fixed_sl=3.0, tps=[(1.0, .30), (2.0, .30), (3.0, .25), (4.0, .15)])
+RISK_ALT    = dict(fixed_sl=4.5, tps=[(1.0, .30), (2.5, .30), (4.0, .25), (6.0, .15)])
+
+BE_AFTER_TP1 = False          # ← شلنا BE (كان يقتل الأرباح)
 TRAIL_AFTER_TP1 = True
-TRAIL_ATR_AFTER_TP1 = 1.5
-TRAIL_ATR_AFTER_TP2 = 1.0
-MAX_HOLD = {"4h": 24, "1d": 20}
+TRAIL_ATR_AFTER_TP1 = 2.5     # ← أوسع (كان 1.5)
+TRAIL_ATR_AFTER_TP2 = 2.0     # ← أوسع (كان 1.0)
+MAX_HOLD = {"4h": 30, "1d": 25}  # ← أطول قليلاً للترند
 
 SCORE_STRONG_BUY  = 35
 SCORE_BUY         = 8
 SCORE_CAUTIOUS    = -8
 SCORE_SELL        = -35
 MIN_VOTES_DEFAULT = 0
-ADX_MIN_DEFAULT = 10
+ADX_MIN_DEFAULT = 22          # ← رفعنا من 10
 RVOL_MIN = 1.0
 ATR_PCT_MIN = 0.3
 ATR_PCT_MAX = 25.0
@@ -82,15 +81,20 @@ CANDLES_IN_CHART = 90
 
 _bot = None
 
-def params_for(tf, risk_model=None, adx_min=None, btc_filter=None, min_votes=None):
-    env_rm = _e("RISK_MODEL", "").strip()
-    if risk_model is None:
-        rm = env_rm if env_rm else ("daily" if tf == "1d" else "4h")
+def _risk_model_for(sym):
+    """v9.0: يختار النموذج حسب نوع العملة"""
+    return RISK_MAJORS if sym in MAJORS else RISK_ALT
+
+def params_for(tf, risk_model=None, adx_min=None, btc_filter=None, min_votes=None, sym=None):
+    rm = risk_model or _e("RISK_MODEL", "").strip()
+    if sym is not None:
+        model = _risk_model_for(sym)
+        rm_label = "majors" if sym in MAJORS else "alt"
     else:
-        rm = risk_model
-    default_key = "daily" if tf == "1d" else "4h"
-    model = RISK_MODELS.get(rm, RISK_MODELS[default_key])
-    p = dict(tf=tf, risk_model=rm, rvol_min=RVOL_MIN,
+        model = RISK_MAJORS
+        rm_label = "majors"
+        rm = rm or "majors"
+    p = dict(tf=tf, risk_model=rm_label, rvol_min=RVOL_MIN,
              atr_pct_min=ATR_PCT_MIN, atr_pct_max=ATR_PCT_MAX,
              be_after_tp1=BE_AFTER_TP1,
              trail_after_tp1=TRAIL_AFTER_TP1,
@@ -110,7 +114,7 @@ def default_tf_for(symbol):
     return "1d" if symbol in MAJORS else "4h"
 
 SCAN_TOP_N = int(_e("SCAN_TOP_N", "60"))
-AUTOPOST_MIN_SCORE = int(_e("AUTOPOST_MIN_SCORE", "15"))
+AUTOPOST_MIN_SCORE = int(_e("AUTOPOST_MIN_SCORE", "25"))   # ← رفعنا من 15
 MAX_POSTS_PER_SCAN = int(_e("MAX_POSTS_PER_SCAN", "5"))
 FREE_CHANNEL_MAX_PER_DAY = int(_e("FREE_CHANNEL_MAX_PER_DAY", "3"))
 PROTECT_CONTENT = _e("PROTECT_CONTENT", "1") == "1"
@@ -714,7 +718,7 @@ def analyze(sym, chart_tf=None):
 
     plan = None
     if side:
-        p = params_for(base_tf)
+        p = params_for(base_tf, sym=sym)
         plan = build_plan(price, side, atr, p, base_tf, last["t"])
 
     return dict(sym=sym, frames=frames, used=used, base_tf=base_tf,
@@ -723,7 +727,7 @@ def analyze(sym, chart_tf=None):
                 live_src=live_src or "binance",
                 plan=plan, chg24=chg24, atr=atr, atr_pct=price_pct,
                 rsi=float(last["rsi"]), adx=float(last["adx"]),
-                protected=protected, df=bdf)
+                protected=protected, df=bdf, is_major=sym in MAJORS)
 
 def fmt(x):
     if x >= 1000: return f"{x:,.2f}"
@@ -836,6 +840,7 @@ def format_signal_vip(res):
     if not plan or not side:
         return f"📊 <b>تحليل #{sym}/USDT</b>\n\n⚡ Binance\n⏱ {tf_ar}\n\n💡 لا توجد صفقة مناسبة الآن ⚪"
     side_txt = "شراء 🟢" if side == 1 else "بيع 🔴"
+    is_major = res.get("is_major", False)
     lines = [
         f"💎 <b>تحليل VIP #{sym}/USDT</b>", "", "⚡ Binance", f"⏱ الفريم: {tf_ar}", "",
         f"💡 التوصية: <b>{side_txt}</b>", "",
@@ -845,7 +850,8 @@ def format_signal_vip(res):
         lines.append(f"🎯 الهدف {i}: <code>{fmt(tp[0])}</code>")
     lines.append(f"🛑 وقف الخسارة: <code>{fmt(plan['sl'])}</code>")
     lines += ["", f"📈 RSI: {res['rsi']:.0f} | ADX: {res['adx']:.0f}",
-              f"📊 التوافق: {res['agreement']}%", "",
+              f"📊 التوافق: {res['agreement']}%",
+              f"🎯 نوع: {'Major' if is_major else 'Altcoin'}", "",
               f"👤 {BRAND}", f"📢 {CHANNEL_LINK}", "",
               "⚠️ تحليل فني وليس نصيحة مالية."]
     return "\n".join(lines)
@@ -1068,7 +1074,7 @@ def _safe(fn, *a):
     except Exception as e:
         log.debug("scan skip %s: %s", a, str(e)[:80]); return None
 
-def scan_signals(universe=None, min_score=15, only_side=None):
+def scan_signals(universe=None, min_score=25, only_side=None):
     syms = universe or top_symbols(SCAN_TOP_N)
     out = []
     def _an(s):
@@ -1133,7 +1139,7 @@ def scan_pump(top=15):
                         kind="اختراق" if brk else "انفجار", score=float(score)))
     return sorted(out, key=lambda r: -r["score"])[:top]
 
-# ═══════════════════════════ BACKTEST ═══════════════════════════
+# ═══════════════════════════ BACKTEST v9.0 ═══════════════════════════
 def _fetch_hist(sym, iv, years):
     now_ms = int(time.time()*1000)
     start_ms = now_ms - int(years*365*24*3600*1000)
@@ -1187,7 +1193,7 @@ def _score_at(df, i):
     sig.append(1 if r["st_dir"] == 1 else -1)
     return float(np.mean(sig)) * 100
 
-def _signal_at(df, i, tf):
+def _signal_at(df, i, tf, sym):
     score = _score_at(df, i)
     if score >= SCORE_STRONG_BUY: side = 1
     elif score >= SCORE_BUY: side = 1
@@ -1201,29 +1207,33 @@ def _signal_at(df, i, tf):
         if side == -1 and chg > PUMP_PROTECT_SHORT: side = 0
         if side == 1 and chg < -DUMP_PROTECT_LONG: side = 0
     if side == 0: return 0, score, 0, 0, []
+    model = _risk_model_for(sym)
+    SL_PCT = model["fixed_sl"]
     entry = float(df.iloc[i]["close"])
-    risk = entry * RISK_MODELS["daily"]["fixed_sl"] / 100
+    risk = entry * SL_PCT / 100
     sl = entry - side*risk
-    tps = [(entry+side*r*risk, r, f, 100*side*r*risk/entry) for r, f in zip([0.75,1.5,2.25,3.0],[.35,.30,.20,.15])]
+    tps = [(entry+side*r*risk, r, f, 100*side*r*risk/entry) for r, f in model["tps"]]
     return side, score, entry, sl, tps
 
-def _bt_simulate(df, tf, min_score=15):
+def _bt_simulate(df, tf, min_score, sym):
     o = df["open"].values; h = df["high"].values
     l = df["low"].values; c = df["close"].values
     atr = df["atr"].values; t = df["t"].values
     n = len(df); trades = []; free = 0
     max_hold = MAX_HOLD.get(tf, 24)
-    SL_PCT = RISK_MODELS["daily"]["fixed_sl"]
+    model = _risk_model_for(sym)
+    SL_PCT = model["fixed_sl"]
+    TPS = model["tps"]
     for i in range(60, n-1):
         if i < free: continue
-        side, score, entry, sl, tps = _signal_at(df, i, tf)
+        side, score, entry, sl, tps = _signal_at(df, i, tf, sym)
         if side == 0 or abs(score) < min_score: continue
         if np.isnan(atr[i]) or atr[i] <= 0: continue
         entry_i = i+1
         entry_px = o[entry_i] * (1 + side*SLIP)
         risk = entry_px * SL_PCT / 100
         cur_sl = entry_px - side*risk
-        tps_px = [(entry_px + side*r*risk, r, f) for r, f in zip([0.75,1.5,2.25,3.0],[.35,.30,.20,.15])]
+        tps_px = [(entry_px + side*r*risk, r, f) for r, f in TPS]
         remaining = 1.0; realized = 0.0; k = 0
         exit_j = min(entry_i + max_hold, n-1); last = exit_j
         for j in range(entry_i, last+1):
@@ -1260,14 +1270,22 @@ def _bt_metrics(tr):
                 pf=round(g/lo,2) if lo>0 else 999,
                 total=round(Rs.sum(),1), avg=round(Rs.mean(),3), dd=round(dd,1))
 
-def run_backtest(years=3.0, tf="4h", min_score=15, send_to=None):
+def run_backtest(years=3.0, tf="4h", min_score=25, send_to=None):
     bot = _bot
     target = send_to or ADMIN_ID
     def send(msg):
         try: bot.send_message(target, msg)
         except Exception: pass
 
-    send(f"🚀 <b>Backtest v8.3</b>\n\nCoins: {len(COINS)}\nYears: {years}\nTF: {tf}\nMinScore: {min_score}\n\n⏳ جاري تحميل البيانات...")
+    send(f"🚀 <b>Backtest v9.0</b>\n\n"
+         f"📊 Coins: {len(COINS)}\n"
+         f"📅 Years: {years}\n"
+         f"⏱ TF: {tf}\n"
+         f"🎯 MinScore: {min_score}\n\n"
+         f"⚙️ Majors: SL 3% | TPs 1R/2R/3R/4R\n"
+         f"⚙️ Altcoins: SL 4.5% | TPs 1R/2.5R/4R/6R\n"
+         f"🔄 BE: OFF | Trail: 2.5/2.0 ATR\n\n"
+         f"⏳ جاري تحميل البيانات...")
     per = {}
     for idx, coin in enumerate(COINS, 1):
         try:
@@ -1277,7 +1295,7 @@ def run_backtest(years=3.0, tf="4h", min_score=15, send_to=None):
             df = add_indicators(df)
             per[coin] = df
             if idx % 5 == 0:
-                send(f"⏳ تحميل: {idx}/{len(COINS)}... ({coin}: {len(df)} شمعة)")
+                send(f"⏳ تحميل: {idx}/{len(COINS)}... ({coin})")
         except Exception as e:
             send(f"❌ {coin}: {str(e)[:60]}")
         time.sleep(0.15)
@@ -1295,7 +1313,7 @@ def run_backtest(years=3.0, tf="4h", min_score=15, send_to=None):
     per_res = []
     for coin, df in per.items():
         try:
-            trades = _bt_simulate(df, tf, min_score)
+            trades = _bt_simulate(df, tf, min_score, coin)
             tr = [x for x in trades if x["t"] < cut]
             te = [x for x in trades if x["t"] >= cut]
             all_tr += tr; all_te += te
@@ -1304,7 +1322,7 @@ def run_backtest(years=3.0, tf="4h", min_score=15, send_to=None):
             send(f"❌ {coin}: {str(e)[:60]}")
 
     mt = _bt_metrics(all_tr); me = _bt_metrics(all_te)
-    lines = [f"═══ 📊 <b>نتائج Backtest</b> ═══", ""]
+    lines = [f"═══ 📊 <b>نتائج v9.0</b> ═══", ""]
     lines.append(f"📅 Training حتى: {pd.to_datetime(cut, unit='ms'):%Y-%m-%d}")
     lines.append(f"📅 Testing حتى: {pd.to_datetime(tmax, unit='ms'):%Y-%m-%d}")
     lines.append("")
@@ -1323,14 +1341,18 @@ def run_backtest(years=3.0, tf="4h", min_score=15, send_to=None):
     top = per_res[:5]; bot5 = per_res[-5:]
     top_lines = ["🏆 <b>أفضل 5 عملات (TEST)</b>", ""]
     for c, tr, te in top:
-        top_lines.append(f"  #{c}: {te['total']:+.1f}R | WR {te['wr']}% | PF {te['pf']}")
+        tag = "Major" if c in MAJORS else "Alt"
+        top_lines.append(f"  #{c} ({tag}): {te['total']:+.1f}R | WR {te['wr']}% | PF {te['pf']}")
     top_lines += ["", "📉 <b>أسوأ 5 عملات (TEST)</b>", ""]
     for c, tr, te in bot5:
-        top_lines.append(f"  #{c}: {te['total']:+.1f}R | WR {te['wr']}% | PF {te['pf']}")
+        tag = "Major" if c in MAJORS else "Alt"
+        top_lines.append(f"  #{c} ({tag}): {te['total']:+.1f}R | WR {te['wr']}% | PF {te['pf']}")
     send("\n".join(top_lines))
 
-    if me["n"] >= 50 and me["pf"] >= 2.0 and me["wr"] >= 55:
-        verdict = f"🎉 <b>ممتاز!</b>\nPF={me['pf']} | WR={me['wr']}% | n={me['n']}"
+    if me["n"] >= 50 and me["pf"] >= 2.5 and me["wr"] >= 55:
+        verdict = f"🎉 <b>ممتاز!</b> PF≥2.5\nPF={me['pf']} | WR={me['wr']}% | n={me['n']}"
+    elif me["n"] >= 30 and me["pf"] >= 2.0:
+        verdict = f"✅ <b>جيد جداً</b>\nPF={me['pf']} | WR={me['wr']}% | n={me['n']}"
     elif me["n"] >= 30 and me["pf"] >= 1.5:
         verdict = f"✅ <b>جيد</b>\nPF={me['pf']} | WR={me['wr']}% | n={me['n']}"
     elif me["n"] >= 20 and me["total"] > 0:
@@ -1340,11 +1362,12 @@ def run_backtest(years=3.0, tf="4h", min_score=15, send_to=None):
     send(f"═══ 🎯 <b>الحكم</b> ═══\n\n{verdict}")
 
     try:
-        csv = "coin,tr_n,tr_wr,tr_pf,tr_total,te_n,te_wr,te_pf,te_total\n"
+        csv = "coin,type,tr_n,tr_wr,tr_pf,tr_total,te_n,te_wr,te_pf,te_total\n"
         for c, tr, te in per_res:
-            csv += f"{c},{tr['n']},{tr['wr']},{tr['pf']},{tr['total']},{te['n']},{te['wr']},{te['pf']},{te['total']}\n"
+            t = "M" if c in MAJORS else "A"
+            csv += f"{c},{t},{tr['n']},{tr['wr']},{tr['pf']},{tr['total']},{te['n']},{te['wr']},{te['pf']},{te['total']}\n"
         buf = io.BytesIO(csv.encode())
-        buf.name = f"backtest_{tf}.csv"
+        buf.name = f"backtest_{tf}_v9.csv"
         bot.send_document(target, buf)
     except Exception as e:
         send(f"⚠️ CSV: {str(e)[:60]}")
@@ -1712,9 +1735,11 @@ def make_bot(token=None):
     def dashboard(m):
         c = counts(store)
         src = ", ".join(f"{k}:{'✅' if v=='ok' else '❌'}" for k,v in source_status().items())
-        bot.reply_to(m, f"🖥 <b>v8.3</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
+        bot.reply_to(m, f"🖥 <b>v9.0</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
                         f"🆓 {c['trial']} | 💎 {c['vip']}\n\n🌐 {src}\n💾 {store.remote_msg}\n"
-                        f"⚙️ SL 4% | TP 3/6/9/12%")
+                        f"⚙️ Majors: SL 3% | TPs 1/2/3/4R\n"
+                        f"⚙️ Altcoins: SL 4.5% | TPs 1/2.5/4/6R\n"
+                        f"BE: OFF | Trail: 2.5/2.0 ATR | ADX≥22")
 
     @bot.message_handler(commands=["price"])
     @admin_only
@@ -1732,8 +1757,8 @@ def make_bot(token=None):
         args = m.text.split()
         years = float(args[1]) if len(args) > 1 else 3.0
         tf = args[2] if len(args) > 2 else "4h"
-        min_score = int(args[3]) if len(args) > 3 else 15
-        bot.reply_to(m, f"🚀 بدء Backtest...\n{years} سنة | {tf} | Score≥{min_score}\n\n⏳ استلم النتائج خلال دقائق.")
+        min_score = int(args[3]) if len(args) > 3 else 25
+        bot.reply_to(m, f"🚀 بدء Backtest v9.0...\n{years} سنة | {tf} | Score≥{min_score}\n\n⏳ استلم النتائج خلال دقائق.")
         threading.Thread(
             target=lambda: run_backtest(years, tf, min_score, send_to=m.chat.id),
             daemon=True
@@ -1762,7 +1787,7 @@ def make_bot(token=None):
     def short_cmd(m):
         wait = bot.reply_to(m, "⏳ ...")
         try:
-            rows = scan_signals(min_score=15, only_side=-1)
+            rows = scan_signals(min_score=25, only_side=-1)
             if not rows:
                 bot.send_message(m.chat.id, "لا توجد إشارات شورت حالياً.")
             else:
@@ -1811,7 +1836,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: pass
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v8.3 started")
+    log.info("bot v9.0 started")
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
