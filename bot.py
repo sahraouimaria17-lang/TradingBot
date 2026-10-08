@@ -24,7 +24,6 @@ try:
 except Exception:
     plt_ok = False
 
-# ═══════════════════════════ CONFIG ═══════════════════════════
 def _e(k, d=""): return os.getenv(k, d)
 
 BOT_TOKEN = _e("BOT_TOKEN")
@@ -79,7 +78,7 @@ MAX_OPEN_TOTAL = 20
 
 PUMP_PROTECT_SHORT = 15.0
 DUMP_PROTECT_LONG  = 15.0
-PRICE_DRIFT_MAX    = 8.0     # v7.1: لو السعر تحرك أكثر → إلغاء الإشارة
+PRICE_DRIFT_MAX    = 8.0
 
 TIMEFRAMES = {"15m": 0.10, "1h": 0.25, "4h": 0.35, "1d": 0.30}
 CANDLES_IN_CHART = 90
@@ -123,7 +122,6 @@ PROTECT_CONTENT = _e("PROTECT_CONTENT", "1") == "1"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("bot")
 
-# ═══════════════════════════ STORAGE ═══════════════════════════
 KEYS = ["users","vip","signals","delistings","history"]
 DEFAULTS = {"users":{},"vip":{},"signals":[],"delistings":[],"history":[]}
 
@@ -190,7 +188,6 @@ class Store:
                 except Exception: pass
         threading.Thread(target=loop, daemon=True).start()
 
-# ═══════════════════════════ USERS ═══════════════════════════
 DAY = 86400
 def u_now(): return int(time.time())
 def touch(store, user, lang):
@@ -234,7 +231,6 @@ def counts(store):
             if u_now() - rec.get("first_seen", 0) < DAY: c["new_today"] += 1
     return c
 
-# ═══════════════════════════ INDICATORS ═══════════════════════════
 def wilder(s, n): return s.ewm(alpha=1/n, adjust=False, min_periods=n).mean()
 def ema(s, n): return s.ewm(span=n, adjust=False, min_periods=n).mean()
 def true_range(df):
@@ -312,7 +308,6 @@ def add_indicators(df):
     df["st_dir"],df["st_line"] = supertrend(df)
     return df
 
-# ═══════════════════════════ DATA ═══════════════════════════
 MS = {"15m":900000,"1h":3600000,"4h":14400000,"1d":86400000}
 COLS = ["t","open","high","low","close","volume"]
 MIN_BARS = 60
@@ -506,33 +501,84 @@ def coingecko_ohlc(cid):
         return df if len(df) >= 30 else None
     except Exception: return None
 
-# ═══════════════════════════ v7.1: LIVE PRICE ═══════════════════════════
 def fetch_live_price(sym):
-    """السعر الحالي — Binance أولاً ثم OKX ثم Bybit ثم MEXC"""
-    # 1. Binance (الأولوية)
+    """v7.2: 6 مصادر — السعر الحي إلزامي"""
+    errors = []
+
+    # 1. Binance Spot
     for base in BINANCE_BASES:
         try:
-            r = _get(f"{base}/api/v3/ticker/price", params=dict(symbol=sym+"USDT"), timeout=5)
+            r = _get(f"{base}/api/v3/ticker/price", params={"symbol": sym+"USDT"}, timeout=8)
             if r.status_code == 200:
-                return float(r.json()["price"]), "binance"
-        except Exception: continue
-    # 2. OKX
+                p = float(r.json().get("price", 0))
+                if p > 0:
+                    log.info("live %s = %.8f (binance_spot)", sym, p)
+                    return p, "binance"
+            elif r.status_code == 400:
+                errors.append("binance: 400 not found")
+                break
+        except Exception as e:
+            errors.append(f"binance: {str(e)[:30]}")
+
+    # 2. Binance Futures
     try:
-        r = _get("https://www.okx.com/api/v5/market/ticker", params=dict(instId=f"{sym}-USDT"), timeout=5)
+        r = _get("https://fapi.binance.com/fapi/v1/ticker/price", params={"symbol": sym+"USDT"}, timeout=8)
+        if r.status_code == 200:
+            p = float(r.json().get("price", 0))
+            if p > 0:
+                log.info("live %s = %.8f (binance_fut)", sym, p)
+                return p, "binance_fut"
+    except Exception as e:
+        errors.append(f"binance_fut: {str(e)[:30]}")
+
+    # 3. OKX
+    try:
+        r = _get("https://www.okx.com/api/v5/market/ticker", params={"instId": f"{sym}-USDT"}, timeout=8)
         d = r.json().get("data") or []
-        if d: return float(d[0]["last"]), "okx"
-    except Exception: pass
-    # 3. Bybit
+        if d:
+            p = float(d[0].get("last", 0))
+            if p > 0:
+                log.info("live %s = %.8f (okx)", sym, p)
+                return p, "okx"
+    except Exception as e:
+        errors.append(f"okx: {str(e)[:30]}")
+
+    # 4. Bybit
     try:
-        r = _get("https://api.bybit.com/v5/market/tickers", params=dict(category="spot", symbol=sym+"USDT"), timeout=5)
-        d = r.json().get("result",{}).get("list") or []
-        if d: return float(d[0]["lastPrice"]), "bybit"
-    except Exception: pass
-    # 4. MEXC
+        r = _get("https://api.bybit.com/v5/market/tickers",
+                 params={"category": "spot", "symbol": sym+"USDT"}, timeout=8)
+        d = r.json().get("result", {}).get("list") or []
+        if d:
+            p = float(d[0].get("lastPrice", 0))
+            if p > 0:
+                log.info("live %s = %.8f (bybit)", sym, p)
+                return p, "bybit"
+    except Exception as e:
+        errors.append(f"bybit: {str(e)[:30]}")
+
+    # 5. MEXC
     try:
-        r = _get("https://api.mexc.com/api/v3/ticker/price", params=dict(symbol=sym+"USDT"), timeout=5)
-        return float(r.json()["price"]), "mexc"
-    except Exception: pass
+        r = _get("https://api.mexc.com/api/v3/ticker/price", params={"symbol": sym+"USDT"}, timeout=8)
+        if r.status_code == 200:
+            p = float(r.json().get("price", 0))
+            if p > 0:
+                log.info("live %s = %.8f (mexc)", sym, p)
+                return p, "mexc"
+    except Exception as e:
+        errors.append(f"mexc: {str(e)[:30]}")
+
+    # 6. CoinGecko
+    try:
+        cg = coingecko_info(sym)
+        if cg:
+            p = float(cg[0].get("current_price", 0))
+            if p > 0:
+                log.info("live %s = %.8f (coingecko)", sym, p)
+                return p, "coingecko"
+    except Exception as e:
+        errors.append(f"cg: {str(e)[:30]}")
+
+    log.error("live price FAILED for %s | errors: %s", sym, errors[:3])
     return None, None
 
 def fetch_delistings():
@@ -544,7 +590,6 @@ def fetch_delistings():
                      url=f"https://www.binance.com/en/support/announcement/{a['code']}") for a in arts]
     return _cached("delist", 300, f) or []
 
-# ═══════════════════════════ SCORING ═══════════════════════════
 def score_tf(df):
     if len(df) < 60: return 0.0, []
     r = df.iloc[-1]; p = df.iloc[-2]
@@ -582,7 +627,6 @@ def get_tf_data(sym, tf):
     except Exception:
         raise PairNotFound(sym)
 
-# ═══════════════════════════ STRATEGY ═══════════════════════════
 BAR = {"15m":900000,"1h":3600000,"4h":4*3600*1000,"1d":24*3600*1000}
 D1 = BAR["1d"]
 
@@ -636,7 +680,6 @@ def build_plan(entry, side, atr, p, tf, ref_avail=None):
                 age_hours=0, opened_ms=int(ref_avail or time.time()*1000),
                 max_hours=p["max_hold"]*bar_h, atr_at_entry=float(atr))
 
-# ═══════════════════════════ ANALYZE v7.1 ═══════════════════════════
 def analyze(sym, chart_tf=None):
     frames = {}; used = {}
     for tf in TIMEFRAMES:
@@ -660,7 +703,6 @@ def analyze(sym, chart_tf=None):
     if not frames:
         raise PairNotFound(sym)
 
-    # Score مرجّح
     total_w = sum(TIMEFRAMES[t] for t in frames)
     total_score = 0.0; all_sig = []; per_tf = {}
     for tf, df in frames.items():
@@ -670,7 +712,6 @@ def analyze(sym, chart_tf=None):
         all_sig += sig
     score100 = round(total_score * 100, 1)
 
-    # التوصية
     if score100 >= SCORE_STRONG_BUY:
         rec, emoji, side, quality = "شراء قوي", "🟢🟢", 1, "strong"
     elif score100 >= SCORE_BUY:
@@ -689,7 +730,6 @@ def analyze(sym, chart_tf=None):
     agreement = round(100 * agree / max(len(all_sig), 1))
     tf_agree = sum(1 for s in per_tf.values() if s * direction > 0)
 
-    # الفريم الأساسي
     if chart_tf is None:
         chart_tf = default_tf_for(sym)
     base_tf = chart_tf if chart_tf in frames else ("4h" if "4h" in frames else list(frames)[0])
@@ -698,27 +738,29 @@ def analyze(sym, chart_tf=None):
     candle_close = float(last["close"])
     atr = float(last["atr"])
 
-    # v7.1: السعر الحالي من Binance Live
+    # v7.2: السعر الحي إلزامي
     live_price, live_src = fetch_live_price(sym)
-    price = float(live_price) if live_price else candle_close
+    if not live_price or live_price <= 0:
+        log.error("Cannot get live price for %s — aborting", sym)
+        raise ConnectionError(f"Live price unavailable for {sym}")
+    price = float(live_price)
     price_drift = abs(price - candle_close) / candle_close * 100 if candle_close else 0.0
     price_pct = 100*atr/price
+    log.info("%s | live=%.8f | candle=%.8f | drift=%.2f%% | src=%s",
+             sym, price, candle_close, price_drift, live_src)
 
-    # حماية Pump/Dump
     lb = 6 if base_tf == "4h" else (24 if base_tf == "1h" else 1)
     chg24 = 0.0
     if len(bdf) > lb:
         ref_close = float(bdf["close"].iloc[-lb])
         chg24 = (price / ref_close - 1) * 100 if ref_close else 0.0
 
-    # فلترة ATR
     if not (ATR_PCT_MIN <= price_pct <= ATR_PCT_MAX):
         if quality in ("strong", "strong_sell"):
             quality = "buy" if side == 1 else "sell"
             rec = "شراء (تقلب عالي)" if side == 1 else "بيع (تقلب عالي)"
             emoji = "🟡"
 
-    # v7.1: حمايات
     protected = False
     if price_drift > PRICE_DRIFT_MAX and side:
         side = 0
@@ -729,7 +771,6 @@ def analyze(sym, chart_tf=None):
     if side == 1 and chg24 < -DUMP_PROTECT_LONG:
         side = 0; rec = "لا توجد صفقة (السعر هبط بقوة)"; emoji = "⚪"; quality = "blocked"; protected = True
 
-    # الخطة — Entry = السعر الحالي
     plan = None
     if side:
         p = params_for(base_tf)
@@ -755,7 +796,6 @@ def analyze(sym, chart_tf=None):
                 rvol=float(last["rvol"]), protected=protected,
                 df=bdf, source=used.get(base_tf,"?"))
 
-# ═══════════════════════════ CHART ═══════════════════════════
 def fmt(x):
     if x >= 1000: return f"{x:,.2f}"
     if x >= 1: return f"{x:.4f}"
@@ -828,7 +868,6 @@ def render_chart(res):
                          for i in range(0, len(df), step)], fontsize=8)
     ax.yaxis.tick_right()
 
-    # v7.1: عنوان يوضح Live source
     side_col = up_c if side == 1 else (dn_c if side == -1 else "#f5c518")
     live_src = res.get("live_src", "binance")
     title_txt = f"{res['sym']}/USDT  •  {res['base_tf']}  •  Score {res['score']:+.0f}  •  Live: {live_src.capitalize()}"
@@ -845,7 +884,6 @@ def render_chart(res):
     plt.close(fig); buf.seek(0)
     return buf
 
-# ═══════════════════════════ ENGINE ═══════════════════════════
 _pool = ThreadPoolExecutor(6)
 _cache = {}
 TTL = 60
@@ -881,7 +919,6 @@ def market_notes(side, ex, ar=True):
         elif side==-1 and pct<-0.03: notes.append(("⚠️ تمويل سلبي " if ar else "⚠️ Neg funding ")+f"{pct:.3f}%")
     return notes
 
-# ═══════════════════════════ TRACKER ═══════════════════════════
 HOUR = 3600000
 def _cost(entry, risk): return (2*FEE+SLIP)*entry/risk
 
@@ -901,7 +938,7 @@ def track_signal(store, res, free_posted=False):
                entry=pl["entry"], sl=pl["sl"], risk=pl["risk"],
                opened=pl["opened_ms"], next_t=pl["opened_ms"], max_hours=pl["max_hours"],
                remaining=1.0, realized=0.0, be=False, trail_phase=0, status="open",
-               strategy="v7.1score", score=res["score"], votes=0, free_posted=free_posted,
+               strategy="v7.2score", score=res["score"], votes=0, free_posted=free_posted,
                tps=[dict(px=t[0], r=t[1], frac=t[2], hit=False) for t in pl["tps"]])
     with store.lock:
         store.data["signals"].append(rec)
@@ -990,7 +1027,6 @@ def stats(store, days=None, tf=None):
     return dict(n=len(r), wr=round(100*sum(v>0 for v in r)/len(r),1),
                 pf=round(gain/loss,2) if loss>0 else None, avg=round(sum(r)/len(r),3), total=round(sum(r),1))
 
-# ═══════════════════════════ SCANNER ═══════════════════════════
 _scan_pool = ThreadPoolExecutor(8)
 def _safe(fn, *a):
     try: return fn(*a)
@@ -1050,7 +1086,6 @@ def scan_pump(top=10):
                             kind="اختراق" if brk else "خروج ضغط", score=float(a["rvol"]*chg3)))
     return sorted(out, key=lambda r: -r["score"])[:top]
 
-# ═══════════════════════════ TEXTS ═══════════════════════════
 AR = re.compile(r"[؀-ۿ]")
 SYM = re.compile(r"^[A-Z0-9]{2,12}$")
 ALIASES = {"بيتكوين":"BTC","بتكوين":"BTC","ايثيريوم":"ETH","إيثيريوم":"ETH","ايثريوم":"ETH","سولانا":"SOL",
@@ -1062,7 +1097,7 @@ T = {
         start=("أهلاً بك 👋\nأرسل اسم العملة فقط (مثل <b>BTC</b> أو <b>SOL</b>) وسأرسل لك التحليل والشارت.\n\n"
                "🆓 لديك تجربة مجانية {t} أيام.\n💎 للمزيد: /vip   🆔 معرّفك: /myid"),
         wait="⏳ جاري تحليل {s} ...", bad="أرسل رمز عملة صحيح مثل BTC",
-        nf="لم أجد العملة {s} في أي منصة.", err="تعذر جلب البيانات الآن.",
+        nf="لم أجد العملة {s} في أي منصة.", err="تعذر جلب السعر الحي الآن، حاول بعد قليل.",
         long="شراء 🟢", short="بيع 🔴", none="لا توجد صفقة مناسبة الآن ⚪",
         hdr="📊 <b>تحليل #{s}</b>", src="⚡ {x}", tf="⏱ الفريم الأساسي: {x}",
         rec="💡 التوصية: <b>{x}</b>", entry="💵 الدخول", stop="🛑 الوقف", tp="🎯 الهدف",
@@ -1084,7 +1119,7 @@ T = {
     "en": dict(
         start=("Welcome 👋\nSend coin symbol (e.g. <b>BTC</b>).\n\n🆓 {t}-day trial.\n💎 /vip   🆔 /myid"),
         wait="⏳ Analyzing {s} ...", bad="Send valid symbol like BTC",
-        nf="Couldn't find {s} on any exchange.", err="Couldn't fetch data.",
+        nf="Couldn't find {s} on any exchange.", err="Live price unavailable, try again.",
         long="BUY 🟢", short="SELL 🔴", none="No setup now ⚪",
         hdr="📊 <b>#{s}</b>", src="⚡ {x}", tf="⏱ Base TF: {x}",
         rec="💡 Signal: <b>{x}</b>", entry="💵 Entry", stop="🛑 Stop", tp="🎯 Target",
@@ -1151,6 +1186,14 @@ def format_signal(res, L, tier, lang="ar", banner=None):
             lines.append(f"{L['why']}: " + ("السعر تحرك بقوة" if ar_ else "Big price move"))
         else:
             lines.append(f"{L['why']}: " + L["r_gen"])
+
+    # السعر الحي (للجميع)
+    drift = c.get("price_drift", 0)
+    lines += ["", f"💹 <b>السعر الحي</b>: <code>{fmt(c['price'])}</code> ({c.get('live_src','?')})"]
+    if drift > 1.0:
+        icon = "🟢" if drift < 2 else ("🟡" if drift < 5 else "🟠")
+        lines.append(f"{icon} فرق عن إغلاق الشمعة: {drift:.2f}%")
+
     per_tf = c["per_tf"]
     tf_str = " | ".join(f"{k}:{v:+.0f}" for k,v in per_tf.items())
     lines += ["", f"📊 {' | '.join(per_tf.keys())}", f"🎯 {tf_str}"]
@@ -1161,9 +1204,8 @@ def format_signal(res, L, tier, lang="ar", banner=None):
         if notes: lines += ["", L["mk"] + ": " + " | ".join(notes)]
     if tier == "admin":
         srcs = ",".join(sorted(set(c["used"].values())))
-        drift = c.get("price_drift", 0)
         lines += ["", f"🔧 Score {c['score']:+.1f} · MFI {c['mfi']:.0f} · RVOL {c['rvol']:.2f}"]
-        lines += [f"💹 Live: <code>{fmt(c['price'])}</code> ({c.get('live_src','?')}) | 📊 Candle: {fmt(c.get('candle_close', c['price']))} | Drift {drift:.2f}%"]
+        lines += [f"📊 Candle close: {fmt(c.get('candle_close', c['price']))} | Drift {drift:.2f}%"]
         lines += [f"🌐 sources: {srcs}"]
     lines += ["", f"👤 {BRAND}", L["links"].format(l=CHANNEL_LINK), "", L["disc"]]
     if banner: lines += ["", banner]
@@ -1191,7 +1233,6 @@ def send_signal(bot, chat_id, res, L, tier, lang, banner=None, kb=None, protect=
     bot.send_photo(chat_id, img, protect_content=protect)
     return bot.send_message(chat_id, text, reply_markup=kb, protect_content=protect)
 
-# ═══════════════════════════ BOT ═══════════════════════════
 store = Store()
 _cooldown, _err_seen = {}, {}
 _free_posted = {"date":"","n":0}
@@ -1454,7 +1495,7 @@ def make_bot(token=None):
         with store.lock:
             opens = [p for p in store.data["signals"] if p["status"]=="open"]
         if not opens: return bot.reply_to(m, "لا توجد توصيات مفتوحة حالياً.")
-        lines = ["📡 <b>التوصيات المفتوحة (تتبع الأهداف)</b>", ""]
+        lines = ["📡 <b>التوصيات المفتوحة</b>", ""]
         for p in opens[:20]:
             side = "🟢 Long" if p["side"]==1 else "🔴 Short"
             hits = [f"TP{i+1}✅" for i,t in enumerate(p["tps"]) if t["hit"]]
@@ -1501,9 +1542,21 @@ def make_bot(token=None):
     def dashboard(m):
         c = counts(store)
         src = ", ".join(f"{k}:{'✅' if v=='ok' else '❌'}" for k,v in source_status().items())
-        bot.reply_to(m, f"🖥 <b>لوحة التحكم v7.1</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
+        bot.reply_to(m, f"🖥 <b>لوحة التحكم v7.2</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
                         f"🆓 {c['trial']} | 💎 VIP {c['vip']}\n\n{stats_text()}\n\n🌐 {src}\n💾 {store.remote_msg}\n"
-                        f"⚙️ v7.1 | 4 TFs | Live: Binance | Drift limit: {PRICE_DRIFT_MAX}%")
+                        f"⚙️ v7.2 | Live Price فقط | Drift limit: {PRICE_DRIFT_MAX}%")
+
+    @bot.message_handler(commands=["price"])
+    @admin_only
+    def price_cmd(m):
+        parts = m.text.split()
+        sym = parts[1].upper() if len(parts) > 1 else "BTC"
+        bot.reply_to(m, f"⏳ جلب السعر الحي لـ {sym} ...")
+        p, src = fetch_live_price(sym)
+        if p:
+            bot.send_message(m.chat.id, f"✅ <b>{sym}</b> = <code>{fmt(p)}</code>\n📡 المصدر: {src}")
+        else:
+            bot.send_message(m.chat.id, f"❌ تعذر جلب سعر {sym}")
 
     @bot.message_handler(commands=["bottom","pump","delist"])
     @admin_only
@@ -1576,7 +1629,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: log.exception("remove_webhook")
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v7.1 started | gist: %s | ccxt: %s", store.remote_msg, ccxt_ok)
+    log.info("bot v7.2 started | gist: %s | ccxt: %s", store.remote_msg, ccxt_ok)
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
