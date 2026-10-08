@@ -50,7 +50,6 @@ STABLES = {"USDT","USDC","FDUSD","TUSD","DAI","BUSD","USDP","USDD","USDE","PYUSD
 
 FEE, SLIP = 0.001, 0.0005
 
-# v7.0: أهداف ثابتة (Abu Turki style) + من Claude (multi-TF scores)
 RISK_MODELS = {
     "daily": dict(fixed_sl=2.5, tps=[(0.8,.40),(1.3,.30),(1.8,.20),(2.4,.10)]),
     "4h":    dict(fixed_sl=2.0, tps=[(0.75,.40),(1.25,.30),(1.75,.20),(2.25,.10)]),
@@ -64,7 +63,6 @@ TRAIL_ATR_AFTER_TP1 = 1.5
 TRAIL_ATR_AFTER_TP2 = 1.0
 MAX_HOLD = {"4h": 24, "1d": 20}
 
-# v7.0: نظام Score (من Claude) + عتبات
 SCORE_STRONG_BUY  = 35
 SCORE_BUY         = 8
 SCORE_CAUTIOUS    = -8
@@ -79,11 +77,10 @@ ATR_PCT_MAX = 25.0
 MAX_OPEN_PER_COIN = 5
 MAX_OPEN_TOTAL = 20
 
-# v7.0: حمايات
 PUMP_PROTECT_SHORT = 15.0
 DUMP_PROTECT_LONG  = 15.0
+PRICE_DRIFT_MAX    = 8.0     # v7.1: لو السعر تحرك أكثر → إلغاء الإشارة
 
-# v7.0: أوزان الفريمات (من Claude)
 TIMEFRAMES = {"15m": 0.10, "1h": 0.25, "4h": 0.35, "1d": 0.30}
 CANDLES_IN_CHART = 90
 
@@ -315,7 +312,7 @@ def add_indicators(df):
     df["st_dir"],df["st_line"] = supertrend(df)
     return df
 
-# ═══════════════════════════ DATA (7 sources) ═══════════════════════════
+# ═══════════════════════════ DATA ═══════════════════════════
 MS = {"15m":900000,"1h":3600000,"4h":14400000,"1d":86400000}
 COLS = ["t","open","high","low","close","volume"]
 MIN_BARS = 60
@@ -375,7 +372,6 @@ def _coinbase(sym, iv, limit):
     return sorted([[int(k[0])*1000, float(k[3]), float(k[2]), float(k[1]), float(k[4]), float(k[5])]
                    for k in r.json()], key=lambda x: x[0])
 
-# ccxt-based fetchers (للعملات النادرة)
 _ccxt_ex = {}
 def _ccxt_get(name):
     if not ccxt_ok: return None
@@ -510,27 +506,34 @@ def coingecko_ohlc(cid):
         return df if len(df) >= 30 else None
     except Exception: return None
 
-def fetch_all_prices(sym):
-    """median price من عدة منصات"""
-    out = {}
-    for name, _ in SOURCES[:5]:
+# ═══════════════════════════ v7.1: LIVE PRICE ═══════════════════════════
+def fetch_live_price(sym):
+    """السعر الحالي — Binance أولاً ثم OKX ثم Bybit ثم MEXC"""
+    # 1. Binance (الأولوية)
+    for base in BINANCE_BASES:
         try:
-            if name == "binance":
-                r = _get(f"{BINANCE_BASES[0]}/api/v3/ticker/price", params=dict(symbol=sym+"USDT"), timeout=5)
-                out[name] = float(r.json()["price"])
-            elif name == "okx":
-                r = _get("https://www.okx.com/api/v5/market/ticker", params=dict(instId=f"{sym}-USDT"), timeout=5)
-                d = r.json().get("data") or []
-                if d: out[name] = float(d[0]["last"])
-            elif name == "bybit":
-                r = _get("https://api.bybit.com/v5/market/tickers", params=dict(category="spot", symbol=sym+"USDT"), timeout=5)
-                d = r.json().get("result",{}).get("list") or []
-                if d: out[name] = float(d[0]["lastPrice"])
-            elif name == "mexc":
-                r = _get("https://api.mexc.com/api/v3/ticker/price", params=dict(symbol=sym+"USDT"), timeout=5)
-                out[name] = float(r.json()["price"])
+            r = _get(f"{base}/api/v3/ticker/price", params=dict(symbol=sym+"USDT"), timeout=5)
+            if r.status_code == 200:
+                return float(r.json()["price"]), "binance"
         except Exception: continue
-    return out
+    # 2. OKX
+    try:
+        r = _get("https://www.okx.com/api/v5/market/ticker", params=dict(instId=f"{sym}-USDT"), timeout=5)
+        d = r.json().get("data") or []
+        if d: return float(d[0]["last"]), "okx"
+    except Exception: pass
+    # 3. Bybit
+    try:
+        r = _get("https://api.bybit.com/v5/market/tickers", params=dict(category="spot", symbol=sym+"USDT"), timeout=5)
+        d = r.json().get("result",{}).get("list") or []
+        if d: return float(d[0]["lastPrice"]), "bybit"
+    except Exception: pass
+    # 4. MEXC
+    try:
+        r = _get("https://api.mexc.com/api/v3/ticker/price", params=dict(symbol=sym+"USDT"), timeout=5)
+        return float(r.json()["price"]), "mexc"
+    except Exception: pass
+    return None, None
 
 def fetch_delistings():
     def f():
@@ -541,45 +544,36 @@ def fetch_delistings():
                      url=f"https://www.binance.com/en/support/announcement/{a['code']}") for a in arts]
     return _cached("delist", 300, f) or []
 
-# ═══════════════════════════ SCORING (من Claude) ═══════════════════════════
+# ═══════════════════════════ SCORING ═══════════════════════════
 def score_tf(df):
-    """يرجع (درجة -1 إلى +1, إشارات +1/-1)"""
     if len(df) < 60: return 0.0, []
     r = df.iloc[-1]; p = df.iloc[-2]
     sig = []
-    # Trend
     sig.append(1 if r["close"] > r["ema20"] else -1)
     sig.append(1 if r["ema20"] > r["ema50"] else -1)
     if not pd.isna(r["ema200"]):
         sig.append(1 if r["ema50"] > r["ema200"] else -1)
         sig.append(1 if r["close"] > r["ema200"] else -1)
-    # RSI
     if r["rsi"] < 30: sig.append(1)
     elif r["rsi"] > 70: sig.append(-1)
     else: sig.append(0.5 if r["rsi"] > 50 else -0.5)
-    # MACD
     sig.append(1 if r["macd_hist"] > 0 else -1)
     sig.append(1 if r["macd_hist"] > p["macd_hist"] else -1)
     sig.append(1 if r["macd_line"] > r["macd_hist"] else -1)
-    # BB
     if not pd.isna(r["bb_up"]):
         if r["close"] < r["bb_lo"]: sig.append(1)
         elif r["close"] > r["bb_up"]: sig.append(-1)
         else: sig.append(0.5 if r["close"] > r["bb_mid"] else -0.5)
-    # Stoch
     if not pd.isna(r["stoch"]):
         if r["stoch"] < 20: sig.append(1)
         elif r["stoch"] > 80: sig.append(-1)
         else: sig.append(0.5 if r["stoch"] > 50 else -0.5)
-    # Volume confirmation
     if r["rvol"] and r["rvol"] > 1.3:
         sig.append(1 if r["close"] > r["open"] else -1)
-    # Supertrend
     sig.append(1 if r["st_dir"] == 1 else -1)
     return float(np.mean(sig)), sig
 
 def get_tf_data(sym, tf):
-    """يجرب المنصات + coingecko"""
     try:
         df = get_recent(sym, tf, 300)
         return add_indicators(df), df.attrs.get("source","?")
@@ -588,7 +582,7 @@ def get_tf_data(sym, tf):
     except Exception:
         raise PairNotFound(sym)
 
-# ═══════════════════════════ STRATEGY (v6.2 protections) ═══════════════════════════
+# ═══════════════════════════ STRATEGY ═══════════════════════════
 BAR = {"15m":900000,"1h":3600000,"4h":4*3600*1000,"1d":24*3600*1000}
 D1 = BAR["1d"]
 
@@ -642,9 +636,8 @@ def build_plan(entry, side, atr, p, tf, ref_avail=None):
                 age_hours=0, opened_ms=int(ref_avail or time.time()*1000),
                 max_hours=p["max_hold"]*bar_h, atr_at_entry=float(atr))
 
-# ═══════════════════════════ ANALYZE v7.0 ═══════════════════════════
+# ═══════════════════════════ ANALYZE v7.1 ═══════════════════════════
 def analyze(sym, chart_tf=None):
-    """تحليل متعدد الفريمات — دائماً يعطي توصية"""
     frames = {}; used = {}
     for tf in TIMEFRAMES:
         try:
@@ -677,7 +670,7 @@ def analyze(sym, chart_tf=None):
         all_sig += sig
     score100 = round(total_score * 100, 1)
 
-    # التوصية (دائماً)
+    # التوصية
     if score100 >= SCORE_STRONG_BUY:
         rec, emoji, side, quality = "شراء قوي", "🟢🟢", 1, "strong"
     elif score100 >= SCORE_BUY:
@@ -691,7 +684,6 @@ def analyze(sym, chart_tf=None):
     else:
         rec, emoji, side, quality = "بيع قوي", "🔴🔴", -1, "strong_sell"
 
-    # توافق
     direction = side
     agree = sum(1 for x in all_sig if x * direction > 0)
     agreement = round(100 * agree / max(len(all_sig), 1))
@@ -700,61 +692,70 @@ def analyze(sym, chart_tf=None):
     # الفريم الأساسي
     if chart_tf is None:
         chart_tf = default_tf_for(sym)
-    base_tf = chart_tf if chart_tf in frames else (CHART_TF_DEFAULT := ("4h" if "4h" in frames else list(frames)[0]))
+    base_tf = chart_tf if chart_tf in frames else ("4h" if "4h" in frames else list(frames)[0])
     bdf = frames[base_tf]
     last = bdf.iloc[-1]
-    price = float(last["close"])
+    candle_close = float(last["close"])
     atr = float(last["atr"])
+
+    # v7.1: السعر الحالي من Binance Live
+    live_price, live_src = fetch_live_price(sym)
+    price = float(live_price) if live_price else candle_close
+    price_drift = abs(price - candle_close) / candle_close * 100 if candle_close else 0.0
     price_pct = 100*atr/price
 
     # حماية Pump/Dump
     lb = 6 if base_tf == "4h" else (24 if base_tf == "1h" else 1)
     chg24 = 0.0
     if len(bdf) > lb:
-        chg24 = (price / float(bdf["close"].iloc[-lb]) - 1) * 100
+        ref_close = float(bdf["close"].iloc[-lb])
+        chg24 = (price / ref_close - 1) * 100 if ref_close else 0.0
 
     # فلترة ATR
     if not (ATR_PCT_MIN <= price_pct <= ATR_PCT_MAX):
-        # سعر متطرف — نخفّض الثقة بس ما نلغي
         if quality in ("strong", "strong_sell"):
             quality = "buy" if side == 1 else "sell"
             rec = "شراء (تقلب عالي)" if side == 1 else "بيع (تقلب عالي)"
             emoji = "🟡"
 
-    # حماية من الصعود/الهبوط
+    # v7.1: حمايات
     protected = False
+    if price_drift > PRICE_DRIFT_MAX and side:
+        side = 0
+        rec = "لا توجد صفقة (السعر تحرك عن الإشارة)"
+        emoji = "⚪"; quality = "blocked"; protected = True
     if side == -1 and chg24 > PUMP_PROTECT_SHORT:
-        side = 0; rec = "لا توجد صفقة مناسبة (السعر صعد بقوة)"; emoji = "⚪"; quality = "blocked"; protected = True
+        side = 0; rec = "لا توجد صفقة (السعر صعد بقوة)"; emoji = "⚪"; quality = "blocked"; protected = True
     if side == 1 and chg24 < -DUMP_PROTECT_LONG:
-        side = 0; rec = "لا توجد صفقة مناسبة (السعر هبط بقوة)"; emoji = "⚪"; quality = "blocked"; protected = True
+        side = 0; rec = "لا توجد صفقة (السعر هبط بقوة)"; emoji = "⚪"; quality = "blocked"; protected = True
 
-    # الخطة
+    # الخطة — Entry = السعر الحالي
     plan = None
     if side:
         p = params_for(base_tf)
         plan = build_plan(price, side, atr, p, base_tf, last["t"])
-        # R:R
         risk_amt = abs(price - plan["sl"])
         reward_amt = abs(plan["tps"][1][0] - price)
         rr = round(reward_amt / risk_amt, 2) if risk_amt > 0 else 0
     else:
         rr = 0
 
-    # إجماع السعر
-    prices = fetch_all_prices(sym)
-    cons = float(np.median(list(prices.values()))) if prices else price
+    prices = {live_src or "binance": price}
+    cons = price
 
     return dict(sym=sym, frames=frames, used=used, base_tf=base_tf,
                 score=score100, rec=rec, emoji=emoji, side=side, quality=quality,
                 agreement=agreement, tf_agree=tf_agree, n_tf=len(frames),
-                price=price, cons=cons, prices=prices, plan=plan, rr=rr,
+                price=price, candle_close=candle_close, price_drift=price_drift,
+                live_src=live_src or "binance",
+                cons=cons, prices=prices, plan=plan, rr=rr,
                 per_tf=per_tf, cg=cg, rsi=float(last["rsi"]),
                 atr=atr, atr_pct=price_pct, chg24=chg24,
                 adx=float(last["adx"]), mfi=float(last["mfi"]),
                 rvol=float(last["rvol"]), protected=protected,
                 df=bdf, source=used.get(base_tf,"?"))
 
-# ═══════════════════════════ CHART (من Claude - داكن احترافي) ═══════════════════════════
+# ═══════════════════════════ CHART ═══════════════════════════
 def fmt(x):
     if x >= 1000: return f"{x:,.2f}"
     if x >= 1: return f"{x:.4f}"
@@ -790,7 +791,6 @@ def render_chart(res):
     ax.plot(df.index, df["bb_lo"], color="#8892a6", lw=0.7, ls="--")
     ax.fill_between(df.index, df["bb_lo"], df["bb_up"], color="#8892a6", alpha=0.06)
 
-    # Levels
     levels = []
     if plan and side:
         levels = [(plan["entry"], "ENTRY", "#ffffff"), (plan["sl"], "STOP", "#ff4d4d")]
@@ -828,9 +828,11 @@ def render_chart(res):
                          for i in range(0, len(df), step)], fontsize=8)
     ax.yaxis.tick_right()
 
+    # v7.1: عنوان يوضح Live source
     side_col = up_c if side == 1 else (dn_c if side == -1 else "#f5c518")
-    ax.set_title(f"{res['sym']}/USDT  •  {res['base_tf']}  •  Score {res['score']:+.0f}",
-                 color=side_col, fontsize=14, fontweight="bold", loc="left")
+    live_src = res.get("live_src", "binance")
+    title_txt = f"{res['sym']}/USDT  •  {res['base_tf']}  •  Score {res['score']:+.0f}  •  Live: {live_src.capitalize()}"
+    ax.set_title(title_txt, color=side_col, fontsize=13, fontweight="bold", loc="left")
     ax.legend(loc="upper left", fontsize=8, facecolor=bg, edgecolor=bg, labelcolor=fg)
 
     fig.text(0.5, 0.5, BRAND, fontsize=70, color="white", alpha=0.10,
@@ -899,7 +901,7 @@ def track_signal(store, res, free_posted=False):
                entry=pl["entry"], sl=pl["sl"], risk=pl["risk"],
                opened=pl["opened_ms"], next_t=pl["opened_ms"], max_hours=pl["max_hours"],
                remaining=1.0, realized=0.0, be=False, trail_phase=0, status="open",
-               strategy="v7score", score=res["score"], votes=0, free_posted=free_posted,
+               strategy="v7.1score", score=res["score"], votes=0, free_posted=free_posted,
                tps=[dict(px=t[0], r=t[1], frac=t[2], hit=False) for t in pl["tps"]])
     with store.lock:
         store.data["signals"].append(rec)
@@ -1146,17 +1148,12 @@ def format_signal(res, L, tier, lang="ar", banner=None):
     else:
         lines += [L["rec"].format(x=L["none"])]
         if c.get("protected"):
-            lines.append(f"{L['why']}: " + ("السعر تحرك بقوة 24 ساعة" if ar_ else "Big 24h move"))
+            lines.append(f"{L['why']}: " + ("السعر تحرك بقوة" if ar_ else "Big price move"))
         else:
             lines.append(f"{L['why']}: " + L["r_gen"])
-    # معلومات السوق
-    fng = (res.get("extra") or {}).get("fng")
-    trend_map = {"up":"up","down":"down","range":"range"}
-    # Per-TF
     per_tf = c["per_tf"]
     tf_str = " | ".join(f"{k}:{v:+.0f}" for k,v in per_tf.items())
-    lines += ["", f"📊 {' | '.join(per_tf.keys())}",
-              f"🎯 {tf_str}"]
+    lines += ["", f"📊 {' | '.join(per_tf.keys())}", f"🎯 {tf_str}"]
     lines += ["", f"ADX {c['adx']:.0f} | RSI {c['rsi']:.0f} | ATR {c['atr_pct']:.2f}% | 24h {c['chg24']:+.2f}%"]
     ex = res.get("extra") or {}
     if tier in ("vip","admin") and ex.get("market"):
@@ -1164,7 +1161,10 @@ def format_signal(res, L, tier, lang="ar", banner=None):
         if notes: lines += ["", L["mk"] + ": " + " | ".join(notes)]
     if tier == "admin":
         srcs = ",".join(sorted(set(c["used"].values())))
-        lines += ["", f"🔧 Score {c['score']:+.1f} · MFI {c['mfi']:.0f} · RVOL {c['rvol']:.2f} · sources: {srcs}"]
+        drift = c.get("price_drift", 0)
+        lines += ["", f"🔧 Score {c['score']:+.1f} · MFI {c['mfi']:.0f} · RVOL {c['rvol']:.2f}"]
+        lines += [f"💹 Live: <code>{fmt(c['price'])}</code> ({c.get('live_src','?')}) | 📊 Candle: {fmt(c.get('candle_close', c['price']))} | Drift {drift:.2f}%"]
+        lines += [f"🌐 sources: {srcs}"]
     lines += ["", f"👤 {BRAND}", L["links"].format(l=CHANNEL_LINK), "", L["disc"]]
     if banner: lines += ["", banner]
     return "\n".join(lines)
@@ -1182,8 +1182,7 @@ def keyboard(sym, tf, L, tier):
     return kb
 
 def send_signal(bot, chat_id, res, L, tier, lang, banner=None, kb=None, protect=False):
-    plan_ok = res["side"] == 1 or (res["side"] == -1 and tier != "free")
-    img = render_chart(res) if plan_ok or not res["side"] else render_chart(res)
+    img = render_chart(res)
     text = format_signal(res, L, tier, lang, banner)
     if img is None:
         return bot.send_message(chat_id, text, reply_markup=kb, protect_content=protect)
@@ -1502,9 +1501,9 @@ def make_bot(token=None):
     def dashboard(m):
         c = counts(store)
         src = ", ".join(f"{k}:{'✅' if v=='ok' else '❌'}" for k,v in source_status().items())
-        bot.reply_to(m, f"🖥 <b>لوحة التحكم v7.0</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
+        bot.reply_to(m, f"🖥 <b>لوحة التحكم v7.1</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
                         f"🆓 {c['trial']} | 💎 VIP {c['vip']}\n\n{stats_text()}\n\n🌐 {src}\n💾 {store.remote_msg}\n"
-                        f"⚙️ v7.0 | 4 TFs: {'+'.join(TIMEFRAMES.keys())} | Min score: {AUTOPOST_MIN_SCORE}")
+                        f"⚙️ v7.1 | 4 TFs | Live: Binance | Drift limit: {PRICE_DRIFT_MAX}%")
 
     @bot.message_handler(commands=["bottom","pump","delist"])
     @admin_only
@@ -1577,7 +1576,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: log.exception("remove_webhook")
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v7.0 started | gist: %s | ccxt: %s", store.remote_msg, ccxt_ok)
+    log.info("bot v7.1 started | gist: %s | ccxt: %s", store.remote_msg, ccxt_ok)
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
