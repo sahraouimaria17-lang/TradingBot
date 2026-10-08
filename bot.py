@@ -42,13 +42,10 @@ STABLES = {"USDT","USDC","FDUSD","TUSD","DAI","BUSD","USDP","USDD","USDE","PYUSD
 
 FEE, SLIP = 0.001, 0.0005
 
-# v5.0: TP1 محدّد — Daily +2% | 4h +1.5%
+# v5.1: TP1 محدّد — Daily +2% | 4h +1.5%
 RISK_MODELS = {
-    # Daily: SL -2.5% | TP1 +2.0% | TP2 +3.25% | TP3 +4.5% | TP4 +6.0%
     "daily": dict(fixed_sl=2.5, tps=[(0.8,.40),(1.3,.30),(1.8,.20),(2.4,.10)]),
-    # 4h:    SL -2.0% | TP1 +1.5% | TP2 +2.5% | TP3 +3.5% | TP4 +4.5%
     "4h":    dict(fixed_sl=2.0, tps=[(0.75,.40),(1.25,.30),(1.75,.20),(2.25,.10)]),
-    # Scalp: SL -1.5% | TP1 +1.0% | TP2 +1.75% | TP3 +2.5% | TP4 +3.25%
     "scalp": dict(fixed_sl=1.5, tps=[(0.67,.40),(1.17,.30),(1.67,.20),(2.17,.10)]),
     "daily_tight": dict(fixed_sl=2.0, tps=[(1.0,.40),(1.5,.30),(2.0,.20),(2.5,.10)]),
     "daily_wide":  dict(fixed_sl=3.0, tps=[(0.67,.40),(1.17,.30),(1.67,.20),(2.17,.10)]),
@@ -60,14 +57,14 @@ TRAIL_ATR_AFTER_TP1 = 1.5
 TRAIL_ATR_AFTER_TP2 = 1.0
 MAX_HOLD = {"4h": 24, "1d": 20}
 
-# v5.0: 4 مؤشرات فقط | minimum 3/4
-MIN_VOTES_DEFAULT = 3
+# v5.1: عتبات مرنة
+MIN_VOTES_DEFAULT = 2
 MAX_VOTES = 4
 ADX_MIN_DEFAULT = 15
 BTC_FILTER_DEFAULT = True
 RVOL_MIN = 1.0
 ATR_PCT_MIN = 0.3
-ATR_PCT_MAX = 12.0
+ATR_PCT_MAX = 25.0
 MAX_OPEN_PER_COIN = 5
 MAX_OPEN_TOTAL = 20
 
@@ -101,7 +98,7 @@ def default_tf_for(symbol):
     return "1d" if symbol in MAJORS else "4h"
 
 SCAN_TOP_N = int(_e("SCAN_TOP_N", "60"))
-AUTOPOST_MIN_VOTES = int(_e("AUTOPOST_MIN_VOTES", "3"))
+AUTOPOST_MIN_VOTES = int(_e("AUTOPOST_MIN_VOTES", "2"))
 MAX_POSTS_PER_SCAN = int(_e("MAX_POSTS_PER_SCAN", "5"))
 FREE_CHANNEL_MAX_PER_DAY = int(_e("FREE_CHANNEL_MAX_PER_DAY", "3"))
 PROTECT_CONTENT = _e("PROTECT_CONTENT", "1") == "1"
@@ -446,15 +443,10 @@ def _daily_regime(d1, prefix=""):
 
 def _votes(d):
     """
-    v5.0: 4 مؤشرات قوية فقط:
-    1. EMA Trend (close > EMA50 > EMA200)
-    2. Supertrend
-    3. RSI (نطاق صحي)
-    4. MACD (صاعد/هابط)
+    v5.1: 4 مؤشرات متكيفة مع Pullback
     """
     n = len(d)
     with np.errstate(invalid="ignore"):
-        c = d["close"].values
         e50 = d["ema50"].values
         e200 = d["ema200"].values
         st = d["st_dir"].values
@@ -462,19 +454,17 @@ def _votes(d):
         mh = d["macd_hist"].values
         mhp = d["macd_hist"].shift(1).values
 
-        # ─── 4 votes Long ───
         L = (
-            ((c > e50) & (e50 > e200)).astype(int)      # 1. EMA Trend صاعد
-            + (st == 1).astype(int)                      # 2. Supertrend صاعد
-            + ((r > 40) & (r < 70)).astype(int)          # 3. RSI نطاق صحي
-            + ((mh > 0) & (mh > mhp)).astype(int)        # 4. MACD صاعد
+            (e50 > e200).astype(int)
+            + (st == 1).astype(int)
+            + ((r > 20) & (r < 75)).astype(int)
+            + (mh > mhp).astype(int)
         )
-        # ─── 4 votes Short ───
         S = (
-            ((c < e50) & (e50 < e200)).astype(int)       # 1. EMA Trend هابط
-            + (st == -1).astype(int)                     # 2. Supertrend هابط
-            + ((r > 30) & (r < 60)).astype(int)          # 3. RSI نطاق صحي
-            + ((mh < 0) & (mh < mhp)).astype(int)        # 4. MACD هابط
+            (e50 < e200).astype(int)
+            + (st == -1).astype(int)
+            + ((r > 25) & (r < 80)).astype(int)
+            + (mh < mhp).astype(int)
         )
     d["vl"], d["vs"] = L.astype(int), S.astype(int)
     return d
@@ -506,9 +496,9 @@ def make_signals(d, name, p):
         e20 = d["ema20"].values
         if name == "pullback":
             lo3, hi3 = pd.Series(l).rolling(3).min().values, pd.Series(h).rolling(3).max().values
-            # v5.0: شروط بسيطة جداً — اتجاه + RSI + لمس EMA20
-            L = up & (r > 20) & (r < 55) & (lo3 <= e20 * 1.02)
-            S = dn & (r > 45) & (r < 80) & (hi3 >= e20 * 0.98)
+            # v5.1: مدى RSI أوسع
+            L = up & (r > 20) & (r < 65) & (lo3 <= e20 * 1.03)
+            S = dn & (r > 35) & (r < 80) & (hi3 >= e20 * 0.97)
         elif name == "breakout":
             rv = d["rvol"].values > p["rvol_min"]
             L, S = up & rv & (c>d["hh20"].values), dn & rv & (c<d["ll20"].values)
@@ -1279,9 +1269,23 @@ def make_bot(token=None):
     @admin_only
     def users_cmd(m):
         c = counts(store)
-        recent = sorted(store.data["users"].values(), key=lambda u: -u.get("first_seen", 0))[:10]
-        bot.reply_to(m, f"👥 {c['total']} | تجربة {c['trial']} | VIP {c['vip']}\n\n" +
-                        "\n".join(f"• <code>{u['id']}</code> {u.get('username','')}" for u in recent))
+        recent = sorted(store.data["users"].values(), key=lambda u: -u.get("first_seen", 0))[:20]
+        lines = [f"👥 إجمالي {c['total']} | تجربة {c['trial']} | VIP {c['vip']} | جدد اليوم {c['new_today']}", ""]
+        for u in recent:
+            name = (u.get('name') or '').strip()
+            un = (u.get('username') or '').strip()
+            if name and un:
+                label = f"{name} (@{un})"
+            elif name:
+                label = name
+            elif un:
+                label = f"@{un}"
+            else:
+                label = f"<code>{u['id']}</code>"
+            st, _ = status(store, int(u['id']), u)
+            icon = {"admin":"👑","vip":"💎","trial":"🆓","warning":"⚠️","blocked":"⛔"}.get(st, "•")
+            lines.append(f"{icon} {label}")
+        bot.reply_to(m, "\n".join(lines))
 
     @bot.message_handler(commands=["dashboard"])
     @admin_only
@@ -1314,7 +1318,7 @@ def make_bot(token=None):
     def short_cmd(m):
         wait = bot.reply_to(m, "⏳ جاري البحث عن شورتات ...")
         try:
-            p = params_for("4h", btc_filter=False, min_votes=3)
+            p = params_for("4h", btc_filter=False, min_votes=2)
             rows = scan_signals("4h", 0, only_side=-1, fresh_only=False,
                                 params_override=p, lookback=10)
             if not rows:
@@ -1366,7 +1370,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: log.exception("remove_webhook")
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v5.0 started | gist: %s", store.remote_msg)
+    log.info("bot v5.1 started | gist: %s", store.remote_msg)
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
