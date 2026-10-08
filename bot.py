@@ -66,9 +66,9 @@ ATR_PCT_MAX = 25.0
 MAX_OPEN_PER_COIN = 5
 MAX_OPEN_TOTAL = 20
 
-# v6.1: حمايات جديدة
-PUMP_PROTECT_SHORT = 15.0   # ممنوع Short لو صعد أكثر من هذا % في 24 ساعة
-DUMP_PROTECT_LONG  = 15.0   # ممنوع Long لو نزل أكثر من هذا % في 24 ساعة
+# v6.2: حمايات
+PUMP_PROTECT_SHORT = 15.0
+DUMP_PROTECT_LONG  = 15.0
 
 ACTIVE = {"4h": _e("STRATEGY_4H", "pullback"), "1d": _e("STRATEGY_1D", "pullback")}
 
@@ -345,6 +345,7 @@ def _coinbase(sym, iv, limit):
     return sorted([[int(k[0])*1000, float(k[3]), float(k[2]), float(k[1]), float(k[4]), float(k[5])]
                    for k in r.json()], key=lambda x: x[0])
 
+# v6.2: Binance أولاً، ثم OKX، ثم Bybit، ثم MEXC، ثم Coinbase
 SOURCES = [("binance",_binance),("okx",_okx),("bybit",_bybit),("mexc",_mexc),("coinbase",_coinbase)]
 _down, _mem = {}, {}
 MEM_TTL = 60
@@ -474,9 +475,6 @@ def prepare(df, tf, d1=None, btc1d=None):
     return _votes(d.reset_index(drop=True))
 
 def make_signals(d, name, p):
-    """
-    v6.1: حمايات صارمة ضد الانفجارات والانهيارات
-    """
     n = len(d)
     c,o,h,l = (d[k].values for k in ("close","open","high","low"))
     with np.errstate(invalid="ignore"):
@@ -488,57 +486,45 @@ def make_signals(d, name, p):
         adx_ok = adx_v > p["adx_min"]
         tf = p["tf"]
 
-        # 24h change (للحماية من الانفجارات)
-        lb = 6 if tf == "4h" else 1   # 6*4h = 24h | 1*1d = 24h
+        lb = 6 if tf == "4h" else 1
         chg24 = np.zeros(n)
         if n > lb:
             chg24[lb:] = (c[lb:] / c[:-lb] - 1) * 100
 
-        # RSI سابق (للتأكد أن RSI يدور)
         r_prev = np.roll(r, 1)
         r_prev[0] = r[0]
 
         if name == "pullback":
             lo3 = pd.Series(l).rolling(3).min().values
             hi3 = pd.Series(h).rolling(3).max().values
-
-            # v6.1: شروط اتجاه صارمة
-            up_strict = (e50v > e200v) & (c > e20 * 0.99)   # سعر فوق EMA20
-            dn_strict = (e50v < e200v) & (c < e20 * 1.01)   # سعر تحت EMA20
-
-            # Long: اتجاه + ADX + RSI صحي + لمس EMA20 + ليس knife-falling
+            up_strict = (e50v > e200v) & (c > e20 * 0.99)
+            dn_strict = (e50v < e200v) & (c < e20 * 1.01)
             L = (up_strict & adx_ok
                  & (r > 25) & (r < 60)
                  & (lo3 <= e20 * 1.03)
                  & (chg24 > -DUMP_PROTECT_LONG))
-
-            # Short: اتجاه + ADX + RSI مدور للأسفل + لمس EMA20 + ليس في انفجار
             S = (dn_strict & adx_ok
                  & (r > 45) & (r < 70)
-                 & (r < r_prev)                              # RSI يدور للأسفل
+                 & (r < r_prev)
                  & (hi3 >= e20 * 0.97)
-                 & (chg24 < PUMP_PROTECT_SHORT))             # ما صعد كثيراً
-
+                 & (chg24 < PUMP_PROTECT_SHORT))
         elif name == "breakout":
             rv = d["rvol"].values > p["rvol_min"]
             up_strict = (e50v > e200v) & (c > e20 * 0.99)
             dn_strict = (e50v < e200v) & (c < e20 * 1.01)
-            L, S = (up_strict & adx_ok & rv & (c>d["hh20"].values) & (chg24 > -DUMP_PROTECT_LONG),
-                    dn_strict & adx_ok & rv & (c<d["ll20"].values) & (chg24 < PUMP_PROTECT_SHORT))
-
+            L = up_strict & adx_ok & rv & (c>d["hh20"].values) & (chg24 > -DUMP_PROTECT_LONG)
+            S = dn_strict & adx_ok & rv & (c<d["ll20"].values) & (chg24 < PUMP_PROTECT_SHORT)
         elif name == "st_flip":
             sd, sp = d["st_dir"].values, d["st_dir"].shift(1).values
             up_strict = (e50v > e200v) & (c > e20 * 0.99)
             dn_strict = (e50v < e200v) & (c < e20 * 1.01)
             L = up_strict & adx_ok & (sd==1) & (sp==-1) & (chg24 > -DUMP_PROTECT_LONG)
             S = dn_strict & adx_ok & (sd==-1) & (sp==1) & (chg24 < PUMP_PROTECT_SHORT)
-
         elif name == "meanrev":
             up_strict = (e50v > e200v) & (c > e20 * 0.99)
             dn_strict = (e50v < e200v) & (c < e20 * 1.01)
             L = up_strict & adx_ok & (r < 35) & (c > e200v) & (chg24 > -DUMP_PROTECT_LONG)
             S = dn_strict & adx_ok & (r > 65) & (c < e200v) & (chg24 < PUMP_PROTECT_SHORT)
-
         else:
             up_strict = (e50v > e200v) & (c > e20 * 0.99)
             dn_strict = (e50v < e200v) & (c < e20 * 1.01)
@@ -554,8 +540,9 @@ def make_signals(d, name, p):
 def risk_of(entry, atr, p):
     return entry * p["risk_pct"] / 100 if p.get("risk_pct") else p["sl_atr"] * atr
 
-def build_plan(ref, side, p, tf, age_bars):
-    entry = float(ref["close"])
+def build_plan(ref, side, p, tf, age_bars, current_price=None):
+    # v6.2: Entry = السعر الحالي (لو متوفر) — يحل مشكلة الأسعار القديمة
+    entry = float(current_price) if current_price else float(ref["close"])
     risk = risk_of(entry, float(ref["atr"]), p)
     bar_h = BAR[tf] // 3600000
     return dict(entry=entry, sl=entry-side*risk, risk=risk, risk_pct=100*risk/entry,
@@ -563,7 +550,8 @@ def build_plan(ref, side, p, tf, age_bars):
                 age_hours=age_bars*bar_h, opened_ms=int(ref["avail"]), max_hours=p["max_hold"]*bar_h,
                 atr_at_entry=float(ref["atr"]))
 
-def analyze(df, tf, d1=None, btc1d=None, name=None, p=None, lookback=3):
+def analyze(df, tf, d1=None, btc1d=None, name=None, p=None, lookback=2):
+    # v6.2: lookback = 2 (بدل 3)
     name = name or ACTIVE[tf]
     p = p or params_for(tf)
     d = prepare(df, tf, d1, btc1d)
@@ -582,7 +570,8 @@ def analyze(df, tf, d1=None, btc1d=None, name=None, p=None, lookback=3):
             if abs(last["close"]-ref["close"]) <= 1.0*ref["atr"]:
                 side, age = s, k
             break
-    plan = build_plan(ref, side, p, tf, age) if side else None
+    # v6.2: نمرر السعر الحالي لدقة Entry
+    plan = build_plan(ref, side, p, tf, age, current_price=float(last["close"])) if side else None
     regime = "up" if last["reg_up"] else ("down" if last["reg_dn"] else "range")
     reasons = []
     if regime == "range": reasons.append("regime")
@@ -607,7 +596,7 @@ _pool = ThreadPoolExecutor(6)
 _cache = {}
 TTL = 60
 
-def get_analysis(sym, tf="4h", force=False, params_override=None, lookback=3):
+def get_analysis(sym, tf="4h", force=False, params_override=None, lookback=2):
     key = (sym, tf, params_override.get("min_votes") if params_override else None)
     hit = _cache.get(key)
     if hit and not force and time.time()-hit[0] < TTL: return hit[1]
@@ -762,7 +751,7 @@ def _safe(fn, *a):
         log.debug("scan skip %s: %s", a, str(e)[:80]); return None
 
 def scan_signals(tf, min_votes=0, only_side=None, fresh_only=True, universe=None,
-                 params_override=None, lookback=3):
+                 params_override=None, lookback=2):
     syms = universe or top_symbols(SCAN_TOP_N)
     out = []
     for res in _scan_pool.map(lambda s: _safe(get_analysis, s, tf, False, params_override, lookback), syms):
@@ -1328,7 +1317,7 @@ def make_bot(token=None):
         src = ", ".join(f"{k}:{'✅' if v=='ok' else '❌'}" for k,v in source_status().items())
         bot.reply_to(m, f"🖥 <b>لوحة التحكم</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
                         f"🆓 {c['trial']} | 💎 VIP {c['vip']}\n\n{stats_text()}\n\n🌐 {src}\n💾 {store.remote_msg}\n"
-                        f"⚙️ v6.1 | حماية: Short<-{PUMP_PROTECT_SHORT}% | Long>-{DUMP_PROTECT_LONG}%")
+                        f"⚙️ v6.2 | Binance→OKX | Entry=current")
 
     @bot.message_handler(commands=["bottom","pump","delist"])
     @admin_only
@@ -1404,7 +1393,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: log.exception("remove_webhook")
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v6.1 started | gist: %s", store.remote_msg)
+    log.info("bot v6.2 started | gist: %s", store.remote_msg)
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
