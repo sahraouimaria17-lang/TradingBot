@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 import telebot
 from telebot import types
+from telebot.types import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 
 try:
     import ccxt
@@ -49,8 +50,7 @@ STABLES = {"USDT","USDC","FDUSD","TUSD","DAI","BUSD","USDP","USDD","USDE","PYUSD
 
 FEE, SLIP = 0.001, 0.0005
 
-# v7.5: وسط بيننا وبين Abu Turki
-# SL -4.0% | TP1 +3% (0.75R) | TP2 +6% (1.5R) | TP3 +9% (2.25R) | TP4 +12% (3R)
+# v7.7: 4 أهداف | SL 4% | TP1 3% | TP2 6% | TP3 9% | TP4 12%
 RISK_MODELS = {
     "daily":  dict(fixed_sl=4.0, tps=[(0.75,.35),(1.5,.30),(2.25,.20),(3.0,.15)]),
     "4h":     dict(fixed_sl=4.0, tps=[(0.75,.35),(1.5,.30),(2.25,.20),(3.0,.15)]),
@@ -69,9 +69,7 @@ SCORE_BUY         = 8
 SCORE_CAUTIOUS    = -8
 SCORE_SELL        = -35
 MIN_VOTES_DEFAULT = 0
-MAX_VOTES = 4
 ADX_MIN_DEFAULT = 10
-BTC_FILTER_DEFAULT = False
 RVOL_MIN = 1.0
 ATR_PCT_MIN = 0.3
 ATR_PCT_MAX = 25.0
@@ -80,12 +78,9 @@ MAX_OPEN_TOTAL = 20
 
 PUMP_PROTECT_SHORT = 15.0
 DUMP_PROTECT_LONG  = 15.0
-PRICE_DRIFT_MAX    = 8.0
 
 TIMEFRAMES = {"15m": 0.10, "1h": 0.25, "4h": 0.35, "1d": 0.30}
 CANDLES_IN_CHART = 90
-
-ACTIVE = {"4h": _e("STRATEGY_4H", "pullback"), "1d": _e("STRATEGY_1D", "pullback")}
 
 def params_for(tf, risk_model=None, adx_min=None, btc_filter=None, min_votes=None):
     env_rm = _e("RISK_MODEL", "").strip()
@@ -115,7 +110,6 @@ def default_tf_for(symbol):
     return "1d" if symbol in MAJORS else "4h"
 
 SCAN_TOP_N = int(_e("SCAN_TOP_N", "60"))
-AUTOPOST_MIN_VOTES = int(_e("AUTOPOST_MIN_VOTES", "0"))
 AUTOPOST_MIN_SCORE = int(_e("AUTOPOST_MIN_SCORE", "15"))
 MAX_POSTS_PER_SCAN = int(_e("MAX_POSTS_PER_SCAN", "5"))
 FREE_CHANNEL_MAX_PER_DAY = int(_e("FREE_CHANNEL_MAX_PER_DAY", "3"))
@@ -200,8 +194,7 @@ def time_ago(ts):
     if diff < 3600: return f"قبل {diff//60} دقيقة"
     if diff < 86400: return f"قبل {diff//3600} ساعة"
     if diff < 604800: return f"قبل {diff//86400} يوم"
-    if diff < 2592000: return f"قبل {diff//604800} أسبوع"
-    return f"قبل {diff//2592000} شهر"
+    return f"قبل {diff//2592000} شهر" if diff < 2592000 else f"قبل {diff//2592000} شهر"
 
 def touch(store, user, lang):
     uid = str(user.id)
@@ -279,26 +272,15 @@ def supertrend(df, n=10, mult=3.0):
         else: dirn[i] = 1 if c[i]>fub[i] else -1
         line[i] = flb[i] if dirn[i]==1 else fub[i]
     return dirn, line
-def mfi_calc(df, n=14):
-    tp = (df["high"]+df["low"]+df["close"])/3
-    mf = tp*df["volume"]
-    pos, neg = mf.where(tp>tp.shift(), 0.0), mf.where(tp<tp.shift(), 0.0)
-    ps, ns = pos.rolling(n).sum(), neg.rolling(n).sum()
-    return 100 - 100/(1 + ps/ns.replace(0, np.nan))
 def macd_hist_calc(close):
     m = ema(close,12) - ema(close,26)
     return m - ema(m,9)
 def macd_line(close):
     return ema(close,12) - ema(close,26)
-def vwap_bands(df, n=60, k=2.0):
-    tp = (df["high"]+df["low"]+df["close"])/3
-    v = df["volume"]; sv = v.rolling(n).sum()
-    vw = (tp*v).rolling(n).sum()/sv
-    sd = np.sqrt((((tp-vw)**2)*v).rolling(n).sum()/sv)
-    return vw, vw+k*sd, vw-k*sd
 def stoch_calc(df, n=14):
     ll, hh = df["low"].rolling(n).min(), df["high"].rolling(n).max()
     return 100 * (df["close"] - ll) / (hh - ll).replace(0, np.nan)
+def atr_calc(df, n=14): return wilder(true_range(df), n)
 
 def add_indicators(df):
     df = df.copy(); c = df["close"]
@@ -306,15 +288,11 @@ def add_indicators(df):
     df["rsi"] = rsi_calc(c)
     df["macd_line"] = macd_line(c)
     df["macd_hist"] = macd_hist_calc(c)
-    df["atr"] = wilder(true_range(df),14)
+    df["atr"] = atr_calc(df)
     df["adx"],df["pdi"],df["mdi"] = adx_calc(df)
-    df["mfi"] = mfi_calc(df)
-    df["rvol"] = df["volume"]/df["volume"].rolling(20).mean()
     ma, sd = c.rolling(20).mean(), c.rolling(20).std()
     df["bb_mid"],df["bb_up"],df["bb_lo"] = ma, ma+2*sd, ma-2*sd
-    w = 4*sd/ma
-    df["bb_sq"] = w <= w.rolling(100).quantile(0.2)
-    df["vwap"],df["vwap_up"],df["vwap_lo"] = vwap_bands(df)
+    df["rvol"] = df["volume"]/df["volume"].rolling(20).mean()
     df["hh20"] = df["high"].rolling(20).max().shift(1)
     df["ll20"] = df["low"].rolling(20).min().shift(1)
     df["stoch"] = stoch_calc(df)
@@ -380,45 +358,7 @@ def _coinbase(sym, iv, limit):
     return sorted([[int(k[0])*1000, float(k[3]), float(k[2]), float(k[1]), float(k[4]), float(k[5])]
                    for k in r.json()], key=lambda x: x[0])
 
-_ccxt_ex = {}
-def _ccxt_get(name):
-    if not ccxt_ok: return None
-    if name not in _ccxt_ex:
-        try:
-            _ccxt_ex[name] = getattr(ccxt, name)({"enableRateLimit": True, "timeout": 12000})
-        except Exception:
-            _ccxt_ex[name] = None
-    return _ccxt_ex[name]
-
-def _make_ccxt_fetcher(name, tf_map):
-    def fn(sym, iv, limit):
-        ex = _ccxt_get(name)
-        if ex is None: raise Unsupported(name)
-        tf = tf_map.get(iv)
-        if not tf: raise Unsupported(iv)
-        try:
-            data = ex.fetch_ohlcv(f"{sym}/USDT", tf, limit=min(limit, 1000))
-        except Exception as e:
-            msg = str(e).lower()
-            if "not found" in msg or "does not have" in msg or "invalid" in msg:
-                raise PairNotFound(sym)
-            raise
-        if not data or len(data) < 30: raise PairNotFound(sym)
-        return [[int(r[0])]+[float(x) for x in r[1:6]] for r in data]
-    return fn
-
-KUCOIN_TF = {"15m":"15m","1h":"1h","4h":"4h","1d":"1d"}
-GATE_TF   = {"15m":"15m","1h":"1h","4h":"4h","1d":"1d"}
-BITGET_TF = {"15m":"15m","1h":"1h","4h":"4h","1d":"1d"}
-
 SOURCES = [("binance",_binance),("okx",_okx),("bybit",_bybit),("mexc",_mexc),("coinbase",_coinbase)]
-if ccxt_ok:
-    SOURCES += [
-        ("kucoin", _make_ccxt_fetcher("kucoin", KUCOIN_TF)),
-        ("gateio", _make_ccxt_fetcher("gateio", GATE_TF)),
-        ("bitget", _make_ccxt_fetcher("bitget", BITGET_TF)),
-    ]
-
 _down, _mem = {}, {}
 MEM_TTL = 60
 
@@ -465,7 +405,7 @@ def top_symbols(n=60):
             s = t["symbol"]
             if s.endswith("USDT") and float(t["quoteVolume"])>2e6:
                 b = s[:-4]
-                if b not in STABLES: out.append((float(t["quoteVolume"]), b))
+                if b not in STABLES and len(b) >= 2: out.append((float(t["quoteVolume"]), b))
         out.sort(reverse=True)
         if out: return [b for _,b in out][:n]
     except Exception: pass
@@ -480,96 +420,73 @@ def _cached(key, ttl, fn):
     _misc[key] = (time.time(), val)
     return val
 
-def fear_greed():
-    def f():
-        j = requests.get("https://api.alternative.me/fng/?limit=1", timeout=6).json()["data"][0]
-        return dict(value=int(j["value"]), label=j.get("value_classification",""))
-    return _cached("fng", 1800, f)
-
-def funding(symbol):
-    def f():
-        r = requests.get("https://fapi.binance.com/fapi/v1/premiumIndex", params=dict(symbol=symbol+"USDT"), timeout=5)
-        r.raise_for_status(); return float(r.json()["lastFundingRate"])
-    return _cached(("fund",symbol), 600, f)
-
-def coingecko_info(sym):
-    def f():
-        r = requests.get("https://api.coingecko.com/api/v3/search", params={"query": sym}, timeout=8).json()
-        coins = [c for c in r.get("coins", []) if c.get("symbol","").upper() == sym]
-        if not coins: return None
-        cid = coins[0]["id"]
-        m = requests.get("https://api.coingecko.com/api/v3/coins/markets",
-                         params={"vs_currency":"usd","ids":cid}, timeout=8).json()
-        return (m[0], cid) if m else None
-    return _cached(("cg", sym), 600, f)
-
-def coingecko_ohlc(cid):
-    try:
-        r = requests.get(f"https://api.coingecko.com/api/v3/coins/{cid}/ohlc",
-                         params={"vs_currency":"usd","days":30}, timeout=10).json()
-        df = pd.DataFrame(r, columns=["t","open","high","low","close"])
-        df["t"] = pd.to_datetime(df["t"], unit="ms")
-        df["volume"] = 0.0
-        df["t"] = df["t"].astype("int64") // 10**6
-        return df if len(df) >= 30 else None
-    except Exception: return None
-
 def fetch_live_price(sym):
-    errors = []
-    for base in BINANCE_BASES:
-        try:
-            r = _get(f"{base}/api/v3/ticker/price", params={"symbol": sym+"USDT"}, timeout=8)
-            if r.status_code == 200:
-                p = float(r.json().get("price", 0))
-                if p > 0:
-                    return p, "binance"
-            elif r.status_code == 400:
-                errors.append("binance: 400"); break
-        except Exception as e:
-            errors.append(f"binance: {str(e)[:30]}")
+    for attempt in range(3):
+        for base in BINANCE_BASES:
+            try:
+                r = _get(f"{base}/api/v3/ticker/price", params={"symbol": sym+"USDT"}, timeout=15)
+                if r.status_code == 200:
+                    p = float(r.json().get("price", 0))
+                    if p > 0: return p, "binance"
+                elif r.status_code == 400:
+                    break
+            except Exception:
+                time.sleep(1)
     try:
-        r = _get("https://fapi.binance.com/fapi/v1/ticker/price", params={"symbol": sym+"USDT"}, timeout=8)
+        r = _get("https://fapi.binance.com/fapi/v1/ticker/price", params={"symbol": sym+"USDT"}, timeout=15)
         if r.status_code == 200:
             p = float(r.json().get("price", 0))
-            if p > 0: return p, "binance_fut"
+            if p > 0: return p, "binance"
     except Exception: pass
     try:
-        r = _get("https://www.okx.com/api/v5/market/ticker", params={"instId": f"{sym}-USDT"}, timeout=8)
+        r = _get("https://www.okx.com/api/v5/market/ticker", params={"instId": f"{sym}-USDT"}, timeout=15)
         d = r.json().get("data") or []
         if d:
             p = float(d[0].get("last", 0))
             if p > 0: return p, "okx"
     except Exception: pass
     try:
-        r = _get("https://api.bybit.com/v5/market/tickers", params={"category": "spot", "symbol": sym+"USDT"}, timeout=8)
+        r = _get("https://api.bybit.com/v5/market/tickers", params={"category": "spot", "symbol": sym+"USDT"}, timeout=15)
         d = r.json().get("result", {}).get("list") or []
         if d:
             p = float(d[0].get("lastPrice", 0))
             if p > 0: return p, "bybit"
     except Exception: pass
     try:
-        r = _get("https://api.mexc.com/api/v3/ticker/price", params={"symbol": sym+"USDT"}, timeout=8)
+        r = _get("https://api.mexc.com/api/v3/ticker/price", params={"symbol": sym+"USDT"}, timeout=15)
         if r.status_code == 200:
             p = float(r.json().get("price", 0))
             if p > 0: return p, "mexc"
     except Exception: pass
-    try:
-        cg = coingecko_info(sym)
-        if cg:
-            p = float(cg[0].get("current_price", 0))
-            if p > 0: return p, "coingecko"
-    except Exception: pass
-    log.error("live price FAILED for %s | errors: %s", sym, errors[:3])
     return None, None
 
 def fetch_delistings():
     def f():
         r = requests.get("https://www.binance.com/bapi/composite/v1/public/cms/article/list/query",
-                         params=dict(type=1, catalogId=161, pageNo=1, pageSize=15), timeout=10)
+                         params=dict(type=1, catalogId=161, pageNo=1, pageSize=20), timeout=10)
         arts = r.json()["data"]["catalogs"][0]["articles"]
         return [dict(id=a["code"], title=a["title"], ts=a.get("releaseDate"),
                      url=f"https://www.binance.com/en/support/announcement/{a['code']}") for a in arts]
     return _cached("delist", 300, f) or []
+
+# v7.7: استخراج رموز العملات من عناوين الحذف
+def extract_delisted_coins(arts):
+    skip = {"BINANCE","WILL","DELIST","ON","AND","THE","FOR","USD","USDT","USDC","FROM",
+            "SPOT","TRADING","PAIRS","PAIR","TOKEN","TOKENS","ANNOUNCEMENT","API","BNB",
+            "BUSD","FDUSD","TUSD","LISTING","MARGIN","FUTURES","PERPETUAL","MONITORING"}
+    coins = {}
+    for a in arts[:30]:
+        title = a.get("title", "")
+        # استخراج رموز (أحرف كبيرة 2-10)
+        words = re.findall(r'\b[A-Z0-9]{2,10}\b', title)
+        date_match = re.search(r'(\d{4}-\d{2}-\d{2})', title)
+        date = date_match.group(1) if date_match else ""
+        for w in words:
+            if w in skip: continue
+            if w.isdigit(): continue
+            if len(w) < 2 or len(w) > 10: continue
+            if w not in coins: coins[w] = date
+    return coins
 
 def score_tf(df):
     if len(df) < 60: return 0.0, []
@@ -603,26 +520,21 @@ def get_tf_data(sym, tf):
     try:
         df = get_recent(sym, tf, 300)
         return add_indicators(df), df.attrs.get("source","?")
-    except PairNotFound:
-        raise
-    except Exception:
-        raise PairNotFound(sym)
+    except PairNotFound: raise
+    except Exception: raise PairNotFound(sym)
 
 def patch_with_live(df, tf, live_price):
     d = df.copy()
     now_ms = int(time.time() * 1000)
     period_ms = MS.get(tf, 14400000)
     period_start = (now_ms // period_ms) * period_ms
-    if len(d) == 0:
-        return d, False
+    if len(d) == 0: return d, False
     last_t = int(d.iloc[-1]["t"])
     if last_t == period_start:
         i = len(d) - 1
         d.iloc[i, d.columns.get_loc("close")] = live_price
-        if live_price > float(d.iloc[i]["high"]):
-            d.iloc[i, d.columns.get_loc("high")] = live_price
-        if live_price < float(d.iloc[i]["low"]):
-            d.iloc[i, d.columns.get_loc("low")] = live_price
+        if live_price > float(d.iloc[i]["high"]): d.iloc[i, d.columns.get_loc("high")] = live_price
+        if live_price < float(d.iloc[i]["low"]): d.iloc[i, d.columns.get_loc("low")] = live_price
         return d, False
     else:
         new_row = dict(t=period_start, open=float(d.iloc[-1]["close"]),
@@ -632,52 +544,13 @@ def patch_with_live(df, tf, live_price):
         return d, True
 
 BAR = {"15m":900000,"1h":3600000,"4h":4*3600*1000,"1d":24*3600*1000}
-D1 = BAR["1d"]
-
-def _regime_arrays(x):
-    valid = x["ema200"].notna().values
-    up = ((x["close"]>x["ema200"]) & (x["ema50"]>x["ema200"])).values & valid
-    dn = ((x["close"]<x["ema200"]) & (x["ema50"]<x["ema200"])).values & valid
-    return up, dn
-
-def _daily_regime(d1, prefix=""):
-    x = add_indicators(d1)
-    up, dn = _regime_arrays(x)
-    return pd.DataFrame({"avail":(x["t"]+D1).values, prefix+"reg_up":up, prefix+"reg_dn":dn}).sort_values("avail")
-
-def _votes(d):
-    n = len(d)
-    with np.errstate(invalid="ignore"):
-        e50 = d["ema50"].values; e200 = d["ema200"].values
-        st = d["st_dir"].values; r = d["rsi"].values
-        mh = d["macd_hist"].values; mhp = d["macd_hist"].shift(1).values
-        L = ((e50 > e200).astype(int) + (st == 1).astype(int)
-             + ((r > 20) & (r < 75)).astype(int) + (mh > mhp).astype(int))
-        S = ((e50 < e200).astype(int) + (st == -1).astype(int)
-             + ((r > 25) & (r < 80)).astype(int) + (mh < mhp).astype(int))
-    d["vl"], d["vs"] = L.astype(int), S.astype(int)
-    return d
-
-def prepare(df, tf, d1=None, btc1d=None):
-    d = add_indicators(df)
-    d["avail"] = d["t"] + BAR.get(tf, D1)
-    if tf == "4h" and d1 is not None:
-        d = pd.merge_asof(d.sort_values("avail"), _daily_regime(d1), on="avail", direction="backward")
-    else:
-        d["reg_up"],d["reg_dn"] = _regime_arrays(d)
-    if btc1d is not None:
-        b = _daily_regime(btc1d, "btc_")
-        d = pd.merge_asof(d.sort_values("avail"), b, on="avail", direction="backward")
-        d["btc_up"],d["btc_dn"] = d["btc_reg_up"].eq(True), d["btc_reg_dn"].eq(True)
-    d["reg_up"],d["reg_dn"] = d["reg_up"].eq(True), d["reg_dn"].eq(True)
-    return _votes(d.reset_index(drop=True))
 
 def risk_of(entry, atr, p):
     return entry * p["risk_pct"] / 100 if p.get("risk_pct") else p["sl_atr"] * atr
 
 def build_plan(entry, side, atr, p, tf, ref_avail=None):
     risk = risk_of(entry, atr, p)
-    bar_h = BAR.get(tf, D1) // 3600000
+    bar_h = BAR.get(tf, 24*3600*1000) // 3600000
     return dict(entry=float(entry), sl=float(entry-side*risk), risk=float(risk),
                 risk_pct=100*risk/entry,
                 tps=[(entry+side*r*risk, r, f, 100*side*r*risk/entry) for r,f in p["tps"]],
@@ -689,31 +562,19 @@ def analyze(sym, chart_tf=None):
     for tf in TIMEFRAMES:
         try:
             d, src = get_tf_data(sym, tf)
-            frames[tf] = d
-            used[tf] = src
-        except PairNotFound:
-            continue
+            frames[tf] = d; used[tf] = src
+        except PairNotFound: continue
         except Exception as e:
             log.warning("tf %s failed for %s: %s", tf, sym, str(e)[:80])
 
-    cg = None
-    if not frames:
-        cg = coingecko_info(sym)
-        if cg:
-            cdf = coingecko_ohlc(cg[1])
-            if cdf is not None:
-                frames["4h"] = add_indicators(cdf)
-                used["4h"] = "coingecko"
-    if not frames:
-        raise PairNotFound(sym)
+    if not frames: raise PairNotFound(sym)
 
     live_price, live_src = fetch_live_price(sym)
     if not live_price or live_price <= 0:
         raise ConnectionError(f"Live price unavailable for {sym}")
     price = float(live_price)
 
-    if chart_tf is None:
-        chart_tf = default_tf_for(sym)
+    if chart_tf is None: chart_tf = default_tf_for(sym)
     base_tf = chart_tf if chart_tf in frames else ("4h" if "4h" in frames else list(frames)[0])
     orig_last_close = float(frames[base_tf].iloc[-1]["close"])
 
@@ -731,10 +592,9 @@ def analyze(sym, chart_tf=None):
             log.warning("patch %s %s failed: %s", sym, tf, str(e)[:80])
 
     total_w = sum(TIMEFRAMES[t] for t in frames)
-    total_score = 0.0; all_sig = []; per_tf = {}
+    total_score = 0.0; all_sig = []
     for tf, df in frames.items():
         s, sig = score_tf(df)
-        per_tf[tf] = round(s*100, 1)
         total_score += s * TIMEFRAMES[tf] / total_w
         all_sig += sig
     score100 = round(total_score * 100, 1)
@@ -745,7 +605,7 @@ def analyze(sym, chart_tf=None):
         rec, emoji, side, quality = "شراء", "🟢", 1, "buy"
     elif score100 > SCORE_CAUTIOUS:
         side = 1 if score100 >= 0 else -1
-        rec = "شراء بحذر (عرضي)" if side == 1 else "بيع بحذر (عرضي)"
+        rec = "شراء بحذر" if side == 1 else "بيع بحذر"
         emoji, quality = "🟡", "cautious"
     elif score100 > SCORE_SELL:
         rec, emoji, side, quality = "بيع", "🔴", -1, "sell"
@@ -755,50 +615,32 @@ def analyze(sym, chart_tf=None):
     direction = side
     agree = sum(1 for x in all_sig if x * direction > 0)
     agreement = round(100 * agree / max(len(all_sig), 1))
-    tf_agree = sum(1 for s in per_tf.values() if s * direction > 0)
 
     bdf = frames[base_tf]
     last = bdf.iloc[-1]
     atr = float(last["atr"])
     price_pct = 100*atr/price
-    price_drift = abs(price - orig_last_close) / orig_last_close * 100 if orig_last_close else 0.0
-
     if not (ATR_PCT_MIN <= price_pct <= ATR_PCT_MAX):
-        if quality in ("strong", "strong_sell"):
-            quality = "buy" if side == 1 else "sell"
-            rec = "شراء (تقلب عالي)" if side == 1 else "بيع (تقلب عالي)"
-            emoji = "🟡"
+        if quality in ("strong","strong_sell"): quality = "buy" if side == 1 else "sell"
 
     protected = False
     if side == -1 and chg24 > PUMP_PROTECT_SHORT:
-        side = 0; rec = "لا توجد صفقة (السعر صعد بقوة)"; emoji = "⚪"; quality = "blocked"; protected = True
+        side = 0; rec = "لا توجد صفقة"; emoji = "⚪"; quality = "blocked"; protected = True
     if side == 1 and chg24 < -DUMP_PROTECT_LONG:
-        side = 0; rec = "لا توجد صفقة (السعر هبط بقوة)"; emoji = "⚪"; quality = "blocked"; protected = True
+        side = 0; rec = "لا توجد صفقة"; emoji = "⚪"; quality = "blocked"; protected = True
 
     plan = None
     if side:
         p = params_for(base_tf)
         plan = build_plan(price, side, atr, p, base_tf, last["t"])
-        risk_amt = abs(price - plan["sl"])
-        reward_amt = abs(plan["tps"][1][0] - price)
-        rr = round(reward_amt / risk_amt, 2) if risk_amt > 0 else 0
-    else:
-        rr = 0
-
-    prices = {live_src or "binance": price}
-    cons = price
 
     return dict(sym=sym, frames=frames, used=used, base_tf=base_tf,
                 score=score100, rec=rec, emoji=emoji, side=side, quality=quality,
-                agreement=agreement, tf_agree=tf_agree, n_tf=len(frames),
-                price=price, candle_close=orig_last_close, price_drift=price_drift,
+                agreement=agreement, price=price, candle_close=orig_last_close,
                 live_src=live_src or "binance",
-                cons=cons, prices=prices, plan=plan, rr=rr,
-                per_tf=per_tf, cg=cg, rsi=float(last["rsi"]),
-                atr=atr, atr_pct=price_pct, chg24=chg24,
-                adx=float(last["adx"]), mfi=float(last["mfi"]),
-                rvol=float(last["rvol"]), protected=protected,
-                df=bdf, source=used.get(base_tf,"?"))
+                plan=plan, chg24=chg24, atr=atr, atr_pct=price_pct,
+                rsi=float(last["rsi"]), adx=float(last["adx"]),
+                protected=protected, df=bdf)
 
 def fmt(x):
     if x >= 1000: return f"{x:,.2f}"
@@ -806,19 +648,27 @@ def fmt(x):
     if x >= 0.01: return f"{x:.5f}"
     return f"{x:.8f}".rstrip("0")
 
-def render_chart(res):
+# v7.7: شارتين — عادي و VIP
+def render_chart(res, vip=False):
     if not plt_ok: return None
     df = res["df"].tail(CANDLES_IN_CHART).reset_index(drop=True)
     if len(df) < 10: return None
-    bg, fg = "#0b1220", "#d9e2f2"
+    bg = "#0d1117" if vip else "#0b1220"
+    fg = "#d9e2f2"
     up_c, dn_c = "#16c784", "#ea3943"
     side = res["side"]; plan = res["plan"]
 
-    fig = plt.figure(figsize=(11, 8), facecolor=bg)
-    gs = fig.add_gridspec(3, 1, height_ratios=[5, 1.3, 1.3], hspace=0.05)
-    ax = fig.add_subplot(gs[0], facecolor=bg)
-    axv = fig.add_subplot(gs[1], facecolor=bg, sharex=ax)
-    axr = fig.add_subplot(gs[2], facecolor=bg, sharex=ax)
+    fig = plt.figure(figsize=(12 if vip else 11, 8.5 if vip else 7), facecolor=bg)
+    if vip:
+        gs = fig.add_gridspec(3, 1, height_ratios=[5, 1.2, 1.2], hspace=0.05)
+        ax = fig.add_subplot(gs[0], facecolor=bg)
+        axv = fig.add_subplot(gs[1], facecolor=bg, sharex=ax)
+        axr = fig.add_subplot(gs[2], facecolor=bg, sharex=ax)
+    else:
+        gs = fig.add_gridspec(2, 1, height_ratios=[5, 1.2], hspace=0.05)
+        ax = fig.add_subplot(gs[0], facecolor=bg)
+        axv = fig.add_subplot(gs[1], facecolor=bg, sharex=ax)
+        axr = None
 
     for i, row in df.iterrows():
         o, h, l, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
@@ -827,58 +677,72 @@ def render_chart(res):
         ax.add_patch(Rectangle((i-0.3, min(o,c)), 0.6, max(abs(c-o), 1e-12), color=col))
         axv.bar(i, float(row["volume"]), color=col, width=0.7, alpha=0.7)
 
-    ax.plot(df.index, df["ema20"], color="#f5c518", lw=1.1, label="EMA20")
-    ax.plot(df.index, df["ema50"], color="#3b82f6", lw=1.1, label="EMA50")
-    if not df["ema200"].isna().all():
-        ax.plot(df.index, df["ema200"], color="#a855f7", lw=1.0, label="EMA200", alpha=0.7)
-    ax.plot(df.index, df["bb_up"], color="#8892a6", lw=0.7, ls="--")
-    ax.plot(df.index, df["bb_lo"], color="#8892a6", lw=0.7, ls="--")
-    ax.fill_between(df.index, df["bb_lo"], df["bb_up"], color="#8892a6", alpha=0.06)
+    # EMA + Bollinger
+    ax.plot(df.index, df["ema20"], color="#f5c518", lw=1.2, label="EMA 20")
+    ax.plot(df.index, df["ema50"], color="#3b82f6", lw=1.2, label="EMA 50")
+    if vip and not df["ema200"].isna().all():
+        ax.plot(df.index, df["ema200"], color="#a855f7", lw=1.1, label="EMA 200", alpha=0.8)
+    if vip:
+        ax.plot(df.index, df["bb_up"], color="#8892a6", lw=0.7, ls="--", alpha=0.7)
+        ax.plot(df.index, df["bb_lo"], color="#8892a6", lw=0.7, ls="--", alpha=0.7)
+        ax.fill_between(df.index, df["bb_lo"], df["bb_up"], color="#8892a6", alpha=0.06)
+        # Supertrend
+        try:
+            st_up = np.where(df["st_dir"].values == 1, df["st_line"].values, np.nan)
+            st_dn = np.where(df["st_dir"].values == -1, df["st_line"].values, np.nan)
+            ax.plot(df.index, st_up, color="#26c6da", lw=1.0, alpha=0.7, label="ST Up")
+            ax.plot(df.index, st_dn, color="#ef5350", lw=1.0, alpha=0.7, label="ST Dn")
+        except Exception: pass
 
+    # Levels
     levels = []
     if plan and side:
         levels = [(plan["entry"], "ENTRY", "#ffffff"), (plan["sl"], "STOP", "#ff4d4d")]
-        for i, tp in enumerate(plan["tps"], 1):
+        for i, tp in enumerate(plan["tps"][:4], 1):
             levels.append((tp[0], f"TP{i}", "#16c784"))
     x_end = len(df) - 1
     for p, name, col in levels:
-        ax.axhline(p, color=col, lw=0.9, ls="--", alpha=0.85)
-        ax.text(x_end + 0.5, p, f" {name} {fmt(p)}", color=col, fontsize=8, va="center", fontweight="bold")
+        ax.axhline(p, color=col, lw=1.1, ls="--", alpha=0.9)
+        ax.text(x_end + 0.5, p, f" {name} {fmt(p)}", color=col,
+                fontsize=8.5 if vip else 8, va="center", fontweight="bold")
 
     lo = float(df["low"].min()); hi = float(df["high"].max())
     if levels:
         lo = min(lo, min(v[0] for v in levels))
         hi = max(hi, max(v[0] for v in levels))
     pad = (hi-lo)*0.05
-    ax.set_ylim(lo-pad, hi+pad)
-    ax.set_xlim(-1, len(df)+14)
+    ax.set_ylim(lo-pad, hi+pad); ax.set_xlim(-1, len(df)+14)
 
-    axr.plot(df.index, df["rsi"], color="#c084fc", lw=1)
-    axr.axhline(70, color="#ea3943", lw=0.6, ls="--")
-    axr.axhline(30, color="#16c784", lw=0.6, ls="--")
-    axr.set_ylim(0, 100)
-    axr.text(0.005, 0.8, "RSI", transform=axr.transAxes, color=fg, fontsize=8)
-    axv.text(0.005, 0.8, "VOL", transform=axv.transAxes, color=fg, fontsize=8)
+    # RSI panel للـ VIP فقط
+    if vip and axr is not None:
+        axr.plot(df.index, df["rsi"], color="#c084fc", lw=1.1)
+        axr.axhline(70, color="#ea3943", lw=0.6, ls="--")
+        axr.axhline(30, color="#16c784", lw=0.6, ls="--")
+        axr.fill_between(df.index, 30, 70, color="#f48fb1", alpha=0.08)
+        axr.set_ylim(0, 100)
+        axr.text(0.005, 0.8, "RSI", transform=axr.transAxes, color=fg, fontsize=8)
 
-    for a_ in (ax, axv, axr):
+    for a_ in ([ax, axv, axr] if vip and axr else [ax, axv]):
         a_.tick_params(colors=fg, labelsize=8)
         a_.grid(color="#1c2740", lw=0.5)
         for sp in a_.spines.values(): sp.set_color("#1c2740")
     plt.setp(ax.get_xticklabels(), visible=False)
-    plt.setp(axv.get_xticklabels(), visible=False)
+    if vip and axr: plt.setp(axv.get_xticklabels(), visible=False)
     step = max(len(df)//6, 1)
-    axr.set_xticks(range(0, len(df), step))
-    axr.set_xticklabels([pd.Timestamp(df["t"].iloc[i], unit="ms").strftime("%m-%d %H:%M")
-                         for i in range(0, len(df), step)], fontsize=8)
+    last_ax = axr if vip and axr else axv
+    last_ax.set_xticks(range(0, len(df), step))
+    last_ax.set_xticklabels([pd.Timestamp(df["t"].iloc[i], unit="ms").strftime("%m-%d %H:%M")
+                              for i in range(0, len(df), step)], fontsize=8)
     ax.yaxis.tick_right()
 
     side_col = up_c if side == 1 else (dn_c if side == -1 else "#f5c518")
-    live_src = res.get("live_src", "binance")
-    title_txt = f"{res['sym']}/USDT  •  {res['base_tf']}  •  Score {res['score']:+.0f}  •  Live: {live_src.capitalize()}"
-    ax.set_title(title_txt, color=side_col, fontsize=13, fontweight="bold", loc="left")
-    ax.legend(loc="upper left", fontsize=8, facecolor=bg, edgecolor=bg, labelcolor=fg)
+    tf_lbl = {"1d":"Daily","4h":"4H","1h":"1H","15m":"15m"}.get(res["base_tf"], res["base_tf"].upper())
+    badge = "💎 VIP" if vip else ""
+    title_txt = f"{res['sym']}/USDT  •  {tf_lbl}  {badge}".strip()
+    ax.set_title(title_txt, color=side_col, fontsize=14, fontweight="bold", loc="left")
+    ax.legend(loc="upper left", fontsize=7.5, facecolor=bg, edgecolor=bg, labelcolor=fg)
 
-    fig.text(0.5, 0.5, BRAND, fontsize=70, color="white", alpha=0.10,
+    fig.text(0.5, 0.5, BRAND, fontsize=70, color="white", alpha=0.08,
              ha="center", va="center", rotation=25, fontweight="bold")
     fig.text(0.985, 0.012, BRAND, fontsize=11, color="#f5c518",
              ha="right", va="bottom", fontweight="bold")
@@ -887,6 +751,98 @@ def render_chart(res):
     fig.savefig(buf, format="png", dpi=130, facecolor=bg, bbox_inches="tight")
     plt.close(fig); buf.seek(0)
     return buf
+
+# v7.7: رسائل حسب الفئة
+def format_signal_free(res):
+    sym = res["sym"]; side = res["side"]; plan = res["plan"]
+    tf = res["base_tf"]
+    tf_ar = {"1d":"يومي","4h":"4 ساعات","1h":"ساعة","15m":"15 دقيقة"}.get(tf, tf)
+    if side == -1:
+        return (f"📊 تحليل #{sym}/USDT\n\n⚡ Binance\n⏱ الفريم: {tf_ar}\n\n"
+                f"🔒 هذه إشارة بيع (Short) حصرية لمشتركي VIP.\n"
+                f"💎 للاشتراك: /vip")
+    if not plan or not side:
+        return f"📊 تحليل #{sym}/USDT\n\n⚡ Binance\n⏱ {tf_ar}\n\n💡 لا توجد صفقة مناسبة الآن ⚪"
+    lines = [
+        f"📊 تحليل #{sym}/USDT", "",
+        "⚡ Binance",
+        f"⏱ الفريم: {tf_ar}", "",
+        "💡 التوصية: شراء 🟢", "",
+        f"💵 الدخول: <code>{fmt(plan['entry'])}</code>",
+        f"🎯 الهدف 1: <code>{fmt(plan['tps'][0][0])}</code>",
+        f"🎯 الهدف 2: <code>{fmt(plan['tps'][1][0])}</code>",
+        f"🛑 وقف الخسارة: <code>{fmt(plan['sl'])}</code>",
+        "", "🔒 الهدفان 3-4 في VIP: /vip", "",
+        f"👤 {BRAND}", f"📢 {CHANNEL_LINK}", "",
+        "⚠️ تحليل فني وليس نصيحة مالية.",
+    ]
+    return "\n".join(lines)
+
+def format_signal_vip(res):
+    sym = res["sym"]; side = res["side"]; plan = res["plan"]
+    tf = res["base_tf"]
+    tf_ar = {"1d":"يومي","4h":"4 ساعات","1h":"ساعة","15m":"15 دقيقة"}.get(tf, tf)
+    if not plan or not side:
+        return f"📊 <b>تحليل #{sym}/USDT</b>\n\n⚡ Binance\n⏱ {tf_ar}\n\n💡 لا توجد صفقة مناسبة الآن ⚪"
+    side_txt = "شراء 🟢" if side == 1 else "بيع 🔴"
+    lines = [
+        f"💎 <b>تحليل VIP #{sym}/USDT</b>", "",
+        "⚡ Binance",
+        f"⏱ الفريم: {tf_ar}", "",
+        f"💡 التوصية: <b>{side_txt}</b>", "",
+        f"💵 الدخول: <code>{fmt(plan['entry'])}</code>",
+    ]
+    for i, tp in enumerate(plan["tps"][:4], 1):
+        lines.append(f"🎯 الهدف {i}: <code>{fmt(tp[0])}</code>")
+    lines.append(f"🛑 وقف الخسارة: <code>{fmt(plan['sl'])}</code>")
+    lines += ["", f"📈 RSI: {res['rsi']:.0f} | ADX: {res['adx']:.0f}",
+              f"📊 التوافق: {res['agreement']}%", "",
+              f"👤 {BRAND}", f"📢 {CHANNEL_LINK}", "",
+              "⚠️ تحليل فني وليس نصيحة مالية."]
+    return "\n".join(lines)
+
+def format_signal_admin(res):
+    plan = res["plan"]; side = res["side"]; sym = res["sym"]
+    base = format_signal_vip(res)
+    if not plan or not side: return base
+    tf_ar = {"1d":"يومي","4h":"4 ساعات","1h":"ساعة","15m":"15 دقيقة"}.get(res["base_tf"], res["base_tf"])
+    side_icon = "🟢" if side == 1 else "🔴"
+    side_txt = "شراء" if side == 1 else "بيع"
+    copy_lines = [f"#{sym}/USDT · {tf_ar}", f"{side_icon} {side_txt}",
+                  f"دخول: {fmt(plan['entry'])}"]
+    for i, tp in enumerate(plan["tps"][:4], 1):
+        copy_lines.append(f"🎯{i}: {fmt(tp[0])}")
+    copy_lines.append(f"🛑: {fmt(plan['sl'])}")
+    copy_block = "\n".join(copy_lines)
+    return base + f"\n\n📋 <b>للنسخ:</b>\n<pre>{copy_block}</pre>"
+
+def keyboard(sym, tf, tier):
+    kb = types.InlineKeyboardMarkup()
+    btns = []
+    if tier == "admin":
+        btns.append(types.InlineKeyboardButton(("✅ " if tf=="4h" else "")+"4H", callback_data=f"tf:{sym}:4h"))
+        btns.append(types.InlineKeyboardButton(("✅ " if tf=="1d" else "")+"يومي", callback_data=f"tf:{sym}:1d"))
+    btns.append(types.InlineKeyboardButton("🔄 تحديث", callback_data=f"tf:{sym}:{tf}:r"))
+    kb.row(*btns)
+    if tier == "free":
+        kb.row(types.InlineKeyboardButton("💎 اشترك VIP", callback_data="vip"))
+    return kb
+
+def send_signal(bot, chat_id, res, tier, protect=False):
+    vip = tier in ("vip", "admin")
+    img = render_chart(res, vip=vip)
+    if tier == "admin":
+        text = format_signal_admin(res)
+    elif tier == "vip":
+        text = format_signal_vip(res)
+    else:
+        text = format_signal_free(res)
+    if img is None:
+        return bot.send_message(chat_id, text, protect_content=protect)
+    if len(text) <= 1024:
+        return bot.send_photo(chat_id, img, caption=text, protect_content=protect)
+    bot.send_photo(chat_id, img, protect_content=protect)
+    return bot.send_message(chat_id, text, protect_content=protect)
 
 _pool = ThreadPoolExecutor(6)
 _cache = {}
@@ -900,29 +856,6 @@ def get_analysis(sym, tf=None, force=False):
     _cache[key] = (time.time(), res)
     return res
 
-def enrich(res, market=True):
-    if "extra" in res and (res["extra"].get("market") or not market): return res
-    ex = dict(market=market)
-    if market:
-        ex["fng"] = fear_greed()
-        ex["funding"] = funding(res["sym"])
-    res["extra"] = ex
-    return res
-
-def market_notes(side, ex, ar=True):
-    notes = []
-    fng, fund = ex.get("fng"), ex.get("funding")
-    if fng:
-        v = fng["value"]; lab = f"{v} ({fng['label']})"
-        if side==1 and v>=80: notes.append(("⚠️ جشع شديد " if ar else "⚠️ Extreme greed ")+lab)
-        elif side==-1 and v<=20: notes.append(("⚠️ خوف شديد " if ar else "⚠️ Extreme fear ")+lab)
-        else: notes.append(("😶 الخوف والطمع: " if ar else "😶 F&G: ")+lab)
-    if fund is not None:
-        pct = fund*100
-        if side==1 and pct>0.05: notes.append(("⚠️ تمويل مرتفع " if ar else "⚠️ High funding ")+f"{pct:.3f}%")
-        elif side==-1 and pct<-0.03: notes.append(("⚠️ تمويل سلبي " if ar else "⚠️ Neg funding ")+f"{pct:.3f}%")
-    return notes
-
 HOUR = 3600000
 def _cost(entry, risk): return (2*FEE+SLIP)*entry/risk
 
@@ -932,17 +865,14 @@ def can_track(store, coin, tf, side, opened_ms=None):
         if len(opens) >= MAX_OPEN_TOTAL: return False
         if sum(1 for p in opens if p["coin"]==coin) >= MAX_OPEN_PER_COIN: return False
         if any(p["coin"]==coin and p["tf"]==tf and p["side"]==side for p in opens): return False
-        if opened_ms and any(h["coin"]==coin and h["tf"]==tf and h["side"]==side and h.get("opened")==opened_ms
-                             for h in store.data["history"][-300:]): return False
     return True
 
-def track_signal(store, res, free_posted=False):
+def track_signal(store, res):
     pl = res["plan"]; tf = res["base_tf"]
     rec = dict(id=f"{res['sym']}-{tf}-{int(time.time())}", coin=res["sym"], tf=tf, side=res["side"],
                entry=pl["entry"], sl=pl["sl"], risk=pl["risk"],
                opened=pl["opened_ms"], next_t=pl["opened_ms"], max_hours=pl["max_hours"],
                remaining=1.0, realized=0.0, be=False, trail_phase=0, status="open",
-               strategy="v7.5score", score=res["score"], votes=0, free_posted=free_posted,
                tps=[dict(px=t[0], r=t[1], frac=t[2], hit=False) for t in pl["tps"]])
     with store.lock:
         store.data["signals"].append(rec)
@@ -981,14 +911,14 @@ def _close(store, pos, result):
     pos["R"] = round(pos["realized"] - _cost(pos["entry"], pos["risk"]), 3)
     with store.lock:
         store.data["history"].append(dict(coin=pos["coin"], tf=pos["tf"], side=pos["side"], R=pos["R"],
-                                          result=result, opened=pos["opened"], closed=pos["closed"],
-                                          score=pos.get("score", 0), strategy=pos.get("strategy","")))
+                                          result=result, opened=pos["opened"], closed=pos["closed"]))
         del store.data["history"][:-1500]
         store.data["signals"] = [p for p in store.data["signals"]
                                  if p["status"]=="open" or time.time()*1000-p.get("closed",0)<7*86400000]
         store.save("signals","history")
 
-def check_all(store, notify):
+# v7.7: تتبع نشط مع إشعارات
+def check_all_active(store, bot):
     with store.lock:
         opens = [p for p in store.data["signals"] if p["status"]=="open"]
     by_coin = {}
@@ -1016,20 +946,75 @@ def check_all(store, notify):
                     events.append(dict(kind="TIME", price=last_c))
                 store.save("signals")
             for ev in events:
-                if ev["kind"] != "DONE": notify(dict(pos=dict(pos), **ev))
+                if ev["kind"] != "DONE":
+                    _notify_event(bot, pos, ev)
             if pos["remaining"] <= 1e-9:
                 kinds = [e["kind"] for e in events]
                 _close(store, pos, "TIME" if "TIME" in kinds else ("SL" if "SL" in kinds else ("BE" if "BE" in kinds else "TP")))
 
-def stats(store, days=None, tf=None):
+def _notify_event(bot, pos, ev):
+    side = "🟢" if pos["side"]==1 else "🔴"
+    head = f"{side} #{pos['coin']} · {pos['tf']}"
+    if ev["kind"] == "TP":
+        tp = pos["tps"][ev["j"]-1]
+        pct_ = 100*pos["side"]*(tp["px"]-pos["entry"])/pos["entry"]
+        msg = f"{head}\n🎯 <b>تحقق الهدف {ev['j']}</b> ✅ ({pct_:+.2f}%)"
+        if ev["j"] == 1 and pos.get("be"): msg += "\n🔒 نُقل الوقف للدخول"
+    elif ev["kind"] == "SL":
+        pct_ = 100*pos["side"]*(pos["sl"]-pos["entry"])/pos["entry"]
+        msg = f"{head}\n🛑 ضُرب وقف الخسارة ({pct_:+.2f}%)"
+    elif ev["kind"] == "BE":
+        msg = f"{head}\n🔒 حماية رأس المال (Breakeven)"
+    else:
+        msg = f"{head}\n⏱ انتهت مدة الصفقة"
+    try: bot.send_message(VIP_CHANNEL_ID, msg, protect_content=PROTECT_CONTENT)
+    except Exception as e: log.warning("notify vip failed: %s", e)
+    try: bot.send_message(ADMIN_ID, msg)
+    except Exception: pass
+
+def stats(store, days=None):
     since = (time.time()-days*86400)*1000 if days else 0
     with store.lock:
-        h = [x for x in store.data["history"] if x["closed"]>=since and (tf is None or x["tf"]==tf)]
-    if not h: return dict(n=0, wr=None, pf=None, avg=None, total=0.0)
+        h = [x for x in store.data["history"] if x["closed"]>=since]
+    if not h: return dict(n=0, wr=0, pf=None, total=0.0)
     r = [x["R"] for x in h]
     gain, loss = sum(v for v in r if v>0), -sum(v for v in r if v<=0)
     return dict(n=len(r), wr=round(100*sum(v>0 for v in r)/len(r),1),
-                pf=round(gain/loss,2) if loss>0 else None, avg=round(sum(r)/len(r),3), total=round(sum(r),1))
+                pf=round(gain/loss,2) if loss>0 else None, total=round(sum(r),1))
+
+def weekly_report_text(store):
+    since = int((time.time() - 7*86400) * 1000)
+    with store.lock:
+        h = [x for x in store.data["history"] if x["closed"] >= since]
+    if not h:
+        return "🗓 <b>التقرير الأسبوعي</b>\n\nلا توجد صفقات مغلقة هذا الأسبوع."
+    wins = [x for x in h if x["R"] > 0]
+    losses = [x for x in h if x["R"] <= 0]
+    total_r = round(sum(x["R"] for x in h), 1)
+    wr = round(100 * len(wins) / len(h), 1)
+    coin_total = {}
+    for x in h:
+        coin_total.setdefault(x["coin"], []).append(x["R"])
+    coin_sum = {c: sum(rs) for c, rs in coin_total.items()}
+    best = sorted(coin_sum.items(), key=lambda x: -x[1])[:3]
+    worst = sorted(coin_sum.items(), key=lambda x: x[1])[:3]
+    lines = [
+        "🗓 <b>التقرير الأسبوعي — Rym Crypto</b>", "",
+        f"📊 إجمالي: <b>{len(h)}</b> صفقة",
+        f"✅ رابحة: <b>{len(wins)}</b>",
+        f"❌ خاسرة: <b>{len(losses)}</b>",
+        f"📈 نسبة النجاح: <b>{wr}%</b>",
+        f"💰 إجمالي: <b>{total_r}R</b>",
+        "",
+    ]
+    if best:
+        lines.append("<b>🏆 أفضل العملات:</b>")
+        for c, r in best: lines.append(f"  • #{c}: <b>{round(r,1)}R</b>")
+        lines.append("")
+    if worst:
+        lines.append("<b>📉 أسوأ العملات:</b>")
+        for c, r in worst: lines.append(f"  • #{c}: <b>{round(r,1)}R</b>")
+    return "\n".join(lines)
 
 _scan_pool = ThreadPoolExecutor(8)
 def _safe(fn, *a):
@@ -1040,13 +1025,13 @@ def _safe(fn, *a):
 def scan_signals(universe=None, min_score=15, only_side=None):
     syms = universe or top_symbols(SCAN_TOP_N)
     out = []
-    def _analyze(s):
+    def _an(s):
         try: return analyze(s)
         except PairNotFound: return None
         except Exception: return None
-    for res in _scan_pool.map(_analyze, syms):
+    for res in _scan_pool.map(_an, syms):
         if not res or not res["side"]: continue
-        if res["quality"] in ("cautious", "blocked"): continue
+        if res["quality"] in ("cautious","blocked"): continue
         if abs(res["score"]) < min_score: continue
         if only_side and res["side"] != only_side: continue
         out.append(res)
@@ -1056,31 +1041,29 @@ def _daily(sym):
     df = get_recent(sym, "1d", 500)
     return sym, add_indicators(df)
 
+def _h4(sym):
+    return sym, get_analysis(sym, "4h")["df"]
+
 def scan_bottom(top=15):
     out = []
     syms = top_symbols(SCAN_TOP_N)
     for r in _scan_pool.map(lambda s: _safe(_daily, s), syms):
         if not r: continue
         sym, x = r
-        if len(x) < 100: continue
+        if len(x) < 100 or len(sym) < 2 or sym in STABLES: continue
         a, b = x.iloc[-1], x.iloc[-2]
         try:
             lo90 = float(x["low"].tail(90).min())
             hi90 = float(x["high"].tail(90).max())
             near_low = (a["close"]/lo90 - 1) * 100
-            drop = (a["close"]/hi90 - 1) * 100
-            rsi_v = float(a["rsi"])
-            rsi_prev = float(b["rsi"])
+            rsi_v = float(a["rsi"]); rsi_prev = float(b["rsi"])
             rvol = float(a["rvol"]) if not pd.isna(a["rvol"]) else 1.0
-        except Exception:
-            continue
-        if rsi_v >= 55: continue
-        if near_low >= 40: continue
-        if rsi_v <= rsi_prev: continue
+        except Exception: continue
+        if rsi_v >= 55 or near_low >= 40 or rsi_v <= rsi_prev: continue
         if not (a["close"] > a["open"] or a["close"] > b["close"]): continue
         score = (55 - rsi_v) + (40 - near_low) + 5 * max(rvol - 1, 0)
         out.append(dict(sym=sym, price=float(a["close"]), rsi=rsi_v, near_low=float(near_low),
-                        drop=float(drop), rvol=rvol, score=float(score)))
+                        drop=float((a["close"]/hi90-1)*100), rvol=rvol, score=float(score)))
     return sorted(out, key=lambda r: -r["score"])[:top]
 
 def scan_pump(top=15):
@@ -1089,21 +1072,19 @@ def scan_pump(top=15):
     for r in _scan_pool.map(lambda s: _safe(_h4, s), syms):
         if not r: continue
         sym, d = r
-        if len(d) < 30: continue
+        if len(d) < 30 or len(sym) < 2: continue
         a = d.iloc[-1]
         try:
             chg3 = (a["close"]/d["close"].iloc[-4] - 1) * 100
             rvol = float(a["rvol"]) if not pd.isna(a["rvol"]) else 1.0
             brk = bool(a["close"] > a["hh20"]) if not pd.isna(a["hh20"]) else False
-            sq = bool(d["bb_sq"].iloc[-2]) and bool(a["close"] > a["bb_up"])
-        except Exception:
-            continue
-        if rvol < 1.8: continue
-        if chg3 < 2: continue
-        if not (brk or sq): continue
+            up_bb = bool(a["close"] > a["bb_up"]) if not pd.isna(a["bb_up"]) else False
+        except Exception: continue
+        if rvol < 1.8 or chg3 < 2: continue
+        if not (brk or up_bb): continue
         score = rvol * max(chg3, 0.1)
         out.append(dict(sym=sym, price=float(a["close"]), rvol=rvol, chg3=float(chg3),
-                        kind="اختراق" if brk else "خروج ضغط", score=float(score)))
+                        kind="اختراق" if brk else "انفجار", score=float(score)))
     return sorted(out, key=lambda r: -r["score"])[:top]
 
 AR = re.compile(r"[؀-ۿ]")
@@ -1112,59 +1093,9 @@ ALIASES = {"بيتكوين":"BTC","بتكوين":"BTC","ايثيريوم":"ETH",
            "ريبل":"XRP","دوج":"DOGE","دوجكوين":"DOGE","كاردانو":"ADA","بينانس":"BNB","ترون":"TRX",
            "لايتكوين":"LTC","لينك":"LINK","افالانش":"AVAX","بولكادوت":"DOT"}
 
-T = {
-    "ar": dict(
-        start=("أهلاً بك 👋\nأرسل اسم العملة فقط (مثل <b>BTC</b> أو <b>SOL</b>) وسأرسل لك التحليل والشارت.\n\n"
-               "🆓 لديك تجربة مجانية {t} أيام.\n💎 للمزيد: /vip   🆔 معرّفك: /myid"),
-        wait="⏳ جاري تحليل {s} ...", bad="أرسل رمز عملة صحيح مثل BTC",
-        nf="لم أجد العملة {s} في أي منصة.", err="تعذر جلب السعر الحي الآن، حاول بعد قليل.",
-        long="شراء 🟢", short="بيع 🔴", none="لا توجد صفقة مناسبة الآن ⚪",
-        hdr="📊 <b>تحليل #{s}</b>", src="⚡ {x}", tf="⏱ الفريم الأساسي: {x}",
-        rec="💡 التوصية: <b>{x}</b>", entry="💵 الدخول", stop="🛑 الوقف", tp="🎯 الهدف",
-        score="📊 Score: <b>{v:+.0f}</b>/100", rr="⚖️ المخاطرة/العائد: 1:{r}",
-        agree="📈 توافق: {a}% | الفريمات المتفقة: {t}/{n}",
-        trend="الاتجاه", up="صاعد 📈", down="هابط 📉", range="عرضي ↔️",
-        why="السبب", r_gen="الشروط لم تكتمل", watch="مناطق المراقبة",
-        old="⏱ الإشارة قبل {h} ساعات", free_up="🔒 الأهداف 3-4 والشورت في VIP: /vip",
-        short_lock="🔒 إشارة بيع حصرية لـ VIP: /vip",
-        disc="⚠️ تحليل فني بمؤشرات قوية ومدفوعة. ليس نصيحة مالية.",
-        trial="🆓 تجربة: اليوم {d} من {t}", warn="⚠️ تنتهي بعد {k} يوم: /vip",
-        blocked="⛔ انتهت التجربة.\nاشترك: /vip",
-        vip=("💎 <b>VIP</b>\n✅ 4 أهداف\n✅ شورتات\n✅ رادار الانفجارات\n✅ قناة: {vc}\n\n"
-             "شهر: {p1}$ | 3 أشهر: {p3}$ | سنة: {p12}$\n\nBinance Pay: <code>{bid}</code>\nتواصل: {c}"),
-        myid="🆔 معرّفك: <code>{i}</code>", vip_btn="💎 اشترك VIP",
-        btn4="4H", btn1="يومي", refresh="🔄 تحديث",
-        links="📢 {l}", activated="🎉 VIP لـ {d} يوم حتى {e}.", wait_cd="⏳ انتظر ثانيتين",
-        mk="🌐 السياق", sources="المصادر"),
-    "en": dict(
-        start=("Welcome 👋\nSend coin symbol (e.g. <b>BTC</b>).\n\n🆓 {t}-day trial.\n💎 /vip   🆔 /myid"),
-        wait="⏳ Analyzing {s} ...", bad="Send valid symbol like BTC",
-        nf="Couldn't find {s} on any exchange.", err="Live price unavailable, try again.",
-        long="BUY 🟢", short="SELL 🔴", none="No setup now ⚪",
-        hdr="📊 <b>#{s}</b>", src="⚡ {x}", tf="⏱ Base TF: {x}",
-        rec="💡 Signal: <b>{x}</b>", entry="💵 Entry", stop="🛑 Stop", tp="🎯 Target",
-        score="📊 Score: <b>{v:+.0f}</b>/100", rr="⚖️ R:R = 1:{r}",
-        agree="📈 Agreement: {a}% | TFs agreeing: {t}/{n}",
-        trend="Trend", up="Up 📈", down="Down 📉", range="Range ↔️",
-        why="Why", r_gen="Conditions unmet", watch="Watch",
-        old="⏱ {h}h ago", free_up="🔒 TP3-4 & Shorts VIP: /vip",
-        short_lock="🔒 SELL signal VIP only: /vip",
-        disc="⚠️ Technical analysis with strong premium indicators. Not financial advice.",
-        trial="🆓 Trial day {d}/{t}", warn="⚠️ {k} day(s) left: /vip",
-        blocked="⛔ Trial ended.\nSubscribe: /vip",
-        vip=("💎 <b>VIP</b>\n✅ 4 TPs\n✅ Shorts\n✅ Breakout radar\n✅ Channel: {vc}\n\n"
-             "1m: {p1}$ | 3m: {p3}$ | 1y: {p12}$\n\nBinance Pay: <code>{bid}</code>\nContact: {c}"),
-        myid="🆔 <code>{i}</code>", vip_btn="💎 VIP",
-        btn4="4H", btn1="Daily", refresh="🔄 Refresh",
-        links="📢 {l}", activated="🎉 VIP {d} days until {e}.", wait_cd="⏳ Wait 2s",
-        mk="🌐 Context", sources="Sources"),
-}
-
 def lang_of(user, text=""):
     if AR.search(text or ""): return "ar"
     return "ar" if (getattr(user,"language_code","") or "").startswith("ar") else "en"
-
-def pct(a, b): return f"{100*(a-b)/b:+.2f}%"
 
 def parse_request(text):
     t = (text or "").strip()
@@ -1180,131 +1111,42 @@ def parse_request(text):
             sym = ALIASES.get(tok) or s
     return sym
 
-def tier_of(status_): return "admin" if status_=="admin" else ("vip" if status_=="vip" else "free")
-
-def format_signal(res, L, tier, lang="ar", banner=None):
-    sym = res["sym"]; c = res; plan = res["plan"]; side = res["side"]
-    ar_ = lang=="ar"
-    lines = [L["hdr"].format(s=sym), "", L["src"].format(x=res.get("source","?").capitalize()),
-             L["tf"].format(x=res["base_tf"])]
-    if side == -1 and tier == "free":
-        lines += ["", L["short_lock"]]
-    elif side and plan:
-        lines += [L["rec"].format(x=L["long"] if side==1 else L["short"]), "",
-                  f"{L['entry']}: <code>{fmt(plan['entry'])}</code>"]
-        n = 2 if tier=="free" else 4
-        for j,t in enumerate(plan["tps"][:n],1):
-            lines.append(f"{L['tp']} {j}: <code>{fmt(t[0])}</code> ({t[3]:+.2f}%)")
-        lines.append(f"{L['stop']}: <code>{fmt(plan['sl'])}</code> ({pct(plan['sl'], plan['entry'])})")
-        lines += ["", L["score"].format(v=c["score"])]
-        if c["rr"]: lines.append(L["rr"].format(r=c["rr"]))
-        lines.append(L["agree"].format(a=c["agreement"], t=c["tf_agree"], n=c["n_tf"]))
-        if tier == "free": lines += ["", L["free_up"]]
-    else:
-        lines += [L["rec"].format(x=L["none"])]
-        if c.get("protected"):
-            lines.append(f"{L['why']}: " + ("السعر تحرك بقوة" if ar_ else "Big price move"))
-        else:
-            lines.append(f"{L['why']}: " + L["r_gen"])
-
-    drift = c.get("price_drift", 0)
-    lines += ["", f"💹 <b>السعر الحي</b>: <code>{fmt(c['price'])}</code> ({c.get('live_src','?')})"]
-    if drift > 1.0:
-        icon = "🟢" if drift < 2 else ("🟡" if drift < 5 else "🟠")
-        lines.append(f"{icon} فرق عن إغلاق الشمعة: {drift:.2f}%")
-
-    per_tf = c["per_tf"]
-    tf_str = " | ".join(f"{k}:{v:+.0f}" for k,v in per_tf.items())
-    lines += ["", f"📊 {' | '.join(per_tf.keys())}", f"🎯 {tf_str}"]
-    lines += ["", f"ADX {c['adx']:.0f} | RSI {c['rsi']:.0f} | ATR {c['atr_pct']:.2f}% | 24h {c['chg24']:+.2f}%"]
-    ex = res.get("extra") or {}
-    if tier in ("vip","admin") and ex.get("market"):
-        notes = market_notes(side, ex, ar_)
-        if notes: lines += ["", L["mk"] + ": " + " | ".join(notes)]
-    if tier == "admin":
-        srcs = ",".join(sorted(set(c["used"].values())))
-        lines += ["", f"🔧 Score {c['score']:+.1f} · MFI {c['mfi']:.0f} · RVOL {c['rvol']:.2f}"]
-        lines += [f"📊 Candle close: {fmt(c.get('candle_close', c['price']))} | Drift {drift:.2f}%"]
-        lines += [f"🌐 sources: {srcs}"]
-    lines += ["", f"👤 {BRAND}", L["links"].format(l=CHANNEL_LINK), "", L["disc"]]
-    if banner: lines += ["", banner]
-    return "\n".join(lines)
-
-def keyboard(sym, tf, L, tier):
-    kb = types.InlineKeyboardMarkup()
-    btns = []
-    if tier == "admin":
-        btns.append(types.InlineKeyboardButton(("✅ " if tf=="4h" else "")+L["btn4"], callback_data=f"tf:{sym}:4h"))
-        btns.append(types.InlineKeyboardButton(("✅ " if tf=="1d" else "")+L["btn1"], callback_data=f"tf:{sym}:1d"))
-    btns.append(types.InlineKeyboardButton(L["refresh"], callback_data=f"tf:{sym}:{tf}:r"))
-    kb.row(*btns)
-    if tier == "free":
-        kb.row(types.InlineKeyboardButton(L["vip_btn"], callback_data="vip"))
-    return kb
-
-def send_signal(bot, chat_id, res, L, tier, lang, banner=None, kb=None, protect=False):
-    img = render_chart(res)
-    text = format_signal(res, L, tier, lang, banner)
-    if img is None:
-        return bot.send_message(chat_id, text, reply_markup=kb, protect_content=protect)
-    if len(text) <= 1000:
-        return bot.send_photo(chat_id, img, caption=text, reply_markup=kb, protect_content=protect)
-    bot.send_photo(chat_id, img, protect_content=protect)
-    return bot.send_message(chat_id, text, reply_markup=kb, protect_content=protect)
+def tier_of(s): return "admin" if s=="admin" else ("vip" if s=="vip" else "free")
 
 store = Store()
-_cooldown, _err_seen = {}, {}
+_cooldown = {}
 _free_posted = {"date":"","n":0}
-_bot = None
 
-def deliver(bot, chat_id, user, lang, sym, tf=None):
-    L = T[lang]
-    rec = touch(store, user, lang)
+def deliver(bot, chat_id, user, sym, tf=None):
+    rec = touch(store, user, lang_of(user))
     st, day = status(store, user.id, rec)
-    if st == "blocked": return bot.send_message(chat_id, L["blocked"])
+    if st == "blocked":
+        return bot.send_message(chat_id, "⛔ انتهت التجربة المجانية.\n💎 اشترك VIP: /vip")
     if st != "admin":
         last = _cooldown.get(user.id, 0)
-        if time.time()-last < 2: return bot.send_message(chat_id, L["wait_cd"])
+        if time.time()-last < 2: return bot.send_message(chat_id, "⏳ انتظر ثانيتين")
         _cooldown[user.id] = time.time()
     if tf is None or (st != "admin" and tf):
         tf = default_tf_for(sym)
-    wait = bot.send_message(chat_id, L["wait"].format(s=sym))
+    wait = bot.send_message(chat_id, f"⏳ جاري تحليل {sym} ...")
     try:
         res = get_analysis(sym, tf)
         tier = tier_of(st)
-        enrich(res, market=tier != "free")
-        banner = None
-        if st == "trial": banner = L["trial"].format(d=day, t=TRIAL_DAYS)
-        elif st == "warning": banner = L["warn"].format(k=VIP_FORCE_DAY-day)
-        send_signal(bot, chat_id, res, L, tier, lang, banner, keyboard(sym, tf, L, tier), protect=(st != "admin"))
-    except PairNotFound: bot.send_message(chat_id, L["nf"].format(s=sym))
-    except ConnectionError: bot.send_message(chat_id, L["err"])
+        send_signal(bot, chat_id, res, tier, protect=(st != "admin"))
+        if st == "trial":
+            bot.send_message(chat_id, f"🆓 تجربة: اليوم {day} من {TRIAL_DAYS}")
+        elif st == "warning":
+            bot.send_message(chat_id, f"⚠️ تنتهي تجربتك بعد {VIP_FORCE_DAY-day} يوم.\n💎 /vip")
+    except PairNotFound:
+        bot.send_message(chat_id, f"❌ لم أجد العملة {sym}")
+    except ConnectionError:
+        bot.send_message(chat_id, "⚠️ تعذر جلب السعر الحي، حاول بعد قليل.")
     except Exception:
         log.exception("analysis failed for %s", sym)
-        bot.send_message(chat_id, L["err"])
+        bot.send_message(chat_id, "⚠️ تعذر جلب البيانات الآن.")
     finally:
         try: bot.delete_message(chat_id, wait.message_id)
         except Exception: pass
-
-def notify_admin_once(bot, msg):
-    key = msg[:80]
-    if time.time()-_err_seen.get(key, 0) > 3600:
-        _err_seen[key] = time.time()
-        try: bot.send_message(ADMIN_ID, msg)
-        except Exception: pass
-
-def post(bot, chat_id, res=None, tier="vip", text=None, protect=False):
-    if not chat_id: return False, "معرّف القناة غير مضبوط"
-    try:
-        if res is not None:
-            send_signal(bot, chat_id, res, T["ar"], tier, "ar", protect=protect)
-        else:
-            bot.send_message(chat_id, text, protect_content=protect, disable_web_page_preview=True)
-        return True, ""
-    except Exception as e:
-        err = str(e); log.error("post to %s failed: %s", chat_id, err)
-        notify_admin_once(bot, f"❌ فشل النشر في {chat_id}:\n{err[:300]}")
-        return False, err
 
 def job_scan(bot):
     log.info("scan multi-TF")
@@ -1316,59 +1158,59 @@ def job_scan(bot):
         if posted >= MAX_POSTS_PER_SCAN: break
         tf = res["base_tf"]
         if not can_track(store, res["sym"], tf, res["side"], res["plan"]["opened_ms"]): continue
-        enrich(res, market=True)
-        ok, _ = post(bot, VIP_CHANNEL_ID, res, "vip", protect=PROTECT_CONTENT)
-        free = False
+        # VIP channel
+        try:
+            img = render_chart(res, vip=True)
+            text = format_signal_vip(res)
+            if img and len(text) <= 1024:
+                bot.send_photo(VIP_CHANNEL_ID, img, caption=text, protect_content=PROTECT_CONTENT)
+            else:
+                bot.send_message(VIP_CHANNEL_ID, text, protect_content=PROTECT_CONTENT)
+        except Exception as e: log.error("VIP post failed: %s", e)
+        # Free channel (longs only)
         if res["side"]==1 and _free_posted["n"] < FREE_CHANNEL_MAX_PER_DAY and CHANNEL_ID:
-            free, _ = post(bot, CHANNEL_ID, res, "free")
-            _free_posted["n"] += int(bool(free))
-        track_signal(store, res, free_posted=bool(free))
+            try:
+                img = render_chart(res, vip=False)
+                text = format_signal_free(res)
+                if img and len(text) <= 1024:
+                    bot.send_photo(CHANNEL_ID, img, caption=text)
+                else:
+                    bot.send_message(CHANNEL_ID, text)
+                _free_posted["n"] += 1
+            except Exception: pass
+        track_signal(store, res)
         posted += 1
     log.info("scan done: %d fresh, %d posted", len(fresh), posted)
     return len(fresh), posted
 
-def tp_msg(ev):
-    p = ev["pos"]; side = "🟢" if p["side"]==1 else "🔴"
-    head = f"{side} #{p['coin']} · {p['tf']}"
-    if ev["kind"] == "TP":
-        tp = p["tps"][ev["j"]-1]
-        pct_ = 100*p["side"]*(tp["px"]-p["entry"])/p["entry"]
-        txt = f"{head}\n🎯 تحقق الهدف {ev['j']} ✅ ({pct_:+.2f}%)"
-        if ev["j"] == 1 and p.get("be"): txt += "\n🔒 نُقل الوقف للدخول"
-        return txt
-    if ev["kind"] == "SL": return f"{head}\n🛑 ضُرب الوقف ({pct(p['sl'], p['entry'])})"
-    if ev["kind"] == "BE": return f"{head}\n🔒 حماية رأس المال"
-    return f"{head}\n⏱ انتهت مدة المتابعة"
-
 def job_track(bot):
-    def notify(ev):
-        msg = tp_msg(ev)
-        post(bot, VIP_CHANNEL_ID, text=msg, protect=PROTECT_CONTENT)
-        if ev["pos"].get("free_posted") and CHANNEL_ID:
-            post(bot, CHANNEL_ID, text=msg)
-    check_all(store, notify)
+    check_all_active(store, bot)
 
 def _fmt_bottom(rows):
-    if not rows: return "🧲 لا توجد عملات قاع بشروط الانعكاس حالياً."
-    out = ["🧲 <b>عملات القاع</b> (قائمة مراقبة)", ""]
+    if not rows: return "🧲 لا توجد عملات قاع حالياً."
+    out = ["🧲 <b>عملات القاع</b>", ""]
     for r in rows:
-        out.append(f"#{r['sym']}  <code>{fmt(r['price'])}</code> | RSI {r['rsi']:.0f} | فوق القاع {r['near_low']:.1f}% | نزول {r['drop']:.0f}%")
+        out.append(f"#{r['sym']}  <code>{fmt(r['price'])}</code> | RSI {r['rsi']:.0f} | -{abs(r['drop']):.0f}%")
     return "\n".join(out)
 
 def _fmt_pump(rows):
     if not rows: return "💥 لا توجد انفجارات حالياً."
-    out = ["💥 <b>رادار الانفجارات</b> (قائمة مراقبة)", ""]
+    out = ["💥 <b>رادار الانفجارات</b>", ""]
     for r in rows:
-        out.append(f"#{r['sym']}  <code>{fmt(r['price'])}</code> | حجم ×{r['rvol']:.1f} | +{r['chg3']:.1f}% | {r['kind']}")
+        out.append(f"#{r['sym']}  <code>{fmt(r['price'])}</code> | ×{r['rvol']:.1f} | +{r['chg3']:.1f}%")
     return "\n".join(out)
-
-def job_bottom(bot):
-    rows = scan_bottom()
-    if rows: post(bot, VIP_CHANNEL_ID, text=_fmt_bottom(rows) + f"\n\n👤 {BRAND}", protect=PROTECT_CONTENT)
 
 def job_pump(bot):
     rows = scan_pump()
-    if rows: post(bot, VIP_CHANNEL_ID, text=_fmt_pump(rows) + f"\n\n👤 {BRAND}", protect=PROTECT_CONTENT)
+    if rows:
+        try: bot.send_message(VIP_CHANNEL_ID, _fmt_pump(rows) + f"\n\n👤 {BRAND}", protect_content=PROTECT_CONTENT)
+        except Exception: pass
+
+def job_bottom(bot):
+    rows = scan_bottom()
+    if rows:
+        try: bot.send_message(VIP_CHANNEL_ID, _fmt_bottom(rows) + f"\n\n👤 {BRAND}", protect_content=PROTECT_CONTENT)
+        except Exception: pass
 
 def job_delist(bot):
     arts = fetch_delistings()
@@ -1378,20 +1220,16 @@ def job_delist(bot):
         store.data["delistings"] = (store.data["delistings"] + new)[-100:]
         store.save("delistings")
     if new and seen:
-        for a in new:
-            msg = f"🗑 <b>حذف عملات (Binance)</b>\n{a['title']}\n{a['url']}"
-            post(bot, VIP_CHANNEL_ID, text=msg, protect=False)
+        coins = extract_delisted_coins(new)
+        if coins:
+            lines = ["🗑 <b>عملات ستُحذف من Binance:</b>", ""]
+            for c, d in sorted(coins.items()):
+                lines.append(f"• <code>{c}</code>" + (f"  ({d})" if d else ""))
+            msg = "\n".join(lines) + f"\n\n👤 {BRAND}"
+            try: bot.send_message(VIP_CHANNEL_ID, msg, protect_content=PROTECT_CONTENT, disable_web_page_preview=True)
+            except Exception: pass
             try: bot.send_message(ADMIN_ID, msg, disable_web_page_preview=True)
             except Exception: pass
-
-def job_digest(bot):
-    now = u_now()
-    exp = [(uid, v["expires"]) for uid, v in store.data["vip"].items() if 0 < v["expires"]-now < 3*86400]
-    c = counts(store)
-    msg = f"🗓 ملخص\nمستخدمون جدد: {c['new_today']} | إجمالي {c['total']} | VIP {c['vip']}"
-    if exp: msg += "\n⏳ تنتهي خلال 3 أيام:\n" + "\n".join(f"• {u}" for u,_ in exp)
-    try: bot.send_message(ADMIN_ID, msg)
-    except Exception: pass
 
 def scheduler(bot):
     done = set()
@@ -1410,19 +1248,48 @@ def scheduler(bot):
             if h % 4 == 0 and m >= 8: once(f"pump-{d}{h}", job_pump)
             if h == 0 and m >= 6: once(f"1d-{d}", job_scan)
             if h == 6 and m >= 10: once(f"bottom-{d}", job_bottom)
-            if h == 8: once(f"digest-{d}", job_digest)
             if m % 10 == 0: once(f"track-{d}{h}{m}", job_track)
             if m in (5, 35): once(f"delist-{d}{h}{m}", job_delist)
+            if n.weekday() == 6 and h == 20 and m >= 5:
+                once(f"weekly-{d}", lambda bot_=bot: bot_.send_message(ADMIN_ID, weekly_report_text(store)))
             if len(done) > 3000: done.clear()
         except Exception: log.exception("scheduler")
         time.sleep(20)
 
-def make_bot(token=None):
-    global _bot
-    bot = telebot.TeleBot(token or BOT_TOKEN, parse_mode="HTML", threaded=True, num_threads=8)
-    _bot = bot
+def setup_commands(bot):
+    """v7.7: الأوامر العامة للأدمن فقط في القائمة"""
+    public = [
+        BotCommand("start", "بدء البوت"),
+        BotCommand("help", "المساعدة"),
+        BotCommand("vip", "باقات الاشتراك"),
+        BotCommand("myid", "معرّفك"),
+    ]
+    admin = [
+        BotCommand("dashboard", "لوحة التحكم"),
+        BotCommand("stats", "إحصائيات"),
+        BotCommand("weekly", "التقرير الأسبوعي"),
+        BotCommand("history", "آخر الصفقات"),
+        BotCommand("users", "المستخدمون"),
+        BotCommand("addvip", "إضافة VIP"),
+        BotCommand("removevip", "إزالة VIP"),
+        BotCommand("viplist", "قائمة VIP"),
+        BotCommand("scan", "مسح السوق"),
+        BotCommand("short", "إشارات الشورت"),
+        BotCommand("price", "سعر حي"),
+        BotCommand("bottom", "عملات القاع"),
+        BotCommand("pump", "رادار الانفجارات"),
+        BotCommand("delist", "عملات الحذف"),
+        BotCommand("testchannels", "اختبار القنوات"),
+    ]
+    try:
+        bot.set_my_commands(public, scope=BotCommandScopeDefault())
+        bot.set_my_commands(public + admin, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
+    except Exception as e:
+        log.warning("set_my_commands: %s", e)
 
-    def user_lang(m): return lang_of(m.from_user, getattr(m, "text", ""))
+def make_bot(token=None):
+    bot = telebot.TeleBot(token or BOT_TOKEN, parse_mode="HTML", threaded=True, num_threads=8)
+
     def admin_only(fn):
         def w(m):
             if m.from_user.id != ADMIN_ID: return
@@ -1433,37 +1300,58 @@ def make_bot(token=None):
 
     @bot.message_handler(commands=["start","help"])
     def start(m):
-        lang = user_lang(m); touch(store, m.from_user, lang)
-        bot.send_message(m.chat.id, T[lang]["start"].format(t=TRIAL_DAYS))
+        touch(store, m.from_user, lang_of(m.from_user, m.text or ""))
+        msg = ("أهلاً بك 👋\nأرسل اسم العملة فقط (مثل <b>BTC</b> أو <b>SOL</b>) وسأرسل لك التحليل.\n\n"
+               f"🆓 لديك تجربة مجانية {TRIAL_DAYS} أيام.\n💎 للمزيد: /vip   🆔 معرّفك: /myid")
+        bot.send_message(m.chat.id, msg)
 
     @bot.message_handler(commands=["myid"])
-    def myid(m): bot.send_message(m.chat.id, T[user_lang(m)]["myid"].format(i=m.from_user.id))
-
-    def vip_text(lang):
-        p = {k: pr for k,_,pr in PLANS}
-        return T[lang]["vip"].format(vc=VIP_CHANNEL_LINK, p1=p["1m"], p3=p["3m"], p12=p["1y"],
-                                     bid=BINANCE_ID, c=CONTACT_LINK)
+    def myid(m): bot.send_message(m.chat.id, f"🆔 معرّفك: <code>{m.from_user.id}</code>")
 
     @bot.message_handler(commands=["vip"])
-    def vip(m): bot.send_message(m.chat.id, vip_text(user_lang(m)), disable_web_page_preview=True)
+    def vip(m):
+        p = {k: pr for k,_,pr in PLANS}
+        msg = (
+            f"💎 <b>VIP — Rym Crypto</b> ✨\n\n"
+            f"🔥 <b>لماذا VIP؟</b>\n\n"
+            f"🎯 <b>4 أهداف</b> لكل صفقة (بدل 2)\n"
+            f"📉 <b>إشارات شراء وبيع</b> (Short & Long)\n"
+            f"🔍 <b>تحليل أعمق</b> (7 منصات + 4 فريمات)\n"
+            f"🐋 <b>تتبع الحيتان الذكي</b>\n"
+            f"🧲 <b>عملات القاع</b> (فرص انعكاس)\n"
+            f"💥 <b>رادار الانفجارات</b> الفوري\n"
+            f"📊 <b>شارت VIP مميز</b> مع مؤشرات كاملة\n"
+            f"🔔 <b>تنبيهات فورية</b> عند كل هدف\n"
+            f"⚡ <b>أولوية النشر</b> (قبل القناة المجانية)\n\n"
+            f"💰 <b>الأسعار:</b>\n"
+            f"• شهر واحد: <b>{p['1m']}$</b>\n"
+            f"• 3 أشهر: <b>{p['3m']}$</b>\n"
+            f"• سنة كاملة: <b>{p['1y']}$</b>\n\n"
+            f"💳 <b>الدفع:</b>\n"
+            f"Binance Pay ID: <code>{BINANCE_ID}</code>\n\n"
+            f"📞 <b>التواصل:</b> {CONTACT_LINK}\n"
+            f"🔗 <b>القناة:</b> {VIP_CHANNEL_LINK}\n\n"
+            f"⚠️ بعد الدفع أرسل صورة التحويل + معرّفك (/myid)"
+        )
+        bot.send_message(m.chat.id, msg, disable_web_page_preview=True)
 
     @bot.callback_query_handler(func=lambda c: c.data == "vip")
     def cb_vip(c):
         bot.answer_callback_query(c.id)
-        bot.send_message(c.message.chat.id, vip_text(lang_of(c.from_user)), disable_web_page_preview=True)
+        vip(c.message)
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("tf:"))
     def cb_tf(c):
         parts = c.data.split(":")
         bot.answer_callback_query(c.id)
         rec = store.data["users"].get(str(c.from_user.id), {})
-        lang = rec.get("lang") or lang_of(c.from_user)
         st, _ = status(store, c.from_user.id, rec)
         tf = parts[2]
         if st != "admin": tf = default_tf_for(parts[1])
         if len(parts) > 3: _cache.pop((parts[1], parts[2]), None)
-        deliver(bot, c.message.chat.id, c.from_user, lang, parts[1], tf)
+        deliver(bot, c.message.chat.id, c.from_user, parts[1], tf)
 
+    # ═══════════ Admin ═══════════
     @bot.message_handler(commands=["addvip"])
     @admin_only
     def addvip(m):
@@ -1473,10 +1361,6 @@ def make_bot(token=None):
         exp = add_vip(store, uid, days)
         e = dt.datetime.utcfromtimestamp(exp).strftime("%Y-%m-%d")
         bot.reply_to(m, f"✅ VIP لـ {uid} حتى {e}")
-        try:
-            lang = store.data["users"].get(str(uid), {}).get("lang", "ar")
-            bot.send_message(uid, T[lang]["activated"].format(d=days, e=e))
-        except Exception: pass
 
     @bot.message_handler(commands=["removevip"])
     @admin_only
@@ -1489,43 +1373,21 @@ def make_bot(token=None):
     @admin_only
     def viplist(m):
         now = u_now()
-        rows = [(uid, v["expires"]) for uid, v in store.data["vip"].items() if v["expires"] > now]
+        rows = [(u, v["expires"]) for u, v in store.data["vip"].items() if v["expires"] > now]
         if not rows: return bot.reply_to(m, "لا يوجد VIP")
         rows.sort(key=lambda r: r[1])
         bot.reply_to(m, "💎 <b>VIP</b>\n" + "\n".join(
-            f"• <code>{u}</code> {store.data['users'].get(u,{}).get('username','')} — {(e-now)//86400} يوم" for u,e in rows))
-
-    def stats_text():
-        out = ["📈 <b>أداء التوصيات الحية</b>"]
-        for label, days in (("30 يوم", 30), ("الكل", None)):
-            s = stats(store, days)
-            if s["n"]:
-                out.append(f"• {label}: {s['n']} توصية | WR {s['wr']}% | PF {s['pf']} | {s['total']}R")
-            else: out.append(f"• {label}: لا توصيات مغلقة")
-        open_n = sum(1 for p in store.data['signals'] if p['status']=='open')
-        out.append(f"• مفتوحة الآن: {open_n}")
-        return "\n".join(out)
+            f"• <code>{u}</code> — {(e-now)//86400} يوم" for u,e in rows))
 
     @bot.message_handler(commands=["stats"])
     @admin_only
-    def stats_cmd(m): bot.reply_to(m, stats_text())
+    def stats_cmd(m):
+        s = stats(store, 7)
+        bot.reply_to(m, f"📈 <b>آخر 7 أيام</b>\n\nصفقات: {s['n']} | WR {s['wr']}% | {s['total']}R")
 
-    @bot.message_handler(commands=["signals"])
+    @bot.message_handler(commands=["weekly"])
     @admin_only
-    def signals_cmd(m):
-        with store.lock:
-            opens = [p for p in store.data["signals"] if p["status"]=="open"]
-        if not opens: return bot.reply_to(m, "لا توجد توصيات مفتوحة حالياً.")
-        lines = ["📡 <b>التوصيات المفتوحة</b>", ""]
-        for p in opens[:20]:
-            side = "🟢 Long" if p["side"]==1 else "🔴 Short"
-            hits = [f"TP{i+1}✅" for i,t in enumerate(p["tps"]) if t["hit"]]
-            next_tp = next((i+1 for i,t in enumerate(p["tps"]) if not t["hit"]), None)
-            prog = f" | {' '.join(hits)}" if hits else ""
-            nxt = f" ← التالي TP{next_tp}" if next_tp else " ← كل الأهداف"
-            lines.append(f"• {side} <b>#{p['coin']}</b> · {p['tf']} · R {p['remaining']:.1f}/1{prog}{nxt}")
-            lines.append(f"  Entry {fmt(p['entry'])} · SL {fmt(p['sl'])} · Score {p.get('score',0):+.0f}")
-        bot.reply_to(m, "\n".join(lines))
+    def weekly_cmd(m): bot.reply_to(m, weekly_report_text(store))
 
     @bot.message_handler(commands=["history"])
     @admin_only
@@ -1533,11 +1395,11 @@ def make_bot(token=None):
         with store.lock:
             h = sorted(store.data["history"], key=lambda x: -x.get("closed", 0))[:15]
         if not h: return bot.reply_to(m, "لا يوجد سجل بعد.")
-        lines = ["📜 <b>آخر 15 توصية مغلقة</b>", ""]
+        lines = ["📜 <b>آخر 15 صفقة</b>", ""]
         for x in h:
             emoji = {"TP":"✅", "SL":"🛑", "BE":"🔒", "TIME":"⏱"}.get(x.get("result",""), "•")
             side = "🟢" if x["side"]==1 else "🔴"
-            lines.append(f"{emoji} {side} <b>#{x['coin']}</b> · {x['tf']} · {x.get('result','?')} · R {x['R']:+.2f}")
+            lines.append(f"{emoji} {side} <b>#{x['coin']}</b> · {x['tf']} · R {x['R']:+.2f}")
         bot.reply_to(m, "\n".join(lines))
 
     @bot.message_handler(commands=["users"])
@@ -1547,24 +1409,17 @@ def make_bot(token=None):
         with store.lock:
             all_users = list(store.data["users"].values())
         all_users.sort(key=lambda u: -u.get("last_seen", u.get("first_seen", 0)))
-        top = all_users[:30]
-        lines = [f"👥 إجمالي {c['total']} | 🆓 {c['trial']} | ⚠️ {c['warning']} | ⛔ {c['blocked']} | 💎 {c['vip']} | 🆕 {c['new_today']}", ""]
-        lines.append("<b>آخر 30 مستخدم (بترتيب النشاط):</b>")
-        lines.append("")
-        for u in top:
+        lines = [f"👥 {c['total']} | 🆓 {c['trial']} | 💎 {c['vip']} | 🆕 {c['new_today']}", ""]
+        for u in all_users[:25]:
             name = (u.get('name') or '').strip()
             un = (u.get('username') or '').strip()
             if name and un: label = f"{name} (@{un})"
             elif name: label = name
             elif un: label = f"@{un}"
             else: label = f"<code>{u['id']}</code>"
-            st, day = status(store, int(u['id']), u)
+            st, _ = status(store, int(u['id']), u)
             icon = {"admin":"👑","vip":"💎","trial":"🆓","warning":"⚠️","blocked":"⛔"}.get(st, "•")
-            last = time_ago(u.get('last_seen'))
-            reqs = u.get('requests', 0)
-            status_info = f" ({day}ي)" if st in ("trial","warning") else ""
-            lines.append(f"{icon} {label}{status_info}")
-            lines.append(f"   ⏱ {last} · 📊 {reqs} طلب")
+            lines.append(f"{icon} {label}")
         bot.reply_to(m, "\n".join(lines))
 
     @bot.message_handler(commands=["dashboard"])
@@ -1572,21 +1427,19 @@ def make_bot(token=None):
     def dashboard(m):
         c = counts(store)
         src = ", ".join(f"{k}:{'✅' if v=='ok' else '❌'}" for k,v in source_status().items())
-        bot.reply_to(m, f"🖥 <b>لوحة التحكم v7.5</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
-                        f"🆓 {c['trial']} | 💎 VIP {c['vip']}\n\n{stats_text()}\n\n🌐 {src}\n💾 {store.remote_msg}\n"
-                        f"⚙️ v7.5 | SL 4% | TP 3/6/9/12% (وسط Abu Turki)")
+        bot.reply_to(m, f"🖥 <b>v7.7</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
+                        f"🆓 {c['trial']} | 💎 {c['vip']}\n\n🌐 {src}\n💾 {store.remote_msg}\n"
+                        f"⚙️ SL 4% | TP 3/6/9/12% | 4 أهداف")
 
     @bot.message_handler(commands=["price"])
     @admin_only
     def price_cmd(m):
         parts = m.text.split()
         sym = parts[1].upper() if len(parts) > 1 else "BTC"
-        bot.reply_to(m, f"⏳ جلب السعر الحي لـ {sym} ...")
+        bot.reply_to(m, f"⏳ جلب {sym} ...")
         p, src = fetch_live_price(sym)
-        if p:
-            bot.send_message(m.chat.id, f"✅ <b>{sym}</b> = <code>{fmt(p)}</code>\n📡 المصدر: {src}")
-        else:
-            bot.send_message(m.chat.id, f"❌ تعذر جلب سعر {sym}")
+        if p: bot.send_message(m.chat.id, f"✅ {sym} = <code>{fmt(p)}</code>\n📡 {src}")
+        else: bot.send_message(m.chat.id, f"❌ تعذر جلب سعر {sym}")
 
     @bot.message_handler(commands=["bottom","pump","delist"])
     @admin_only
@@ -1595,18 +1448,22 @@ def make_bot(token=None):
         publish = "post" in m.text.lower().split()
         wait = bot.reply_to(m, "⏳ ...")
         try:
-            if cmd == "bottom":
-                rows = scan_bottom()
-                text = _fmt_bottom(rows)
-            elif cmd == "pump":
-                rows = scan_pump()
-                text = _fmt_pump(rows)
+            if cmd == "bottom": text = _fmt_bottom(scan_bottom())
+            elif cmd == "pump": text = _fmt_pump(scan_pump())
             else:
                 arts = fetch_delistings()
-                text = "🗑 <b>آخر إعلانات الحذف</b>\n\n" + "\n".join(f"• {a['title']}\n{a['url']}" for a in arts[:6]) if arts else "تعذر الجلب."
+                if arts:
+                    coins = extract_delisted_coins(arts)
+                    lines = ["🗑 <b>عملات حُذفت/ستُحذف من Binance:</b>", ""]
+                    for c, d in sorted(coins.items()):
+                        lines.append(f"• <code>{c}</code>" + (f"  ({d})" if d else ""))
+                    text = "\n".join(lines)
+                else:
+                    text = "تعذر الجلب."
             bot.send_message(m.chat.id, text, disable_web_page_preview=True)
             if publish and cmd in ("bottom","pump"):
-                post(bot, VIP_CHANNEL_ID, text=text, protect=PROTECT_CONTENT)
+                try: bot.send_message(VIP_CHANNEL_ID, text, protect_content=PROTECT_CONTENT, disable_web_page_preview=True)
+                except Exception: pass
         finally:
             try: bot.delete_message(m.chat.id, wait.message_id)
             except Exception: pass
@@ -1614,18 +1471,15 @@ def make_bot(token=None):
     @bot.message_handler(commands=["short"])
     @admin_only
     def short_cmd(m):
-        wait = bot.reply_to(m, "⏳ جاري البحث عن شورتات ...")
+        wait = bot.reply_to(m, "⏳ ...")
         try:
             rows = scan_signals(min_score=15, only_side=-1)
             if not rows:
                 bot.send_message(m.chat.id, "لا توجد إشارات شورت حالياً.")
             else:
                 for res in rows[:5]:
-                    enrich(res, True)
-                    send_signal(bot, m.chat.id, res, T["ar"], "admin", "ar")
-                bot.send_message(m.chat.id, f"✅ وجدت {len(rows)} إشارة شورت (عرض أفضل 5)")
-        except Exception as e:
-            bot.reply_to(m, f"خطأ: {str(e)[:200]}")
+                    send_signal(bot, m.chat.id, res, "admin")
+                bot.send_message(m.chat.id, f"✅ {len(rows)} إشارة شورت")
         finally:
             try: bot.delete_message(m.chat.id, wait.message_id)
             except Exception: pass
@@ -1633,7 +1487,7 @@ def make_bot(token=None):
     @bot.message_handler(commands=["scan"])
     @admin_only
     def scan_cmd(m):
-        bot.reply_to(m, "⏳ مسح السوق ...")
+        bot.reply_to(m, "⏳ مسح ...")
         fresh, posted = job_scan(bot)
         bot.send_message(m.chat.id, f"✅ جديد: {fresh} | نُشر: {posted}")
 
@@ -1643,29 +1497,32 @@ def make_bot(token=None):
         out = []
         for name, cid in (("المجانية", CHANNEL_ID), ("VIP", VIP_CHANNEL_ID)):
             if not cid: out.append(f"❌ {name}: غير مضبوط"); continue
-            ok, err = post(bot, cid, text=f"✅ اختبار — {name}")
-            out.append(f"✅ {name}: يعمل" if ok else f"❌ {name}: {err[:120]}")
+            try:
+                bot.send_message(cid, f"✅ اختبار — {name}", protect_content=PROTECT_CONTENT)
+                out.append(f"✅ {name}")
+            except Exception as e:
+                out.append(f"❌ {name}: {str(e)[:120]}")
         bot.reply_to(m, "\n".join(out))
 
     @bot.message_handler(func=lambda m: True, content_types=["text"])
     def on_text(m):
         if (m.text or "").startswith("/"): return
-        lang = user_lang(m)
         sym = parse_request(m.text)
         if not sym or not SYM.match(sym) or sym in STABLES:
-            return bot.send_message(m.chat.id, T[lang]["bad"])
-        deliver(bot, m.chat.id, m.from_user, lang, sym, tf=None)
+            return bot.send_message(m.chat.id, "أرسل رمز عملة صحيح مثل BTC")
+        deliver(bot, m.chat.id, m.from_user, sym, tf=None)
 
     return bot
 
 def main():
     if not BOT_TOKEN: raise SystemExit("ضع BOT_TOKEN في متغيرات البيئة")
     bot = make_bot()
+    setup_commands(bot)
     store.start_flusher()
     try: bot.remove_webhook()
-    except Exception: log.exception("remove_webhook")
+    except Exception: pass
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v7.5 started | gist: %s | ccxt: %s", store.remote_msg, ccxt_ok)
+    log.info("bot v7.7 started")
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
