@@ -1,7 +1,3 @@
- """
-cryptobot v4.2 — ملف واحد جاهز للنشر
-python bot.py
-"""
 import os, io, json, time, re, logging, threading
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor
