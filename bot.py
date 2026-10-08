@@ -19,7 +19,6 @@ from datetime import datetime, timezone
 import requests
 import numpy as np
 import pandas as pd
-import ccxt
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
