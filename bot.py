@@ -487,6 +487,28 @@ def extract_delisted_coins(arts):
             if w not in coins: coins[w] = date
     return coins
 
+# v8.0: delist radar — يجمع info سعري لكل عملة في قائمة الحذف
+def delist_radar():
+    arts = fetch_delistings()
+    if not arts: return []
+    coins = extract_delisted_coins(arts)
+    out = []
+    for c, d in coins.items():
+        try:
+            price, _ = fetch_live_price(c)
+            if not price: continue
+            df = get_recent(c, "1d", 120)
+            df = add_indicators(df)
+            last = df.iloc[-1]; prev = df.iloc[-2]
+            chg24 = (last["close"]/prev["close"] - 1) * 100
+            rsi_v = float(last["rsi"])
+            # استغلال: لو العملة تنهار (RSI<35) وفيه إعلان حذف قريب → Short
+            out.append(dict(sym=c, date=d, price=float(price),
+                            chg24=float(chg24), rsi=rsi_v,
+                            signal="Short" if rsi_v < 40 and chg24 < -3 else "watch"))
+        except Exception: continue
+    return sorted(out, key=lambda x: x["chg24"])
+
 def score_tf(df):
     if len(df) < 60: return 0.0, []
     r = df.iloc[-1]; p = df.iloc[-2]
@@ -648,22 +670,31 @@ def fmt(x):
     return f"{x:.8f}".rstrip("0")
 
 def smart_fmt(x):
-    """v7.9: تنسيق بدون أصفار زائدة — 121.00 → 121.0"""
     s = fmt(x)
     if "." in s:
         s = s.rstrip("0").rstrip(".")
-    if "." not in s and not s.endswith("0"):
+    if "." not in s:
         s += ".0"
     return s
 
-def render_chart(res, vip=False):
+# v8.0: خلفية بيضاء مثل أبو تركي + عدد أهداف ديناميكي
+def render_chart(res, vip=False, n_tps=None):
     if not plt_ok: return None
     df = res["df"].tail(CANDLES_IN_CHART).reset_index(drop=True)
     if len(df) < 10: return None
-    bg = "#0d1117" if vip else "#0b1220"
-    fg = "#d9e2f2"
-    up_c, dn_c = "#16c784", "#ea3943"
+
+    # v8.0: خلفية بيضاء دائماً (مثل أبو تركي)
+    bg = "#ffffff"
+    fg = "#333333"
+    grid_c = "#e6e6e6"
+    spine_c = "#cccccc"
+    up_c, dn_c = "#26a69a", "#ef5350"
+
     side = res["side"]; plan = res["plan"]
+
+    # عدد الأهداف
+    if n_tps is None:
+        n_tps = 4 if vip else 2
 
     fig = plt.figure(figsize=(12 if vip else 11, 8.5 if vip else 7), facecolor=bg)
     if vip:
@@ -684,29 +715,29 @@ def render_chart(res, vip=False):
         ax.add_patch(Rectangle((i-0.3, min(o,c)), 0.6, max(abs(c-o), 1e-12), color=col))
         axv.bar(i, float(row["volume"]), color=col, width=0.7, alpha=0.7)
 
-    ax.plot(df.index, df["ema20"], color="#f5c518", lw=1.2, label="EMA 20")
-    ax.plot(df.index, df["ema50"], color="#3b82f6", lw=1.2, label="EMA 50")
+    ax.plot(df.index, df["ema20"], color="#f39c12", lw=1.4, label="EMA 20")
+    ax.plot(df.index, df["ema50"], color="#2c6fbb", lw=1.4, label="EMA 50")
     if vip and not df["ema200"].isna().all():
-        ax.plot(df.index, df["ema200"], color="#a855f7", lw=1.1, label="EMA 200", alpha=0.8)
+        ax.plot(df.index, df["ema200"], color="#8e44ad", lw=1.2, label="EMA 200", alpha=0.85)
     if vip:
-        ax.plot(df.index, df["bb_up"], color="#8892a6", lw=0.7, ls="--", alpha=0.7)
-        ax.plot(df.index, df["bb_lo"], color="#8892a6", lw=0.7, ls="--", alpha=0.7)
-        ax.fill_between(df.index, df["bb_lo"], df["bb_up"], color="#8892a6", alpha=0.06)
+        ax.plot(df.index, df["bb_up"], color="#999999", lw=0.8, ls="--", alpha=0.7)
+        ax.plot(df.index, df["bb_lo"], color="#999999", lw=0.8, ls="--", alpha=0.7)
+        ax.fill_between(df.index, df["bb_lo"], df["bb_up"], color="#cccccc", alpha=0.15)
         try:
             st_up = np.where(df["st_dir"].values == 1, df["st_line"].values, np.nan)
             st_dn = np.where(df["st_dir"].values == -1, df["st_line"].values, np.nan)
-            ax.plot(df.index, st_up, color="#26c6da", lw=1.0, alpha=0.7, label="ST Up")
-            ax.plot(df.index, st_dn, color="#ef5350", lw=1.0, alpha=0.7, label="ST Dn")
+            ax.plot(df.index, st_up, color="#00acc1", lw=1.0, alpha=0.75, label="ST Up")
+            ax.plot(df.index, st_dn, color="#e53935", lw=1.0, alpha=0.75, label="ST Dn")
         except Exception: pass
 
     levels = []
     if plan and side:
-        levels = [(plan["entry"], "ENTRY", "#ffffff"), (plan["sl"], "STOP", "#ff4d4d")]
-        for i, tp in enumerate(plan["tps"][:4], 1):
-            levels.append((tp[0], f"TP{i}", "#16c784"))
+        levels = [(plan["entry"], "ENTRY", "#1565c0"), (plan["sl"], "STOP", "#c62828")]
+        for i, tp in enumerate(plan["tps"][:n_tps], 1):
+            levels.append((tp[0], f"TP{i}", "#2e7d32"))
     x_end = len(df) - 1
     for p, name, col in levels:
-        ax.axhline(p, color=col, lw=1.1, ls="--", alpha=0.9)
+        ax.axhline(p, color=col, lw=1.2, ls="--", alpha=0.95)
         ax.text(x_end + 0.5, p, f" {name} {fmt(p)}", color=col,
                 fontsize=8.5 if vip else 8, va="center", fontweight="bold")
 
@@ -718,17 +749,18 @@ def render_chart(res, vip=False):
     ax.set_ylim(lo-pad, hi+pad); ax.set_xlim(-1, len(df)+14)
 
     if vip and axr is not None:
-        axr.plot(df.index, df["rsi"], color="#c084fc", lw=1.1)
-        axr.axhline(70, color="#ea3943", lw=0.6, ls="--")
-        axr.axhline(30, color="#16c784", lw=0.6, ls="--")
-        axr.fill_between(df.index, 30, 70, color="#f48fb1", alpha=0.08)
+        axr.plot(df.index, df["rsi"], color="#8e24aa", lw=1.2)
+        axr.axhline(70, color="#e53935", lw=0.7, ls="--")
+        axr.axhline(30, color="#43a047", lw=0.7, ls="--")
+        axr.fill_between(df.index, 30, 70, color="#ce93d8", alpha=0.15)
         axr.set_ylim(0, 100)
         axr.text(0.005, 0.8, "RSI", transform=axr.transAxes, color=fg, fontsize=8)
 
     for a_ in ([ax, axv, axr] if vip and axr else [ax, axv]):
         a_.tick_params(colors=fg, labelsize=8)
-        a_.grid(color="#1c2740", lw=0.5)
-        for sp in a_.spines.values(): sp.set_color("#1c2740")
+        a_.grid(color=grid_c, lw=0.6)
+        for sp in a_.spines.values(): sp.set_color(spine_c)
+        a_.set_facecolor(bg)
     plt.setp(ax.get_xticklabels(), visible=False)
     if vip and axr: plt.setp(axv.get_xticklabels(), visible=False)
     step = max(len(df)//6, 1)
@@ -738,16 +770,16 @@ def render_chart(res, vip=False):
                               for i in range(0, len(df), step)], fontsize=8)
     ax.yaxis.tick_right()
 
-    side_col = up_c if side == 1 else (dn_c if side == -1 else "#f5c518")
+    side_col = "#2e7d32" if side == 1 else ("#c62828" if side == -1 else "#616161")
     tf_lbl = {"1d":"Daily","4h":"4H","1h":"1H","15m":"15m"}.get(res["base_tf"], res["base_tf"].upper())
     badge = "💎 VIP" if vip else ""
     title_txt = f"{res['sym']}/USDT  •  {tf_lbl}  {badge}".strip()
     ax.set_title(title_txt, color=side_col, fontsize=14, fontweight="bold", loc="left")
-    ax.legend(loc="upper left", fontsize=7.5, facecolor=bg, edgecolor=bg, labelcolor=fg)
+    ax.legend(loc="upper left", fontsize=7.5, facecolor=bg, edgecolor=spine_c, labelcolor=fg)
 
-    fig.text(0.5, 0.5, BRAND, fontsize=70, color="white", alpha=0.08,
+    fig.text(0.5, 0.5, BRAND, fontsize=70, color="#888888", alpha=0.10,
              ha="center", va="center", rotation=25, fontweight="bold")
-    fig.text(0.985, 0.012, BRAND, fontsize=11, color="#f5c518",
+    fig.text(0.985, 0.012, BRAND, fontsize=11, color="#c9a227",
              ha="right", va="bottom", fontweight="bold")
 
     buf = io.BytesIO()
@@ -755,22 +787,19 @@ def render_chart(res, vip=False):
     plt.close(fig); buf.seek(0)
     return buf
 
-# v7.9: رسالة المستخدم المجاني (هدفان فقط)
+# v8.0: Free — Long و Short بهدفين (بدون قفل)
 def format_signal_free(res):
     sym = res["sym"]; side = res["side"]; plan = res["plan"]
     tf = res["base_tf"]
     tf_ar = {"1d":"يومي","4h":"4 ساعات","1h":"ساعة","15m":"15 دقيقة"}.get(tf, tf)
-    if side == -1:
-        return (f"📊 تحليل #{sym}/USDT\n\n⚡ Binance\n⏱ الفريم: {tf_ar}\n\n"
-                f"🔒 هذه إشارة بيع (Short) حصرية لمشتركي VIP.\n"
-                f"💎 للاشتراك: /vip")
     if not plan or not side:
         return f"📊 تحليل #{sym}/USDT\n\n⚡ Binance\n⏱ {tf_ar}\n\n💡 لا توجد صفقة مناسبة الآن ⚪"
+    side_txt = "شراء 🟢" if side == 1 else "بيع 🔴"
     lines = [
         f"📊 تحليل #{sym}/USDT", "",
         "⚡ Binance",
         f"⏱ الفريم: {tf_ar}", "",
-        "💡 التوصية: شراء 🟢", "",
+        f"💡 التوصية: {side_txt}", "",
         f"💵 الدخول: <code>{fmt(plan['entry'])}</code>",
         f"🎯 الهدف 1: <code>{fmt(plan['tps'][0][0])}</code>",
         f"🎯 الهدف 2: <code>{fmt(plan['tps'][1][0])}</code>",
@@ -781,7 +810,6 @@ def format_signal_free(res):
     ]
     return "\n".join(lines)
 
-# v7.9: رسالة VIP (4 أهداف)
 def format_signal_vip(res):
     sym = res["sym"]; side = res["side"]; plan = res["plan"]
     tf = res["base_tf"]
@@ -805,13 +833,12 @@ def format_signal_vip(res):
               "⚠️ تحليل فني وليس نصيحة مالية."]
     return "\n".join(lines)
 
-# v7.9: رسالة الأدمن = VIP + بلوك نسخ (3 أهداف، صيغة نظيفة)
 def format_signal_admin(res):
     plan = res["plan"]; side = res["side"]; sym = res["sym"]
     base = format_signal_vip(res)
     if not plan or not side: return base
     entry = plan["entry"]; sl = plan["sl"]
-    tps = plan["tps"][:3]  # 3 أهداف فقط في بلوك النسخ
+    tps = plan["tps"][:3]
     copy_lines = [
         f"#{sym}USDT",
         f"➡️ Entry: {smart_fmt(entry)}",
@@ -835,13 +862,14 @@ def keyboard(sym, tf, tier):
     return kb
 
 def send_signal(bot, chat_id, res, tier, protect=False, kb=None):
-    vip = tier in ("vip", "admin")
-    img = render_chart(res, vip=vip)
     if tier == "admin":
+        img = render_chart(res, vip=True, n_tps=4)
         text = format_signal_admin(res)
     elif tier == "vip":
+        img = render_chart(res, vip=True, n_tps=4)
         text = format_signal_vip(res)
     else:
+        img = render_chart(res, vip=False, n_tps=2)
         text = format_signal_free(res)
     if img is None:
         return bot.send_message(chat_id, text, reply_markup=kb, protect_content=protect)
@@ -1165,16 +1193,17 @@ def job_scan(bot):
         tf = res["base_tf"]
         if not can_track(store, res["sym"], tf, res["side"], res["plan"]["opened_ms"]): continue
         try:
-            img = render_chart(res, vip=True)
+            img = render_chart(res, vip=True, n_tps=4)
             text = format_signal_vip(res)
             if img and len(text) <= 1024:
                 bot.send_photo(VIP_CHANNEL_ID, img, caption=text, protect_content=PROTECT_CONTENT)
             else:
                 bot.send_message(VIP_CHANNEL_ID, text, protect_content=PROTECT_CONTENT)
         except Exception as e: log.error("VIP post failed: %s", e)
-        if res["side"]==1 and _free_posted["n"] < FREE_CHANNEL_MAX_PER_DAY and CHANNEL_ID:
+        # v8.0: free channel — long و short كلاهما (به هدفين)
+        if _free_posted["n"] < FREE_CHANNEL_MAX_PER_DAY and CHANNEL_ID:
             try:
-                img = render_chart(res, vip=False)
+                img = render_chart(res, vip=False, n_tps=2)
                 text = format_signal_free(res)
                 if img and len(text) <= 1024:
                     bot.send_photo(CHANNEL_ID, img, caption=text)
@@ -1201,6 +1230,16 @@ def _fmt_pump(rows):
     out = ["💥 <b>رادار الانفجارات</b>", ""]
     for r in rows:
         out.append(f"#{r['sym']}  <code>{fmt(r['price'])}</code> | ×{r['rvol']:.1f} | +{r['chg3']:.1f}%")
+    return "\n".join(out)
+
+# v8.0: delist radar
+def _fmt_delist(rows):
+    if not rows: return "🗑 لا توجد عملات في قائمة الحذف حالياً."
+    out = ["🗑 <b>رادار الحذف — فرص ما قبل الهبوط</b>", ""]
+    for r in rows:
+        icon = "🔴 Short" if r["signal"] == "Short" else "👀 Watch"
+        out.append(f"{icon} #{r['sym']}  <code>{fmt(r['price'])}</code> | {r['chg24']:+.1f}% | RSI {r['rsi']:.0f}")
+        if r["date"]: out.append(f"     📅 {r['date']}")
     return "\n".join(out)
 
 def job_pump(bot):
@@ -1280,7 +1319,7 @@ def setup_commands(bot):
         BotCommand("price", "سعر حي"),
         BotCommand("bottom", "عملات القاع"),
         BotCommand("pump", "رادار الانفجارات"),
-        BotCommand("delist", "عملات الحذف"),
+        BotCommand("delist", "رادار الحذف"),
         BotCommand("testchannels", "اختبار القنوات"),
     ]
     try:
@@ -1428,9 +1467,9 @@ def make_bot(token=None):
     def dashboard(m):
         c = counts(store)
         src = ", ".join(f"{k}:{'✅' if v=='ok' else '❌'}" for k,v in source_status().items())
-        bot.reply_to(m, f"🖥 <b>v7.9</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
+        bot.reply_to(m, f"🖥 <b>v8.0</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
                         f"🆓 {c['trial']} | 💎 {c['vip']}\n\n🌐 {src}\n💾 {store.remote_msg}\n"
-                        f"⚙️ SL 4% | TP 3/6/9/12% | 4 أهداف")
+                        f"⚙️ SL 4% | TP 3/6/9/12% | Free=2 VIP=4 | Chart: White")
 
     @bot.message_handler(commands=["price"])
     @admin_only
@@ -1451,18 +1490,9 @@ def make_bot(token=None):
         try:
             if cmd == "bottom": text = _fmt_bottom(scan_bottom())
             elif cmd == "pump": text = _fmt_pump(scan_pump())
-            else:
-                arts = fetch_delistings()
-                if arts:
-                    coins = extract_delisted_coins(arts)
-                    lines = ["🗑 <b>عملات حُذفت/ستُحذف من Binance:</b>", ""]
-                    for c, d in sorted(coins.items()):
-                        lines.append(f"• <code>{c}</code>" + (f"  ({d})" if d else ""))
-                    text = "\n".join(lines)
-                else:
-                    text = "تعذر الجلب."
+            else: text = _fmt_delist(delist_radar())
             bot.send_message(m.chat.id, text, disable_web_page_preview=True)
-            if publish and cmd in ("bottom","pump"):
+            if publish and cmd in ("bottom","pump","delist"):
                 try: bot.send_message(VIP_CHANNEL_ID, text, protect_content=PROTECT_CONTENT, disable_web_page_preview=True)
                 except Exception: pass
         finally:
@@ -1523,7 +1553,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: pass
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v7.9 started")
+    log.info("bot v8.0 started")
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
