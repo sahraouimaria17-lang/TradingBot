@@ -50,7 +50,6 @@ STABLES = {"USDT","USDC","FDUSD","TUSD","DAI","BUSD","USDP","USDD","USDE","PYUSD
 
 FEE, SLIP = 0.001, 0.0005
 
-# v7.7: 4 أهداف | SL 4% | TP1 3% | TP2 6% | TP3 9% | TP4 12%
 RISK_MODELS = {
     "daily":  dict(fixed_sl=4.0, tps=[(0.75,.35),(1.5,.30),(2.25,.20),(3.0,.15)]),
     "4h":     dict(fixed_sl=4.0, tps=[(0.75,.35),(1.5,.30),(2.25,.20),(3.0,.15)]),
@@ -194,7 +193,7 @@ def time_ago(ts):
     if diff < 3600: return f"قبل {diff//60} دقيقة"
     if diff < 86400: return f"قبل {diff//3600} ساعة"
     if diff < 604800: return f"قبل {diff//86400} يوم"
-    return f"قبل {diff//2592000} شهر" if diff < 2592000 else f"قبل {diff//2592000} شهر"
+    return f"قبل {diff//604800} أسبوع" if diff < 2592000 else f"قبل {diff//2592000} شهر"
 
 def touch(store, user, lang):
     uid = str(user.id)
@@ -307,7 +306,8 @@ BINANCE_BASES = ["https://data-api.binance.vision","https://api.binance.com"]
 class PairNotFound(Exception): pass
 class Unsupported(Exception): pass
 
-def _get(url, **kw): return requests.get(url, timeout=12, **kw)
+# ✅ v7.8: إصلاح تعارض timeout
+def _get(url, timeout=15, **kw): return requests.get(url, timeout=timeout, **kw)
 def _num(rows): return [[int(r[0])]+[float(x) for x in r[1:6]] for r in rows]
 
 def _binance(sym, iv, limit):
@@ -430,7 +430,8 @@ def fetch_live_price(sym):
                     if p > 0: return p, "binance"
                 elif r.status_code == 400:
                     break
-            except Exception:
+            except Exception as e:
+                log.warning("binance attempt %d: %s", attempt, str(e)[:60])
                 time.sleep(1)
     try:
         r = _get("https://fapi.binance.com/fapi/v1/ticker/price", params={"symbol": sym+"USDT"}, timeout=15)
@@ -469,15 +470,14 @@ def fetch_delistings():
                      url=f"https://www.binance.com/en/support/announcement/{a['code']}") for a in arts]
     return _cached("delist", 300, f) or []
 
-# v7.7: استخراج رموز العملات من عناوين الحذف
 def extract_delisted_coins(arts):
     skip = {"BINANCE","WILL","DELIST","ON","AND","THE","FOR","USD","USDT","USDC","FROM",
             "SPOT","TRADING","PAIRS","PAIR","TOKEN","TOKENS","ANNOUNCEMENT","API","BNB",
-            "BUSD","FDUSD","TUSD","LISTING","MARGIN","FUTURES","PERPETUAL","MONITORING"}
+            "BUSD","FDUSD","TUSD","LISTING","MARGIN","FUTURES","PERPETUAL","MONITORING",
+            "REMOVAL","UPDATES","NOTICE","UPDATE","NEW","OLD","SUSPEND","SUSPENSION"}
     coins = {}
     for a in arts[:30]:
         title = a.get("title", "")
-        # استخراج رموز (أحرف كبيرة 2-10)
         words = re.findall(r'\b[A-Z0-9]{2,10}\b', title)
         date_match = re.search(r'(\d{4}-\d{2}-\d{2})', title)
         date = date_match.group(1) if date_match else ""
@@ -648,7 +648,6 @@ def fmt(x):
     if x >= 0.01: return f"{x:.5f}"
     return f"{x:.8f}".rstrip("0")
 
-# v7.7: شارتين — عادي و VIP
 def render_chart(res, vip=False):
     if not plt_ok: return None
     df = res["df"].tail(CANDLES_IN_CHART).reset_index(drop=True)
@@ -677,7 +676,6 @@ def render_chart(res, vip=False):
         ax.add_patch(Rectangle((i-0.3, min(o,c)), 0.6, max(abs(c-o), 1e-12), color=col))
         axv.bar(i, float(row["volume"]), color=col, width=0.7, alpha=0.7)
 
-    # EMA + Bollinger
     ax.plot(df.index, df["ema20"], color="#f5c518", lw=1.2, label="EMA 20")
     ax.plot(df.index, df["ema50"], color="#3b82f6", lw=1.2, label="EMA 50")
     if vip and not df["ema200"].isna().all():
@@ -686,7 +684,6 @@ def render_chart(res, vip=False):
         ax.plot(df.index, df["bb_up"], color="#8892a6", lw=0.7, ls="--", alpha=0.7)
         ax.plot(df.index, df["bb_lo"], color="#8892a6", lw=0.7, ls="--", alpha=0.7)
         ax.fill_between(df.index, df["bb_lo"], df["bb_up"], color="#8892a6", alpha=0.06)
-        # Supertrend
         try:
             st_up = np.where(df["st_dir"].values == 1, df["st_line"].values, np.nan)
             st_dn = np.where(df["st_dir"].values == -1, df["st_line"].values, np.nan)
@@ -694,7 +691,6 @@ def render_chart(res, vip=False):
             ax.plot(df.index, st_dn, color="#ef5350", lw=1.0, alpha=0.7, label="ST Dn")
         except Exception: pass
 
-    # Levels
     levels = []
     if plan and side:
         levels = [(plan["entry"], "ENTRY", "#ffffff"), (plan["sl"], "STOP", "#ff4d4d")]
@@ -713,7 +709,6 @@ def render_chart(res, vip=False):
     pad = (hi-lo)*0.05
     ax.set_ylim(lo-pad, hi+pad); ax.set_xlim(-1, len(df)+14)
 
-    # RSI panel للـ VIP فقط
     if vip and axr is not None:
         axr.plot(df.index, df["rsi"], color="#c084fc", lw=1.1)
         axr.axhline(70, color="#ea3943", lw=0.6, ls="--")
@@ -752,7 +747,6 @@ def render_chart(res, vip=False):
     plt.close(fig); buf.seek(0)
     return buf
 
-# v7.7: رسائل حسب الفئة
 def format_signal_free(res):
     sym = res["sym"]; side = res["side"]; plan = res["plan"]
     tf = res["base_tf"]
@@ -917,7 +911,6 @@ def _close(store, pos, result):
                                  if p["status"]=="open" or time.time()*1000-p.get("closed",0)<7*86400000]
         store.save("signals","history")
 
-# v7.7: تتبع نشط مع إشعارات
 def check_all_active(store, bot):
     with store.lock:
         opens = [p for p in store.data["signals"] if p["status"]=="open"]
@@ -1158,7 +1151,6 @@ def job_scan(bot):
         if posted >= MAX_POSTS_PER_SCAN: break
         tf = res["base_tf"]
         if not can_track(store, res["sym"], tf, res["side"], res["plan"]["opened_ms"]): continue
-        # VIP channel
         try:
             img = render_chart(res, vip=True)
             text = format_signal_vip(res)
@@ -1167,7 +1159,6 @@ def job_scan(bot):
             else:
                 bot.send_message(VIP_CHANNEL_ID, text, protect_content=PROTECT_CONTENT)
         except Exception as e: log.error("VIP post failed: %s", e)
-        # Free channel (longs only)
         if res["side"]==1 and _free_posted["n"] < FREE_CHANNEL_MAX_PER_DAY and CHANNEL_ID:
             try:
                 img = render_chart(res, vip=False)
@@ -1183,8 +1174,7 @@ def job_scan(bot):
     log.info("scan done: %d fresh, %d posted", len(fresh), posted)
     return len(fresh), posted
 
-def job_track(bot):
-    check_all_active(store, bot)
+def job_track(bot): check_all_active(store, bot)
 
 def _fmt_bottom(rows):
     if not rows: return "🧲 لا توجد عملات قاع حالياً."
@@ -1257,7 +1247,6 @@ def scheduler(bot):
         time.sleep(20)
 
 def setup_commands(bot):
-    """v7.7: الأوامر العامة للأدمن فقط في القائمة"""
     public = [
         BotCommand("start", "بدء البوت"),
         BotCommand("help", "المساعدة"),
@@ -1351,7 +1340,6 @@ def make_bot(token=None):
         if len(parts) > 3: _cache.pop((parts[1], parts[2]), None)
         deliver(bot, c.message.chat.id, c.from_user, parts[1], tf)
 
-    # ═══════════ Admin ═══════════
     @bot.message_handler(commands=["addvip"])
     @admin_only
     def addvip(m):
@@ -1427,7 +1415,7 @@ def make_bot(token=None):
     def dashboard(m):
         c = counts(store)
         src = ", ".join(f"{k}:{'✅' if v=='ok' else '❌'}" for k,v in source_status().items())
-        bot.reply_to(m, f"🖥 <b>v7.7</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
+        bot.reply_to(m, f"🖥 <b>v7.8</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
                         f"🆓 {c['trial']} | 💎 {c['vip']}\n\n🌐 {src}\n💾 {store.remote_msg}\n"
                         f"⚙️ SL 4% | TP 3/6/9/12% | 4 أهداف")
 
@@ -1522,7 +1510,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: pass
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v7.7 started")
+    log.info("bot v7.8 started")
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
