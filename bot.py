@@ -42,7 +42,7 @@ STABLES = {"USDT","USDC","FDUSD","TUSD","DAI","BUSD","USDP","USDD","USDE","PYUSD
 
 FEE, SLIP = 0.001, 0.0005
 
-# v5.1: TP1 محدّد — Daily +2% | 4h +1.5%
+# v6.0: أهداف ثابتة
 RISK_MODELS = {
     "daily": dict(fixed_sl=2.5, tps=[(0.8,.40),(1.3,.30),(1.8,.20),(2.4,.10)]),
     "4h":    dict(fixed_sl=2.0, tps=[(0.75,.40),(1.25,.30),(1.75,.20),(2.25,.10)]),
@@ -57,11 +57,11 @@ TRAIL_ATR_AFTER_TP1 = 1.5
 TRAIL_ATR_AFTER_TP2 = 1.0
 MAX_HOLD = {"4h": 24, "1d": 20}
 
-# v5.1: عتبات مرنة
-MIN_VOTES_DEFAULT = 2
+# v6.0: التصويت = 0 (معطّل) | ADX منخفض جداً
+MIN_VOTES_DEFAULT = 0
 MAX_VOTES = 4
-ADX_MIN_DEFAULT = 15
-BTC_FILTER_DEFAULT = True
+ADX_MIN_DEFAULT = 10
+BTC_FILTER_DEFAULT = False
 RVOL_MIN = 1.0
 ATR_PCT_MIN = 0.3
 ATR_PCT_MAX = 25.0
@@ -86,7 +86,7 @@ def params_for(tf, risk_model=None, adx_min=None, btc_filter=None, min_votes=Non
              trail_atr_tp2=TRAIL_ATR_AFTER_TP2,
              max_hold=MAX_HOLD[tf],
              adx_min=int(adx_min if adx_min is not None else _e("ADX_MIN", str(ADX_MIN_DEFAULT))),
-             btc_filter=bool(btc_filter if btc_filter is not None else _e("BTC_FILTER", "1") == "1"),
+             btc_filter=bool(btc_filter if btc_filter is not None else _e("BTC_FILTER", "0") == "1"),
              min_votes=int(min_votes if min_votes is not None else _e("MIN_VOTES", str(MIN_VOTES_DEFAULT))))
     if "fixed_sl" in model:
         p.update(risk_pct=model["fixed_sl"], sl_atr=None, tps=model["tps"])
@@ -98,7 +98,7 @@ def default_tf_for(symbol):
     return "1d" if symbol in MAJORS else "4h"
 
 SCAN_TOP_N = int(_e("SCAN_TOP_N", "60"))
-AUTOPOST_MIN_VOTES = int(_e("AUTOPOST_MIN_VOTES", "2"))
+AUTOPOST_MIN_VOTES = int(_e("AUTOPOST_MIN_VOTES", "0"))
 MAX_POSTS_PER_SCAN = int(_e("MAX_POSTS_PER_SCAN", "5"))
 FREE_CHANNEL_MAX_PER_DAY = int(_e("FREE_CHANNEL_MAX_PER_DAY", "3"))
 PROTECT_CONTENT = _e("PROTECT_CONTENT", "1") == "1"
@@ -442,9 +442,7 @@ def _daily_regime(d1, prefix=""):
     return pd.DataFrame({"avail":(x["t"]+D1).values, prefix+"reg_up":up, prefix+"reg_dn":dn}).sort_values("avail")
 
 def _votes(d):
-    """
-    v5.1: 4 مؤشرات متكيفة مع Pullback
-    """
+    """v6.0: للعرض فقط — لا يمنع الصفقات"""
     n = len(d)
     with np.errstate(invalid="ignore"):
         e50 = d["ema50"].values
@@ -453,19 +451,10 @@ def _votes(d):
         r = d["rsi"].values
         mh = d["macd_hist"].values
         mhp = d["macd_hist"].shift(1).values
-
-        L = (
-            (e50 > e200).astype(int)
-            + (st == 1).astype(int)
-            + ((r > 20) & (r < 75)).astype(int)
-            + (mh > mhp).astype(int)
-        )
-        S = (
-            (e50 < e200).astype(int)
-            + (st == -1).astype(int)
-            + ((r > 25) & (r < 80)).astype(int)
-            + (mh < mhp).astype(int)
-        )
+        L = ((e50 > e200).astype(int) + (st == 1).astype(int)
+             + ((r > 20) & (r < 75)).astype(int) + (mh > mhp).astype(int))
+        S = ((e50 < e200).astype(int) + (st == -1).astype(int)
+             + ((r > 25) & (r < 80)).astype(int) + (mh < mhp).astype(int))
     d["vl"], d["vs"] = L.astype(int), S.astype(int)
     return d
 
@@ -484,35 +473,52 @@ def prepare(df, tf, d1=None, btc1d=None):
     return _votes(d.reset_index(drop=True))
 
 def make_signals(d, name, p):
+    """
+    v6.0: pullback = قرار وحيد (بدون تصويت، بدون btc_filter)
+    Long: e50 > e200 + RSI 20-60 + لمس EMA20 في آخر 3 شموع
+    Short: e50 < e200 + RSI 40-80 + لمس EMA20 من أسفل
+    """
     n = len(d)
     c,o,h,l = (d[k].values for k in ("close","open","high","low"))
     with np.errstate(invalid="ignore"):
-        adx_ok = d["adx"].values > p["adx_min"]
-        ru, rd = d["reg_up"].values, d["reg_dn"].values
-        if p.get("btc_filter") and "btc_up" in d.columns:
-            ru, rd = ru & d["btc_up"].values, rd & d["btc_dn"].values
-        up, dn = ru & adx_ok, rd & adx_ok
         r = d["rsi"].values
         e20 = d["ema20"].values
+        e50v = d["ema50"].values
+        e200v = d["ema200"].values
+        adx_v = d["adx"].values
+        adx_ok = adx_v > p["adx_min"]
+
         if name == "pullback":
-            lo3, hi3 = pd.Series(l).rolling(3).min().values, pd.Series(h).rolling(3).max().values
-            # v5.1: مدى RSI أوسع
-            L = up & (r > 20) & (r < 65) & (lo3 <= e20 * 1.03)
-            S = dn & (r > 35) & (r < 80) & (hi3 >= e20 * 0.97)
+            lo3 = pd.Series(l).rolling(3).min().values
+            hi3 = pd.Series(h).rolling(3).max().values
+            # اتجاه متوسط الأجل فقط — بدون btc_filter وبدون reg_up
+            trend_up = e50v > e200v
+            trend_dn = e50v < e200v
+            # Long: اتجاه صاعد + RSI <60 + لمس EMA20 (1.05 = tolerance 5%)
+            L = trend_up & adx_ok & (r > 20) & (r < 60) & (lo3 <= e20 * 1.05)
+            # Short: اتجاه هابط + RSI >40 + لمس EMA20 من أسفل
+            S = trend_dn & adx_ok & (r > 40) & (r < 80) & (hi3 >= e20 * 0.95)
         elif name == "breakout":
             rv = d["rvol"].values > p["rvol_min"]
-            L, S = up & rv & (c>d["hh20"].values), dn & rv & (c<d["ll20"].values)
+            up_ = e50v > e200v; dn_ = e50v < e200v
+            L, S = up_ & adx_ok & rv & (c>d["hh20"].values), dn_ & adx_ok & rv & (c<d["ll20"].values)
         elif name == "st_flip":
             sd, sp = d["st_dir"].values, d["st_dir"].shift(1).values
-            L, S = up & (sd==1) & (sp==-1), dn & (sd==-1) & (sp==1)
+            up_ = e50v > e200v; dn_ = e50v < e200v
+            L, S = up_ & adx_ok & (sd==1) & (sp==-1), dn_ & adx_ok & (sd==-1) & (sp==1)
         elif name == "meanrev":
-            L = up & (r < 35) & (c > d["ema200"].values)
-            S = dn & (r > 65) & (c < d["ema200"].values)
+            up_ = e50v > e200v; dn_ = e50v < e200v
+            L = up_ & adx_ok & (r < 35) & (c > e200v)
+            S = dn_ & adx_ok & (r > 65) & (c < e200v)
         else:
-            L, S = up & (r < 55), dn & (r > 45)
+            up_ = e50v > e200v; dn_ = e50v < e200v
+            L, S = up_ & adx_ok & (r < 60), dn_ & adx_ok & (r > 40)
+
         L, S = np.asarray(L,bool), np.asarray(S,bool)
+        # v6.0: التصويت معطّل (min_votes=0)
         mv = p.get("min_votes", 0)
-        if mv: L, S = L & (d["vl"].values>=mv), S & (d["vs"].values>=mv)
+        if mv > 0:
+            L, S = L & (d["vl"].values>=mv), S & (d["vs"].values>=mv)
     return L, S
 
 def risk_of(entry, atr, p):
@@ -527,7 +533,7 @@ def build_plan(ref, side, p, tf, age_bars):
                 age_hours=age_bars*bar_h, opened_ms=int(ref["avail"]), max_hours=p["max_hold"]*bar_h,
                 atr_at_entry=float(ref["atr"]))
 
-def analyze(df, tf, d1=None, btc1d=None, name=None, p=None, lookback=2):
+def analyze(df, tf, d1=None, btc1d=None, name=None, p=None, lookback=3):
     name = name or ACTIVE[tf]
     p = p or params_for(tf)
     d = prepare(df, tf, d1, btc1d)
@@ -543,7 +549,7 @@ def analyze(df, tf, d1=None, btc1d=None, name=None, p=None, lookback=2):
         s = 1 if L[i] else (-1 if S[i] else 0)
         if s:
             ref = d.iloc[i]
-            if abs(last["close"]-ref["close"]) <= 0.6*ref["atr"]:
+            if abs(last["close"]-ref["close"]) <= 1.0*ref["atr"]:
                 side, age = s, k
             break
     plan = build_plan(ref, side, p, tf, age) if side else None
@@ -551,8 +557,6 @@ def analyze(df, tf, d1=None, btc1d=None, name=None, p=None, lookback=2):
     reasons = []
     if regime == "range": reasons.append("regime")
     if not last["adx"] > p["adx_min"]: reasons.append("adx")
-    if p.get("btc_filter") and "btc_up" in d.columns:
-        if (regime=="up" and not last["btc_up"]) or (regime=="down" and not last["btc_dn"]): reasons.append("btc")
     votes = int(ref["vl"] if side==1 else ref["vs"]) if side else int(max(last["vl"], last["vs"]))
     ctx = dict(regime=regime, adx=float(last["adx"]), rsi=float(last["rsi"]), mfi=float(last["mfi"]),
                atr_pct=atr_pct, close=float(last["close"]),
@@ -573,7 +577,7 @@ _pool = ThreadPoolExecutor(6)
 _cache = {}
 TTL = 60
 
-def get_analysis(sym, tf="4h", force=False, params_override=None, lookback=2):
+def get_analysis(sym, tf="4h", force=False, params_override=None, lookback=3):
     key = (sym, tf, params_override.get("min_votes") if params_override else None)
     hit = _cache.get(key)
     if hit and not force and time.time()-hit[0] < TTL: return hit[1]
@@ -728,12 +732,13 @@ def _safe(fn, *a):
         log.debug("scan skip %s: %s", a, str(e)[:80]); return None
 
 def scan_signals(tf, min_votes=0, only_side=None, fresh_only=True, universe=None,
-                 params_override=None, lookback=2):
+                 params_override=None, lookback=3):
     syms = universe or top_symbols(SCAN_TOP_N)
     out = []
     for res in _scan_pool.map(lambda s: _safe(get_analysis, s, tf, False, params_override, lookback), syms):
         if not res or not res["side"]: continue
-        if res["votes"] < min_votes or (only_side and res["side"]!=only_side): continue
+        if min_votes > 0 and res["votes"] < min_votes: continue
+        if only_side and res["side"]!=only_side: continue
         if fresh_only and res["plan"]["age_hours"] > 0: continue
         out.append(res)
     return sorted(out, key=lambda r: -r["votes"])
@@ -933,7 +938,6 @@ def format_signal(res, L, tier, lang="ar", banner=None):
         for j,t in enumerate(plan["tps"][:n],1):
             lines.append(f"{L['tp']} {j}: <code>{fmt(t[0])}</code> ({t[3]:+.2f}%)")
         lines.append(f"{L['stop']}: <code>{fmt(plan['sl'])}</code> ({pct(plan['sl'], plan['entry'])})")
-        lines += ["", L["votes"].format(v=res["votes"], m=MAX_VOTES)]
         if plan["age_hours"]: lines.append(L["old"].format(h=plan["age_hours"]))
         if tier == "free": lines += ["", L["free_up"]]
     else:
@@ -1249,7 +1253,7 @@ def make_bot(token=None):
             prog = f" | {' '.join(hits)}" if hits else ""
             nxt = f" ← التالي TP{next_tp}" if next_tp else " ← كل الأهداف"
             lines.append(f"• {side} <b>#{p['coin']}</b> · {p['tf']} · R {p['remaining']:.1f}/1{prog}{nxt}")
-            lines.append(f"  Entry {fmt(p['entry'])} · SL {fmt(p['sl'])} · Votes {p.get('votes','-')}")
+            lines.append(f"  Entry {fmt(p['entry'])} · SL {fmt(p['sl'])}")
         bot.reply_to(m, "\n".join(lines))
 
     @bot.message_handler(commands=["history"])
@@ -1294,7 +1298,7 @@ def make_bot(token=None):
         src = ", ".join(f"{k}:{'✅' if v=='ok' else '❌'}" for k,v in source_status().items())
         bot.reply_to(m, f"🖥 <b>لوحة التحكم</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
                         f"🆓 {c['trial']} | 💎 VIP {c['vip']}\n\n{stats_text()}\n\n🌐 {src}\n💾 {store.remote_msg}\n"
-                        f"⚙️ {params_for('4h')['risk_model']} | Votes≥{params_for('4h')['min_votes']}/4 | ADX≥{params_for('4h')['adx_min']}")
+                        f"⚙️ v6.0 | {params_for('4h')['risk_model']} | ADX≥{params_for('4h')['adx_min']} | تصويت: معطّل")
 
     @bot.message_handler(commands=["bottom","pump","delist"])
     @admin_only
@@ -1318,7 +1322,7 @@ def make_bot(token=None):
     def short_cmd(m):
         wait = bot.reply_to(m, "⏳ جاري البحث عن شورتات ...")
         try:
-            p = params_for("4h", btc_filter=False, min_votes=2)
+            p = params_for("4h", btc_filter=False, min_votes=0)
             rows = scan_signals("4h", 0, only_side=-1, fresh_only=False,
                                 params_override=p, lookback=10)
             if not rows:
@@ -1370,7 +1374,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: log.exception("remove_webhook")
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v5.1 started | gist: %s", store.remote_msg)
+    log.info("bot v6.0 started | gist: %s", store.remote_msg)
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
