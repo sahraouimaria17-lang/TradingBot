@@ -1,5 +1,4 @@
 pyTelegramBotAPI>=4.14
-python-telegram-bot>=20.0
 pandas
 numpy
 matplotlib
