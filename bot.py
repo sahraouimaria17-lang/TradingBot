@@ -42,14 +42,19 @@ STABLES = {"USDT","USDC","FDUSD","TUSD","DAI","BUSD","USDP","USDD","USDE","PYUSD
 
 FEE, SLIP = 0.001, 0.0005
 
+# v4.4: أهداف قبل أبو تركي بشوي + إدارة مخاطر أذكى
 RISK_MODELS = {
-    "atr1.5/balanced": dict(atr=1.5, tps=[(2.0,.30),(3.5,.30),(5.5,.25),(8.0,.15)]),
+    # الفريم اليومي: SL 4.5% | TPs = 3.38% / 6.75% / 10.13% / 13.50%
+    "daily": dict(fixed_sl=4.5, tps=[(0.75,.40),(1.5,.30),(2.25,.20),(3.0,.10)]),
+    # الفريم 4 ساعات: SL 2.4% | TPs = 1.80% / 3.60% / 5.40% / 7.20%
+    "4h":    dict(fixed_sl=2.4, tps=[(0.75,.40),(1.5,.30),(2.25,.20),(3.0,.10)]),
+    # سكالب قصير: SL 1.4%
+    "scalp": dict(fixed_sl=1.4, tps=[(0.75,.40),(1.5,.30),(2.25,.20),(3.0,.10)]),
+    # بدائل
+    "daily_wide":  dict(fixed_sl=5.0, tps=[(0.75,.40),(1.5,.30),(2.25,.20),(3.0,.10)]),
+    "daily_tight": dict(fixed_sl=4.0, tps=[(0.75,.40),(1.5,.30),(2.25,.20),(3.0,.10)]),
     "atr2.0/balanced": dict(atr=2.0, tps=[(2.0,.30),(3.5,.30),(5.5,.25),(8.0,.15)]),
-    "atr2.0/tight":    dict(atr=2.0, tps=[(1.5,.35),(2.5,.30),(4.0,.20),(6.0,.15)]),
-    "atr2.0/wide":     dict(atr=2.0, tps=[(2.5,.25),(4.5,.30),(7.0,.25),(10.0,.20)]),
-    "atr2.5/balanced": dict(atr=2.5, tps=[(2.0,.30),(3.5,.30),(5.5,.25),(8.0,.15)]),
-    "fixed/1.20":      dict(fixed_sl=1.20, tps=[(1.25,.40),(2.5,.30),(4.2,.20),(6.7,.10)]),
-    "fixed/1.50":      dict(fixed_sl=1.50, tps=[(1.0,.40),(2.0,.30),(3.3,.20),(5.3,.10)]),
+    "fixed/1.20":  dict(fixed_sl=1.20, tps=[(0.75,.40),(1.5,.30),(2.25,.20),(3.0,.10)]),
 }
 BE_AFTER_TP1 = True
 TRAIL_AFTER_TP1 = True
@@ -70,8 +75,14 @@ MAX_OPEN_TOTAL = 20
 ACTIVE = {"4h": _e("STRATEGY_4H", "pullback"), "1d": _e("STRATEGY_1D", "pullback")}
 
 def params_for(tf, risk_model=None, adx_min=None, btc_filter=None, min_votes=None):
-    rm = risk_model or _e("RISK_MODEL", "atr2.0/balanced")
-    model = RISK_MODELS.get(rm, RISK_MODELS["atr2.0/balanced"])
+    # v4.4: اختيار تلقائي — daily لليومي، 4h للـ 4 ساعات
+    env_rm = _e("RISK_MODEL", "").strip()
+    if risk_model is None:
+        rm = env_rm if env_rm else ("daily" if tf == "1d" else "4h")
+    else:
+        rm = risk_model
+    default_key = "daily" if tf == "1d" else "4h"
+    model = RISK_MODELS.get(rm, RISK_MODELS[default_key])
     p = dict(tf=tf, risk_model=rm, rvol_min=RVOL_MIN,
              atr_pct_min=ATR_PCT_MIN, atr_pct_max=ATR_PCT_MAX,
              be_after_tp1=BE_AFTER_TP1,
@@ -1353,7 +1364,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: log.exception("remove_webhook")
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v4.3 started | gist: %s", store.remote_msg)
+    log.info("bot v4.4 started | gist: %s", store.remote_msg)
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
