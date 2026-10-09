@@ -629,4 +629,199 @@ def make_chart(res):
     ax.legend(loc="upper left", fontsize=8, facecolor=bg, edgecolor=bg, labelcolor=fg)
 
     fig.text(0.5, 0.5, WATERMARK, fontsize=70, color="white", alpha=0.10,
-             ha="center",
+             ha="center", va="center", rotation=25, fontweight="bold")
+    fig.text(0.985, 0.012, WATERMARK, fontsize=11, color="#f5c518",
+             ha="right", va="bottom", fontweight="bold")
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=130, facecolor=bg, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+# ============================ الرسائل ============================
+def build_caption(r):
+    d = r["side"]
+    word = "شراء LONG 📈" if d == 1 else "بيع SHORT 📉"
+    gcol = {"A": "🟢", "B": "🟡", "C": "🔴"}[r["grade"]]
+    mark = "↑ كسر" if d == 1 else "↓ كسر"
+    mode = "🚀 Breakout" if r.get("is_breakout") else ("🎯 Pullback" if r.get("is_pullback") else ("🌫️ Gray Zone" if r.get("is_gray") else "⚙️ Setup"))
+    lines = [
+        f"<b>#{r['sym']}/USDT</b>",
+        f"🎯 <b>التوصية: {word}</b>",
+        f"{gcol} الدرجة: <b>{r['grade']}</b> ({r['ok']}/{r['total']}) - {r['status']}",
+        f"🔍 النوع: {mode}",
+        f"⏱ الفريم: {r['tf'].upper()}",
+        "",
+        f"💰 السعر الحالي: <code>{fmt(r['price'])}</code>",
+        f"🚪 الدخول ({mark}): <code>{fmt(r['entry'])}</code>",
+        f"🛑 الوقف: <code>{fmt(r['sl'])}</code>",
+    ]
+    for i, (tp_px, tp_pct, frac) in enumerate(r["targets"], 1):
+        pct_frac = int(frac * 100)
+        lines.append(f"✅ هدف {i} ({tp_pct}%، أغلق {pct_frac}%): <code>{fmt(tp_px)}</code>")
+    lines += [
+        f"🔁 الباقي: Trail = قمة/قاع - 3×ATR",
+        f"📌 بعد TP1: انقل الوقف إلى -0.1R",
+        f"RSI {r['rsi']:.0f} | ADX {r['adx']:.0f}",
+        f"<b>{WATERMARK}</b>",
+    ]
+    return "\n".join(lines)[:1000]
+
+
+def build_details(r):
+    ok = [COND_AR[k] for k, v in r["conds"].items() if v]
+    lines = ["<b>تفاصيل الإعداد</b>"]
+    lines += [f"✅ {x}" for x in ok]
+    lines += [f"❌ {x}" for x in r["missing"]]
+    if r["warn"]:
+        lines += [""] + [f"⚠️ {w}" for w in r["warn"]]
+    if r["prices"]:
+        import statistics
+        lines.append(f"\n🏦 {len(r['prices'])} منصات - متوسط السعر "
+                     f"{fmt(statistics.median(r['prices'].values()))}")
+    if r["rs"] is not None:
+        lines.append(f"📐 القوة النسبية مقابل BTC (30 يوم): {r['rs']*100:+.1f}%")
+    if r["cg"]:
+        m = r["cg"][0]
+        ch = m.get("price_change_percentage_24h")
+        if ch is not None:
+            lines.append(f"🌐 CoinGecko 24h: {ch:+.2f}% | Rank #{m.get('market_cap_rank')}")
+    lines += ["", "ℹ️ الدرجة A = كل الشروط، B = ينقص حتى 5 شروط، "
+                  "C = إعداد ضعيف.",
+              "⚠️ تحليل فني آلي وليس نصيحة مالية. خاطر بحد أقصى 1% من رأس المال."]
+    return "\n".join(lines)
+
+
+# ============================ تيليجرام ============================
+async def run_analysis(sym):
+    res = await asyncio.to_thread(analyze, sym)
+    if not res:
+        return None
+    img = await asyncio.to_thread(make_chart, res)
+    return res, img
+
+
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 أهلاً بك في <b>ryma crypto</b>\n"
+        "• أرسل اسم العملة: <code>BTC</code>\n"
+        "• <code>/post BTC</code> نشر في القناة\n"
+        "• <code>/bt BTC</code> اختبار تاريخي\n"
+        "• <code>/scan</code> أفضل الإعدادات الآن\n\n"
+        "ℹ️ العملات الرئيسية على اليومي، الباقي على 4h",
+        parse_mode=ParseMode.HTML)
+
+
+async def handle_symbol(update, ctx, text, to_channel=False):
+    sym = clean_symbol(text)
+    if not sym:
+        await update.message.reply_text("اكتب اسم العملة مثل BTC")
+        return
+    wait = await update.message.reply_text(f"⏳ جاري تحليل {sym} ...")
+    try:
+        out = await run_analysis(sym)
+        if out is None:
+            await wait.edit_text(f"❌ لم أجد بيانات للعملة {sym}")
+            return
+        res, img = out
+        target = CHANNEL_ID if (to_channel and CHANNEL_ID) else update.effective_chat.id
+        await ctx.bot.send_photo(target, photo=img, caption=build_caption(res),
+                                 parse_mode=ParseMode.HTML)
+        await ctx.bot.send_message(target, build_details(res), parse_mode=ParseMode.HTML)
+        await wait.delete()
+        if to_channel and CHANNEL_ID:
+            await update.message.reply_text("✅ تم النشر في القناة")
+    except Exception as e:
+        log.exception("analysis failed")
+        await wait.edit_text(f"⚠️ خطأ: {e}")
+
+
+async def cmd_analyze(update, ctx):
+    if not ctx.args:
+        await update.message.reply_text("مثال: /a BTC")
+        return
+    await handle_symbol(update, ctx, ctx.args[0])
+
+
+async def cmd_post(update, ctx):
+    if not ctx.args:
+        await update.message.reply_text("مثال: /post BTC")
+        return
+    await handle_symbol(update, ctx, ctx.args[0], to_channel=True)
+
+
+async def cmd_bt(update, ctx):
+    if not ctx.args:
+        await update.message.reply_text("مثال: /bt BTC")
+        return
+    sym = clean_symbol(ctx.args[0])
+    wait = await update.message.reply_text(f"⏳ Backtest {sym}...")
+    try:
+        r = await asyncio.to_thread(backtest, sym)
+        await wait.edit_text(bt_text(sym, r), parse_mode=ParseMode.HTML)
+    except Exception as e:
+        log.exception("bt failed")
+        await wait.edit_text(f"⚠️ خطأ: {e}")
+
+
+async def cmd_scan(update, ctx):
+    wait = await update.message.reply_text("⏳ فحص القائمة ...")
+    rows = []
+    for sym in SCAN_LIST:
+        try:
+            r = await asyncio.to_thread(analyze, sym)
+            if r:
+                rows.append(r)
+        except Exception:
+            continue
+    rows.sort(key=lambda x: (-x["ok"], x["sym"]))
+    lines = ["<b>أفضل الإعدادات الآن</b>"]
+    for r in rows[:10]:
+        s = "LONG 📈" if r["side"] == 1 else "SHORT 📉"
+        mode = "🚀" if r.get("is_breakout") else ("🎯" if r.get("is_pullback") else ("🌫️" if r.get("is_gray") else "⚙️"))
+        lines.append(f"{r['grade']} | {mode} | {r['sym']} ({r['tf']}) | {s} | {r['ok']}/{r['total']}")
+    lines.append("\nأرسل اسم العملة لتحصل على الشارت.")
+    await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def on_text(update, ctx):
+    await handle_symbol(update, ctx, update.message.text.split()[0])
+
+
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler(["a", "analyze"], cmd_analyze))
+    app.add_handler(CommandHandler("post", cmd_post))
+    app.add_handler(CommandHandler("bt", cmd_bt))
+    app.add_handler(CommandHandler("scan", cmd_scan))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    log.info("Ryma Crypto Pro v5 is running...")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+✅ ملخص التعديلات النهائية:
+
+العنصر القيمة
+الفريم العملات الرئيسية: 1d (يومي) / الباقي: 4h
+الأهداف 2.5% / 5% / 7% / 10%
+توزيع الأرباح 40% / 30% / 20% / 10%
+الوقف 2.0-4.5 ATR (أوسع)
+BE بعد TP1 عند -0.1R
+Trail بعد TP2 بـ 3×ATR
+الدرجة B core_ok (BTC+1d+trend) OR pullback OR gray OR (ok >= total-5)
+حماية RSI منع البيع تحت 32، منع الشراء فوق 72 (إلا Breakout)
+
+🎯 النتيجة المتوقعة:
+
+· BTC و BNB: رح يعطوك B (شراء) مع أهداف 2.5% و 5% و 7% و 10%.
+· KAIA وأمثاله: A (Breakout).
+· الشارت: يعرض الفريم الصحيح (1D للرئيسية، 4H للباقي).
+
+ارفع الكود وجرب. 🚀
