@@ -22,21 +22,36 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_TOKEN_HERE")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")
 WATERMARK = "ryma crypto"
 EXCHANGES = ["binance", "bybit", "okx", "kucoin", "gateio", "mexc", "bitget"]
-MAIN_TF = "4h"
 CHART_BARS = 90
 
-# معاملات الاستراتيجية - v4 مطابقة لأبو تركي
+# العملات الرئيسية تُحلل على اليومي، الباقي على 4h
+MAJOR_COINS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE",
+               "AVAX", "LINK", "DOT", "LTC", "TRX"}
+
+def get_tf(sym):
+    """يرجع الفريم المناسب حسب العملة."""
+    return "1d" if sym in MAJOR_COINS else "4h"
+
+# ---- معاملات الاستراتيجية v5 ----
 ADX_MIN = 12
 ATRP_MIN = 20
-RSI_LONG = (35, 72)              # أوسع
-RSI_SHORT = (28, 65)             # أوسع
-RSI_OVERBOUGHT_BLOCK = 72        # منع الشراء فوق هذا
-RSI_OVERSOLD_BLOCK = 32          # منع البيع تحت هذا (الحل لمشكلة BNB)
+RSI_LONG = (35, 72)
+RSI_SHORT = (28, 65)
+RSI_OVERBOUGHT_BLOCK = 72
+RSI_OVERSOLD_BLOCK = 32
 
-SL_MIN_ATR, SL_MAX_ATR = 2.0, 4.5   # أوسع بكثير (مثل أبو تركي)
-TP1_R, TP2_R, TP1_PART = 1.0, 2.0, 0.50
-BE_R = -0.1
-TRAIL_ATR = 3.0
+# الوقف (ATR multiplier) - أوسع
+SL_MIN_ATR, SL_MAX_ATR = 2.0, 4.5
+
+# ---- الأهداف كنسبة مئوية من الدخول ----
+TP_PCTS = [2.5, 5.0, 7.0, 10.0]      # الأهداف 1, 2, 3, 4
+TP_FRACS = [0.40, 0.30, 0.20, 0.10]  # توزيع الأرباح
+
+# BE والتريلينج
+BE_R = -0.1                          # نقل الوقف بعد TP1
+TRAIL_ATR = 3.0                      # Trail بعد TP2
+TRAIL_TRIGGER_TP = 2                 # يشتغل بعد TP2
+
 TIME_STOP_BARS, TIME_STOP_R = 10, 0.3
 MAX_HOLD = 60
 ORDER_EXPIRE = 2
@@ -205,56 +220,34 @@ def add_ind(df):
     return df
 
 
-# ============================ الاستراتيجية v4 ============================
+# ============================ الاستراتيجية v5 ============================
 def cond_frame(df, d):
-    """شروط الإعداد. d=+1 شراء، d=-1 بيع."""
     c = pd.DataFrame(index=df.index)
-
-    # 1. الاتجاه
     c["trend"] = (d * (df.ema50 - df.ema200) > 0) & (d * (df.c - df.ema200) > 0)
-
-    # 2. ADX
     c["adx"] = (df.adx > ADX_MIN) & (df.adx > df.adx.shift(3))
-
-    # 3. تقلب
     c["vol"] = df.atrp >= ATRP_MIN
-
-    # 4. Pullback
     touch = (df.l <= df.ema20) if d == 1 else (df.h >= df.ema20)
     c["pullback"] = touch.astype(float).rolling(5).max() > 0
-
-    # 5. RSI (مع الحماية من التشبع)
     lo, hi = RSI_LONG if d == 1 else RSI_SHORT
     rsi_ok = df.rsi.between(lo, hi)
     if d == -1:
-        # v4: ممنوع البيع في التشبع البيعي (RSI < 32)
         rsi_ok = rsi_ok & (df.rsi > RSI_OVERSOLD_BLOCK)
     c["rsi"] = rsi_ok
-
-    # 6. شمعة تأكيد (مرن)
     if d == 1:
         c["confirm"] = (df.c > df.o) | (df.c > df.c.shift())
     else:
         c["confirm"] = (df.c < df.o) | (df.c < df.c.shift())
-
-    # 7. Breakout Hunter
     c["breakout"] = (d * (df.c - df.h.shift(1)) > 0) & (df.rvol > BREAKOUT_RVOL)
-
-    # 8. Gray Zone
     if d == 1:
         c["gray_zone"] = df.rsi.between(45, 70) & (df.c > df.ema20) & (df.ema20 > df.ema50)
     else:
         c["gray_zone"] = df.rsi.between(30, 55) & (df.c < df.ema20) & (df.ema20 < df.ema50)
-
-    # 9. v4: حماية إضافية - ممنوع الشراء فوق 72 إلا بـ Breakout
     if d == 1:
         c["confirm"] = c["confirm"] & ((df.rsi < RSI_OVERBOUGHT_BLOCK) | c["breakout"])
-
     return c.fillna(False)
 
 
 def trade_levels(df, i, d):
-    """وقف أوسع (مثل أبو تركي)."""
     r = df.iloc[i]
     a = float(r.atr)
     entry = (r.h if d == 1 else r.l) + d * 0.02 * a
@@ -264,9 +257,14 @@ def trade_levels(df, i, d):
     return float(entry), float(entry - d * dist), float(dist)
 
 
+def build_targets(entry, d):
+    return [(entry * (1 + d * pct / 100.0), pct, frac)
+            for pct, frac in zip(TP_PCTS, TP_FRACS)]
+
+
 COND_AR = {
     "btc": "نظام BTC متوافق (EMA200 يومي)",
-    "trend": "اتجاه 4h (EMA50/200)",
+    "trend": "اتجاه (EMA50/200)",
     "d1": "اتجاه 1d متوافق",
     "adx": f"ADX>{ADX_MIN} وصاعد",
     "vol": "تقلب كافٍ",
@@ -289,21 +287,23 @@ def btc_regime():
 
 
 def analyze(sym):
-    df4, ex4 = fetch_ohlcv(sym, MAIN_TF, 400)
+    tf = get_tf(sym)  # العملات الرئيسية على اليومي، الباقي على 4h
+    df_main, ex_main = fetch_ohlcv(sym, tf, 400)
     cg = coingecko_info(sym)
-    src = {MAIN_TF: ex4}
-    if df4 is None and cg:
-        df4 = coingecko_ohlc(cg[1])
-        ex4 = "coingecko"
-        src = {MAIN_TF: ex4}
-    if df4 is None:
+    src = {tf: ex_main}
+    if df_main is None and cg:
+        df_main = coingecko_ohlc(cg[1])
+        ex_main = "coingecko"
+        src = {tf: ex_main}
+    if df_main is None:
         return None
 
-    live_price = float(df4.iloc[-1].c)
-    d4 = add_ind(df4.iloc[:-1]).reset_index(drop=True)
+    live_price = float(df_main.iloc[-1].c)
+    d4 = add_ind(df_main.iloc[:-1]).reset_index(drop=True)
     i = len(d4) - 1
     last = d4.iloc[i]
 
+    # الفريم اليومي كمرجع
     d1df, ex1 = fetch_ohlcv(sym, "1d", 320)
     d1_dir = 0
     d1_close = d1_ema20 = None
@@ -317,7 +317,7 @@ def analyze(sym):
     breg = btc_regime()
     rs = 0.0
     if sym != "BTC":
-        bdf, _ = fetch_ohlcv("BTC", MAIN_TF, 400)
+        bdf, _ = fetch_ohlcv("BTC", tf, 400)
         if bdf is not None and len(bdf) > 200 and len(d4) > 200:
             rs = (float(d4.c.iloc[-1]) / float(d4.c.iloc[-181]) -
                   float(bdf.c.iloc[-2]) / float(bdf.c.iloc[-182]))
@@ -332,25 +332,20 @@ def analyze(sym):
         cf["rs"] = True if rs is None else ((rs > 0) if d == 1 else (rs < 0))
         results[d] = cf
 
-    # v4: اختيار الاتجاه - الأولوية لـ BTC regime + عدد الشروط
-    n1 = sum(1 for k, v in results[1].items() if v and k not in ("rs",))
-    n2 = sum(1 for k, v in results[-1].items() if v and k not in ("rs",))
+    n1 = sum(1 for k, v in results[1].items() if v and k != "rs")
+    n2 = sum(1 for k, v in results[-1].items() if v and k != "rs")
 
-    # v4: إذا BTC صاعد، فضّل الشراء
     if sym != "BTC":
         if breg == 1:
-            n1 += 3   # bonus للشراء
+            n1 += 3
         elif breg == -1:
-            n2 += 3   # bonus للبيع
+            n2 += 3
 
-    # v4: RSI الحالي للتحقق
     current_rsi = float(last.rsi)
 
-    # v4: منع البيع في التشبع البيعي القوي
     if current_rsi < RSI_OVERSOLD_BLOCK:
-        n2 = 0   # اجبار الشراء أو الانتظار
+        n2 = 0
 
-    # v4: منع الشراء في التشبع الشرائي إلا Breakout
     cf_long = cond_frame(d4, 1).iloc[i].to_dict()
     if current_rsi > RSI_OVERBOUGHT_BLOCK and not cf_long.get("breakout"):
         n1 = 0
@@ -360,19 +355,14 @@ def analyze(sym):
     else:
         d = 1 if last.ema50 >= last.ema200 else -1
 
-    # v4: منع البيع إذا الاتجاه اليومي صاعد
     if d == -1 and d1_close and d1_ema20 and d1_close > d1_ema20 * 1.02:
-        d = 1 if n1 > 0 else 0
-
-    if d == 0:
-        d = 1
+        d = 1 if n1 > 0 else 1
 
     conds = results[d]
     total = len(conds)
     ok = sum(conds.values())
     missing = [COND_AR[k] for k, v in conds.items() if not v]
 
-    # نوع الإعداد
     cf_row = cond_frame(d4, d).iloc[i].to_dict()
     is_breakout = cf_row.get("breakout") and cf_row.get("trend")
     is_pullback = (cf_row.get("trend") and cf_row.get("adx") and cf_row.get("vol")
@@ -380,17 +370,16 @@ def analyze(sym):
     is_gray = (cf_row.get("adx") and cf_row.get("vol")
                and cf_row.get("gray_zone") and cf_row.get("confirm"))
 
-    # تقييم الدرجة
+    core_ok = conds.get("btc") and conds.get("d1") and conds.get("trend")
     if ok == total or is_breakout:
         grade, status = "A", "إعداد مكتمل ✅"
-    elif ok >= total - 3 or is_pullback or is_gray:
+    elif core_ok or is_pullback or is_gray or ok >= total - 5:
         grade, status = "B", "إعداد شبه مكتمل ⏳"
     else:
         grade, status = "C", "إعداد ضعيف ⚠️"
 
     entry, sl, risk = trade_levels(d4, i, d)
-    tp1 = entry + d * TP1_R * risk
-    tp2 = entry + d * TP2_R * risk
+    targets = build_targets(entry, d)
 
     prices = fetch_prices(sym)
     funding = fetch_funding(sym)
@@ -405,16 +394,17 @@ def analyze(sym):
 
     return dict(sym=sym, d4=d4, side=d, grade=grade, status=status, ok=ok,
                 total=total, conds=conds, missing=missing, entry=entry,
-                sl=sl, risk=risk, tp1=tp1, tp2=tp2, price=live_price,
+                sl=sl, risk=risk, targets=targets, price=live_price,
                 atr=float(last.atr), rsi=float(last.rsi), adx=float(last.adx),
                 rs=rs, prices=prices, funding=funding, warn=warn, cg=cg,
-                src=src, breg=breg,
+                src=src, breg=breg, tf=tf,
                 is_pullback=is_pullback, is_breakout=is_breakout, is_gray=is_gray)
 
 
 # ============================ Backtest ============================
 def backtest(sym, bars=3000):
-    df, ex = fetch_ohlcv(sym, MAIN_TF, bars, ttl=900)
+    tf = get_tf(sym)
+    df, ex = fetch_ohlcv(sym, tf, bars, ttl=900)
     if df is None:
         return None
     df = add_ind(df.iloc[:-1]).reset_index(drop=True)
@@ -425,7 +415,7 @@ def backtest(sym, bars=3000):
     if sym == "BTC":
         reg = (df.c > ema(df.c, 1200)).astype(int) * 2 - 1
     else:
-        bdf, _ = fetch_ohlcv("BTC", MAIN_TF, bars, ttl=900)
+        bdf, _ = fetch_ohlcv("BTC", tf, bars, ttl=900)
         if bdf is None:
             return None
         bdf = bdf.iloc[:-1].copy()
@@ -467,37 +457,56 @@ def backtest(sym, bars=3000):
         if risk <= 0:
             i = fill + 1
             continue
-        tp1 = px + d * TP1_R * risk
-        rem, realized, tp1_done = 1.0, 0.0, False
+
+        targets = build_targets(px, d)
+        rem, realized = 1.0, 0.0
+        tp_hits = [False] * len(targets)
         cur_sl, ext = sl, px
         exit_i, reason = None, "max_hold"
+        tp1_done = False
+        tp2_done = False
+
         for k in range(fill, min(fill + MAX_HOLD + 1, n)):
             hit_sl = (L[k] <= cur_sl) if d == 1 else (H[k] >= cur_sl)
             if hit_sl:
                 realized += rem * d * (cur_sl - px) / risk
                 rem, exit_i = 0.0, k
-                reason = "trail" if tp1_done else "sl"
+                reason = "trail" if (tp1_done or tp2_done) else "sl"
                 break
-            if not tp1_done and ((H[k] >= tp1) if d == 1 else (L[k] <= tp1)):
-                realized += TP1_PART * TP1_R
-                rem -= TP1_PART
-                tp1_done = True
+
+            for ti, (tp_px, tp_pct, frac) in enumerate(targets):
+                if tp_hits[ti]:
+                    continue
+                if (d == 1 and H[k] >= tp_px) or (d == -1 and L[k] <= tp_px):
+                    realized += frac * (tp_pct / 100.0) * px / risk
+                    rem -= frac
+                    tp_hits[ti] = True
+                    if ti == 0:
+                        tp1_done = True
+                    if ti == 1:
+                        tp2_done = True
+
             ext = max(ext, H[k]) if d == 1 else min(ext, L[k])
-            if tp1_done:
-                if (d == 1 and C[k] > tp1) or (d == -1 and C[k] < tp1):
-                    cur_sl = max(cur_sl, px + d * BE_R * risk) if d == 1 else min(cur_sl, px + d * BE_R * risk)
+
+            if tp1_done and ((d == 1 and C[k] > targets[0][0]) or (d == -1 and C[k] < targets[0][0])):
+                cur_sl = max(cur_sl, px + d * BE_R * risk) if d == 1 else min(cur_sl, px + d * BE_R * risk)
+
+            if tp2_done:
                 trail = ext - d * TRAIL_ATR * ATR[k]
                 cur_sl = max(cur_sl, trail) if d == 1 else min(cur_sl, trail)
+
             bars_held = k - fill
             if (not tp1_done and bars_held >= TIME_STOP_BARS and
                     d * (C[k] - px) / risk < TIME_STOP_R):
                 realized += rem * d * (C[k] - px) / risk
                 rem, exit_i, reason = 0.0, k, "time"
                 break
+
         if rem > 0:
             k = min(fill + MAX_HOLD, n - 1)
             realized += rem * d * (C[k] - px) / risk
             exit_i = k
+
         cost = 2 * (FEE + SLIP) * px / risk
         trades.append(dict(side=d, R=realized - cost, reason=reason, t=df.t[fill]))
         cooldown_until = exit_i + COOLDOWN
@@ -516,7 +525,7 @@ def backtest(sym, bars=3000):
                 avg=R.mean(), total=R.sum(), dd=dd, reasons=reasons,
                 pf_a=R[:half][R[:half] > 0].sum() / max(-R[:half][R[:half] < 0].sum(), 1e-9) if half > 5 else None,
                 pf_b=R[half:][R[half:] > 0].sum() / max(-R[half:][R[half:] < 0].sum(), 1e-9) if half > 5 else None,
-                bars=n)
+                bars=n, tf=tf)
 
 
 def bt_text(sym, r):
@@ -526,7 +535,7 @@ def bt_text(sym, r):
         return f"{sym}: لم تظهر أي صفقة بهذه الشروط."
     verdict = ("✅ مقبول (مع حذر)" if r["pf"] >= 1.3 and r["n"] >= 30
                else "⚠️ ضعيف أو عينة صغيرة")
-    return (f"📊 <b>Backtest {sym}/USDT</b> ({MAIN_TF}, {r['bars']} شمعة)\n"
+    return (f"📊 <b>Backtest {sym}/USDT</b> ({r['tf']}, {r['bars']} شمعة)\n"
             f"الصفقات: {r['n']}\n"
             f"WR: {r['wr']:.1f}%   PF: {r['pf']:.2f}\n"
             f"متوسط R: {r['avg']:+.2f}   مجموع R: {r['total']:+.1f}\n"
@@ -576,15 +585,18 @@ def make_chart(res):
     ax.axhline(hi60, color="#8892a6", lw=0.7, ls=":")
     ax.axhline(lo60, color="#8892a6", lw=0.7, ls=":")
 
-    levels = [(res["entry"], "ENTRY", "#ffffff"), (res["sl"], "STOP", "#ff4d4d"),
-              (res["tp1"], "TP1 (1R)", "#16c784"), (res["tp2"], "TP2 (2R)", "#16c784")]
+    levels = [(res["entry"], "ENTRY", "#ffffff"), (res["sl"], "STOP", "#ff4d4d")]
+    for i, (tp_px, tp_pct, frac) in enumerate(res["targets"], 1):
+        levels.append((tp_px, f"TP{i} ({tp_pct}%)", "#16c784"))
+
     x_end = len(df) - 1
     for p, name, col in levels:
         ax.axhline(p, color=col, lw=0.9, ls="--", alpha=0.85)
         ax.text(x_end + 0.5, p, f" {name} {fmt(p)}", color=col, fontsize=8,
                 va="center", fontweight="bold")
-    lo = min(df.l.min(), res["sl"], res["tp2"], res["tp1"])
-    hi = max(df.h.max(), res["sl"], res["tp2"], res["tp1"])
+
+    lo = min(df.l.min(), res["sl"], min(t[0] for t in res["targets"]))
+    hi = max(df.h.max(), res["sl"], max(t[0] for t in res["targets"]))
     pad = (hi - lo) * 0.05
     ax.set_ylim(lo - pad, hi + pad)
     ax.set_xlim(-1, len(df) + 16)
@@ -611,179 +623,10 @@ def make_chart(res):
 
     side_col = up_c if d == 1 else dn_c
     mode = "🚀 BREAKOUT" if res.get("is_breakout") else ("🎯 PULLBACK" if res.get("is_pullback") else ("🌫️ GRAY" if res.get("is_gray") else "SETUP"))
-    ax.set_title(f"{res['sym']}/USDT • {MAIN_TF} • {'LONG' if d == 1 else 'SHORT'} "
+    ax.set_title(f"{res['sym']}/USDT • {res['tf'].upper()} • {'LONG' if d == 1 else 'SHORT'} "
                  f"• Grade {res['grade']} ({res['ok']}/{res['total']}) • {mode}",
                  color=side_col, fontsize=13, fontweight="bold", loc="left")
     ax.legend(loc="upper left", fontsize=8, facecolor=bg, edgecolor=bg, labelcolor=fg)
 
     fig.text(0.5, 0.5, WATERMARK, fontsize=70, color="white", alpha=0.10,
-             ha="center", va="center", rotation=25, fontweight="bold")
-    fig.text(0.985, 0.012, WATERMARK, fontsize=11, color="#f5c518",
-             ha="right", va="bottom", fontweight="bold")
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=130, facecolor=bg, bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return buf
-
-
-# ============================ الرسائل ============================
-def build_caption(r):
-    d = r["side"]
-    word = "شراء LONG 📈" if d == 1 else "بيع SHORT 📉"
-    gcol = {"A": "🟢", "B": "🟡", "C": "🔴"}[r["grade"]]
-    mark = "↑ كسر" if d == 1 else "↓ كسر"
-    mode = "🚀 Breakout" if r.get("is_breakout") else ("🎯 Pullback" if r.get("is_pullback") else ("🌫️ Gray Zone" if r.get("is_gray") else "⚙️ Setup"))
-    lines = [
-        f"<b>#{r['sym']}/USDT</b>",
-        f"🎯 <b>التوصية: {word}</b>",
-        f"{gcol} الدرجة: <b>{r['grade']}</b> ({r['ok']}/{r['total']}) - {r['status']}",
-        f"🔍 النوع: {mode}",
-        "",
-        f"💰 السعر الحالي: <code>{fmt(r['price'])}</code>",
-        f"🚪 الدخول ({mark}): <code>{fmt(r['entry'])}</code>",
-        f"🛑 الوقف: <code>{fmt(r['sl'])}</code>",
-        f"✅ هدف 1 (1R، أغلق 50%): <code>{fmt(r['tp1'])}</code>",
-        f"✅ هدف 2 (2R): <code>{fmt(r['tp2'])}</code>",
-        "🔁 الباقي: Trail = قمة/قاع - 3×ATR",
-        f"📌 بعد إغلاق شمعة 4h خلف هدف 1: انقل الوقف إلى -0.1R",
-        f"RSI {r['rsi']:.0f} | ADX {r['adx']:.0f}",
-        f"<b>{WATERMARK}</b>",
-    ]
-    return "\n".join(lines)[:1000]
-
-
-def build_details(r):
-    ok = [COND_AR[k] for k, v in r["conds"].items() if v]
-    lines = ["<b>تفاصيل الإعداد</b>"]
-    lines += [f"✅ {x}" for x in ok]
-    lines += [f"❌ {x}" for x in r["missing"]]
-    if r["warn"]:
-        lines += [""] + [f"⚠️ {w}" for w in r["warn"]]
-    if r["prices"]:
-        import statistics
-        lines.append(f"\n🏦 {len(r['prices'])} منصات - متوسط السعر "
-                     f"{fmt(statistics.median(r['prices'].values()))}")
-    if r["rs"] is not None:
-        lines.append(f"📐 القوة النسبية مقابل BTC (30 يوم): {r['rs']*100:+.1f}%")
-    if r["cg"]:
-        m = r["cg"][0]
-        ch = m.get("price_change_percentage_24h")
-        if ch is not None:
-            lines.append(f"🌐 CoinGecko 24h: {ch:+.2f}% | Rank #{m.get('market_cap_rank')}")
-    lines += ["", "ℹ️ الدرجة A = كل الشروط، B = ينقص حتى 3 شروط، "
-                  "C = إعداد ضعيف.",
-              "⚠️ تحليل فني آلي وليس نصيحة مالية. خاطر بحد أقصى 1% من رأس المال."]
-    return "\n".join(lines)
-
-
-# ============================ تيليجرام ============================
-async def run_analysis(sym):
-    res = await asyncio.to_thread(analyze, sym)
-    if not res:
-        return None
-    img = await asyncio.to_thread(make_chart, res)
-    return res, img
-
-
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 أهلاً بك في <b>ryma crypto</b>\n"
-        "• أرسل اسم العملة: <code>BTC</code>\n"
-        "• <code>/post BTC</code> نشر في القناة\n"
-        "• <code>/bt BTC</code> اختبار تاريخي\n"
-        "• <code>/scan</code> أفضل الإعدادات الآن",
-        parse_mode=ParseMode.HTML)
-
-
-async def handle_symbol(update, ctx, text, to_channel=False):
-    sym = clean_symbol(text)
-    if not sym:
-        await update.message.reply_text("اكتب اسم العملة مثل BTC")
-        return
-    wait = await update.message.reply_text(f"⏳ جاري تحليل {sym} ...")
-    try:
-        out = await run_analysis(sym)
-        if out is None:
-            await wait.edit_text(f"❌ لم أجد بيانات للعملة {sym}")
-            return
-        res, img = out
-        target = CHANNEL_ID if (to_channel and CHANNEL_ID) else update.effective_chat.id
-        await ctx.bot.send_photo(target, photo=img, caption=build_caption(res),
-                                 parse_mode=ParseMode.HTML)
-        await ctx.bot.send_message(target, build_details(res), parse_mode=ParseMode.HTML)
-        await wait.delete()
-        if to_channel and CHANNEL_ID:
-            await update.message.reply_text("✅ تم النشر في القناة")
-    except Exception as e:
-        log.exception("analysis failed")
-        await wait.edit_text(f"⚠️ خطأ: {e}")
-
-
-async def cmd_analyze(update, ctx):
-    if not ctx.args:
-        await update.message.reply_text("مثال: /a BTC")
-        return
-    await handle_symbol(update, ctx, ctx.args[0])
-
-
-async def cmd_post(update, ctx):
-    if not ctx.args:
-        await update.message.reply_text("مثال: /post BTC")
-        return
-    await handle_symbol(update, ctx, ctx.args[0], to_channel=True)
-
-
-async def cmd_bt(update, ctx):
-    if not ctx.args:
-        await update.message.reply_text("مثال: /bt BTC")
-        return
-    sym = clean_symbol(ctx.args[0])
-    wait = await update.message.reply_text(f"⏳ Backtest {sym}...")
-    try:
-        r = await asyncio.to_thread(backtest, sym)
-        await wait.edit_text(bt_text(sym, r), parse_mode=ParseMode.HTML)
-    except Exception as e:
-        log.exception("bt failed")
-        await wait.edit_text(f"⚠️ خطأ: {e}")
-
-
-async def cmd_scan(update, ctx):
-    wait = await update.message.reply_text("⏳ فحص القائمة ...")
-    rows = []
-    for sym in SCAN_LIST:
-        try:
-            r = await asyncio.to_thread(analyze, sym)
-            if r:
-                rows.append(r)
-        except Exception:
-            continue
-    rows.sort(key=lambda x: (-x["ok"], x["sym"]))
-    lines = ["<b>أفضل الإعدادات الآن</b>"]
-    for r in rows[:10]:
-        s = "LONG 📈" if r["side"] == 1 else "SHORT 📉"
-        mode = "🚀" if r.get("is_breakout") else ("🎯" if r.get("is_pullback") else ("🌫️" if r.get("is_gray") else "⚙️"))
-        lines.append(f"{r['grade']} | {mode} | {r['sym']} | {s} | {r['ok']}/{r['total']}")
-    lines.append("\nأرسل اسم العملة لتحصل على الشارت.")
-    await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
-
-
-async def on_text(update, ctx):
-    await handle_symbol(update, ctx, update.message.text.split()[0])
-
-
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler(["a", "analyze"], cmd_analyze))
-    app.add_handler(CommandHandler("post", cmd_post))
-    app.add_handler(CommandHandler("bt", cmd_bt))
-    app.add_handler(CommandHandler("scan", cmd_scan))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    log.info("Ryma Crypto Pro v4 is running...")
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+             ha="center",
