@@ -38,9 +38,9 @@ TRAIL_ATR_MULT = 2.0   # التريلينج ستوب = 2.0 ATR
 TRAIN_SPLIT = 0.7
 
 # ==========================================
-# 📥 دالة جلب البيانات (تم التعديل إلى Bybit)
+# 📥 دالة جلب البيانات (تم التعديل إلى OKX)
 # ==========================================
-exchange = ccxt.bybit({
+exchange = ccxt.okx({
     'enableRateLimit': True,
     'options': {'defaultType': 'spot'}  # استخدام بيانات السبوت
 })
