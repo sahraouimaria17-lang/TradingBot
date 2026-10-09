@@ -41,14 +41,9 @@ COOLDOWN = 6
 FEE = 0.0008             # لكل جهة
 SLIP = 0.0005            # لكل جهة
 
-# v12.5.2: Breakout Hunter thresholds
-BREAKOUT_RVOL = 1.5      # فوليوم أعلى من المتوسط بـ 1.5x
-GRAY_RSI_LONG = (45, 75) # منطقة رمادية للشراء في الاتجاه الصاعد
-GRAY_RSI_SHORT = (25, 55)
-
 SCAN_LIST = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK",
              "DOT", "NEAR", "SUI", "ARB", "OP", "INJ", "AAVE", "UNI", "LTC",
-             "ATOM", "TRX", "KAIA", "RLC", "AKE"]
+             "ATOM", "TRX"]
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
@@ -202,16 +197,13 @@ def add_ind(df):
     df["bb_up"], df["bb_lo"] = ma + 2 * sd, ma - 2 * sd
     atrp = df["atr"] / df["c"]
     df["atrp"] = atrp.rolling(100).apply(lambda x: (x[-1] >= x).mean() * 100, raw=True)
-    df["rvol"] = df["v"] / df["v"].rolling(20).mean()
     return df
 
 
-# ============================ الاستراتيجية v12.5.2 ============================
+# ============================ الاستراتيجية ============================
 def cond_frame(df, d):
-    """شروط الإعداد. d=+1 شراء، d=-1 بيع."""
+    """شروط الإعداد على كل شمعة. d=+1 شراء، d=-1 بيع."""
     c = pd.DataFrame(index=df.index)
-
-    # --- الشروط الأصلية (Pullback) ---
     c["trend"] = (d * (df.ema50 - df.ema200) > 0) & (d * (df.c - df.ema200) > 0)
     c["adx"] = (df.adx > ADX_MIN) & (df.adx > df.adx.shift(3))
     c["vol"] = df.atrp >= ATRP_MIN
@@ -219,51 +211,11 @@ def cond_frame(df, d):
     c["pullback"] = touch.astype(float).rolling(5).max() > 0
     lo, hi = RSI_LONG if d == 1 else RSI_SHORT
     c["rsi"] = df.rsi.between(lo, hi)
-
     if d == 1:
         c["confirm"] = (df.c > df.o) & (df.c > df.c.shift())
     else:
         c["confirm"] = (df.c < df.o) & (df.c < df.c.shift())
-
-    # --- v12.5.2 إضافات: Breakout Hunter + Gray Zone ---
-    # صيد الصواريخ: كسر أعلى قمة آخر شمعة مع فوليوم عالي
-    c["breakout"] = (d * (df.c - df.h.shift(1)) > 0) & (df.rvol > BREAKOUT_RVOL)
-
-    # المنطقة الرمادية: اتجاه واضح + RSI في منتصف النطاق
-    if d == 1:
-        c["gray_zone"] = (df.rsi.between(*GRAY_RSI_LONG)) & (df.c > df.ema20) & (df.ema20 > df.ema50)
-    else:
-        c["gray_zone"] = (df.rsi.between(*GRAY_RSI_SHORT)) & (df.c < df.ema20) & (df.ema20 < df.ema50)
-
     return c.fillna(False)
-
-
-def entry_signal(cf_row, d):
-    """
-    v12.5.2: منطق قرار مرن
-    1. Pullback مكتمل (الأصلية)
-    2. OR Breakout Hunter (صيد الصواريخ)
-    3. OR Gray Zone (المنطقة الرمادية في اتجاه واضح)
-    """
-    # Pullback الأصلية
-    pullback_setup = (cf_row.get("trend", False) and
-                      cf_row.get("adx", False) and
-                      cf_row.get("vol", False) and
-                      cf_row.get("pullback", False) and
-                      cf_row.get("rsi", False) and
-                      cf_row.get("confirm", False))
-
-    # Breakout Hunter
-    breakout_setup = (cf_row.get("trend", False) and
-                      cf_row.get("breakout", False))
-
-    # Gray Zone
-    gray_setup = (cf_row.get("adx", False) and
-                  cf_row.get("vol", False) and
-                  cf_row.get("gray_zone", False) and
-                  cf_row.get("confirm", False))
-
-    return pullback_setup or breakout_setup or gray_setup
 
 
 def trade_levels(df, i, d):
@@ -287,13 +239,11 @@ COND_AR = {
     "rsi": "RSI في المنطقة المناسبة",
     "confirm": "شمعة تأكيد",
     "rs": "قوة نسبية مقابل BTC",
-    "breakout": "اختراق (Breakout) مع فوليوم عالي",
-    "gray_zone": "منطقة رمادية في اتجاه واضح",
 }
 
 
 def btc_regime():
-    """+1 صاعد / -1 هابط حسب BTC يومي."""
+    """+1 صاعد / -1 هابط حسب BTC يومي، مع تفاصيل."""
     df, _ = fetch_ohlcv("BTC", "1d", 320)
     if df is None:
         return 0
@@ -320,12 +270,9 @@ def analyze(sym):
 
     d1df, ex1 = fetch_ohlcv(sym, "1d", 320)
     d1_dir = 0
-    d1_close = d1_ema20 = None
     if d1df is not None:
         d1 = add_ind(d1df.iloc[:-1])
         d1_dir = 1 if d1.iloc[-1].c > d1.iloc[-1].ema200 else -1
-        d1_close = float(d1.iloc[-1].c)
-        d1_ema20 = float(d1.iloc[-1].ema20)
         src["1d"] = ex1
 
     breg = btc_regime()
@@ -346,44 +293,22 @@ def analyze(sym):
         cf["rs"] = True if rs is None else ((rs > 0) if d == 1 else (rs < 0))
         results[d] = cf
 
-    # v12.5.2: فلتر يومي ذكي - منع البيع في الاتجاه الصاعد
-    blocked_short = False
-    if d1_close is not None and d1_ema20 is not None and d1_close > d1_ema20 * 1.02:
-        blocked_short = True
-
-    n1 = sum(1 for k, v in results[1].items() if v and k not in ("rs",))
-    n2 = sum(1 for k, v in results[-1].items() if v and k not in ("rs",))
+    n1, n2 = sum(results[1].values()), sum(results[-1].values())
     if n1 != n2:
         d = 1 if n1 > n2 else -1
     else:
         d = 1 if last.ema50 >= last.ema200 else -1
-
-    # فلتر: إذا اخترنا بيع والفريم اليومي صاعد، امنع
-    if d == -1 and blocked_short:
-        d = 1 if n1 > 0 else 0
-
-    if d == 0:
-        d = 1 if last.ema50 >= last.ema200 else -1
-
     conds = results[d]
     total = len(conds)
     ok = sum(conds.values())
     missing = [COND_AR[k] for k, v in conds.items() if not v]
 
-    # v12.5.2: منطق قرار جديد
-    cf_row = cond_frame(d4, d).iloc[i].to_dict()
-    is_pullback = (cf_row.get("trend") and cf_row.get("adx") and cf_row.get("vol")
-                   and cf_row.get("pullback") and cf_row.get("rsi") and cf_row.get("confirm"))
-    is_breakout = (cf_row.get("trend") and cf_row.get("breakout"))
-    is_gray = (cf_row.get("adx") and cf_row.get("vol")
-               and cf_row.get("gray_zone") and cf_row.get("confirm"))
-
-    if ok == total or is_breakout:
+    if ok == total:
         grade, status = "A", "إعداد مكتمل ✅"
-    elif ok >= total - 2 or is_pullback or is_gray:
+    elif ok >= total - 2:
         grade, status = "B", "إعداد شبه مكتمل ⏳"
     else:
-        grade, status = "C", "إعداد ضعيف ⚠️"
+        grade, status = "C", "إعداد ضعيف ⚠️ (حجم صغير أو انتظار)"
 
     entry, sl, risk = trade_levels(d4, i, d)
     tp1 = entry + d * TP1_R * risk
@@ -405,8 +330,7 @@ def analyze(sym):
                 sl=sl, risk=risk, tp1=tp1, tp2=tp2, price=live_price,
                 atr=float(last.atr), rsi=float(last.rsi), adx=float(last.adx),
                 rs=rs, prices=prices, funding=funding, warn=warn, cg=cg,
-                src=src, breg=breg,
-                is_pullback=is_pullback, is_breakout=is_breakout, is_gray=is_gray)
+                src=src, breg=breg)
 
 
 # ============================ Backtest ============================
@@ -419,6 +343,7 @@ def backtest(sym, bars=3000):
     if n < 500:
         return None
 
+    # نظام BTC: BTC 4h فوق EMA1200 (تقريباً EMA200 يومي)
     if sym == "BTC":
         reg = (df.c > ema(df.c, 1200)).astype(int) * 2 - 1
     else:
@@ -429,16 +354,10 @@ def backtest(sym, bars=3000):
         bdf["reg"] = (bdf.c > ema(bdf.c, 1200)).astype(int) * 2 - 1
         reg = pd.merge_asof(df[["t"]], bdf[["t", "reg"]], on="t")["reg"].fillna(0)
 
-    # v12.5.2: استخدام منطق قرار مرن (Pullback OR Breakout OR Gray)
     sigs = {}
     for d in (1, -1):
         cf = cond_frame(df, d)
-        # منطق القرار المرن
-        pullback = (cf["trend"] & cf["adx"] & cf["vol"] & cf["pullback"] & cf["rsi"] & cf["confirm"])
-        breakout = (cf["trend"] & cf["breakout"])
-        gray = (cf["adx"] & cf["vol"] & cf["gray_zone"] & cf["confirm"])
-        signal = pullback | breakout | gray
-        sigs[d] = (signal & (reg.values == d)).values
+        sigs[d] = (cf.all(axis=1) & (reg.values == d)).values
 
     H, L, C, O = df.h.values, df.l.values, df.c.values, df.o.values
     ATR = df.atr.values
@@ -610,10 +529,9 @@ def make_chart(res):
     ax.yaxis.tick_right()
 
     side_col = up_c if d == 1 else dn_c
-    mode = "BREAKOUT" if res.get("is_breakout") else ("PULLBACK" if res.get("is_pullback") else ("GRAY" if res.get("is_gray") else "SETUP"))
     ax.set_title(f"{res['sym']}/USDT • {MAIN_TF} • {'LONG' if d == 1 else 'SHORT'} "
-                 f"• Grade {res['grade']} ({res['ok']}/{res['total']}) • {mode}",
-                 color=side_col, fontsize=13, fontweight="bold", loc="left")
+                 f"• Grade {res['grade']} ({res['ok']}/{res['total']})",
+                 color=side_col, fontsize=14, fontweight="bold", loc="left")
     ax.legend(loc="upper left", fontsize=8, facecolor=bg, edgecolor=bg, labelcolor=fg)
 
     fig.text(0.5, 0.5, WATERMARK, fontsize=70, color="white", alpha=0.10,
@@ -634,12 +552,10 @@ def build_caption(r):
     word = "شراء LONG 📈" if d == 1 else "بيع SHORT 📉"
     gcol = {"A": "🟢", "B": "🟡", "C": "🔴"}[r["grade"]]
     mark = "↑ كسر" if d == 1 else "↓ كسر"
-    mode = "🚀 Breakout" if r.get("is_breakout") else ("🎯 Pullback" if r.get("is_pullback") else ("🌫️ Gray Zone" if r.get("is_gray") else "⚙️ Setup"))
     lines = [
         f"<b>#{r['sym']}/USDT</b>",
         f"🎯 <b>التوصية: {word}</b>",
         f"{gcol} الدرجة: <b>{r['grade']}</b> ({r['ok']}/{r['total']}) - {r['status']}",
-        f"🔍 النوع: {mode}",
         "",
         f"💰 السعر الحالي: <code>{fmt(r['price'])}</code>",
         f"🚪 الدخول ({mark}): <code>{fmt(r['entry'])}</code>",
@@ -765,8 +681,7 @@ async def cmd_scan(update, ctx):
     lines = ["<b>أفضل الإعدادات الآن</b>"]
     for r in rows[:10]:
         s = "LONG 📈" if r["side"] == 1 else "SHORT 📉"
-        mode = "🚀" if r.get("is_breakout") else ("🎯" if r.get("is_pullback") else ("🌫️" if r.get("is_gray") else "⚙️"))
-        lines.append(f"{r['grade']} | {mode} | {r['sym']} | {s} | {r['ok']}/{r['total']}")
+        lines.append(f"{r['grade']} | {r['sym']} | {s} | {r['ok']}/{r['total']}")
     lines.append("\nأرسل اسم العملة لتحصل على الشارت والمستويات.")
     await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
@@ -783,7 +698,7 @@ def main():
     app.add_handler(CommandHandler("bt", cmd_bt))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    log.info("Ryma Crypto Pro v12.5.2 is running...")
+    log.info("Ryma Crypto Pro is running...")
     app.run_polling()
 
 
