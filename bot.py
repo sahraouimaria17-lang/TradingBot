@@ -8,7 +8,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# ⚙️ إعدادات الباكتيست (الفريم اليومي)
+# ⚙️ إعدادات الباكتيست v12.5 (النسخة النهائية)
 # ==========================================
 COINS = [
     'ADA/USDT', 'AAVE/USDT', 'DOGE/USDT', 'INJ/USDT', 'BNB/USDT',
@@ -17,15 +17,18 @@ COINS = [
     'SUI/USDT', 'XRP/USDT', 'UNI/USDT', 'ARB/USDT', 'TRX/USDT'
 ]
 
-TIMEFRAME = '1d'  # <--- الفريم اليومي
-LIMIT_CANDLES = 1000  # حوالي 3 سنوات من البيانات
+TIMEFRAME_4H = '4h'
+TIMEFRAME_1D = '1d'
+LIMIT_CANDLES = 1000
 
+# إعدادات المؤشرات (v12.5)
 RSI_PERIOD = 14
-RSI_BUY = 42
-RSI_SELL = 58
+RSI_BUY = 45   # <--- تم التعديل
+RSI_SELL = 55  # <--- تم التعديل
 ATR_PERIOD = 14
-EMA_PERIOD = 50
+EMA_PERIOD = 20  # <--- تم التعديل (EMA 20 بدلاً من 50)
 
+# إعدادات إدارة المخاطر (نفس v12.4)
 SL_ATR_MULT = 1.5
 TP_R_MULTS = [1.0, 1.5, 2.5, 4.0]
 BE_TRIGGER_R = 1.0
@@ -42,6 +45,7 @@ exchange = ccxt.okx({
 
 def fetch_data(symbol, timeframe, limit=1000):
     try:
+        print(f"جلب بيانات {symbol} - {timeframe}...")
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -55,10 +59,12 @@ def calculate_indicators(df):
     df = df.copy()
     df['rsi'] = ta.rsi(df['close'], length=RSI_PERIOD)
     df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=ATR_PERIOD)
-    df['ema50'] = ta.ema(df['close'], length=EMA_PERIOD)
+    df['ema'] = ta.ema(df['close'], length=EMA_PERIOD)  # EMA 20
     return df
 
-def run_backtest(df):
+def run_backtest(df_4h, df_1d):
+    df_1d = df_1d[['close', 'ema']].rename(columns={'close': 'daily_close', 'ema': 'daily_ema'})
+    df = pd.merge_asof(df_4h, df_1d, left_index=True, right_index=True, direction='backward')
     df.dropna(inplace=True)
     
     trades = []
@@ -118,8 +124,10 @@ def run_backtest(df):
                     new_sl = current_price + trail_distance
                     if new_sl < sl_price: sl_price = new_sl
         else:
-            long_condition = (current_bar['rsi'] < RSI_BUY and current_bar['close'] > current_bar['ema50'])
-            short_condition = (current_bar['rsi'] > RSI_SELL and current_bar['close'] < current_bar['ema50'])
+            # شرط الشراء: RSI < 45 و السعر فوق EMA 20 على اليومي
+            long_condition = (current_bar['rsi'] < RSI_BUY and current_bar['daily_close'] > current_bar['daily_ema'])
+            # شرط البيع: RSI > 55 و السعر تحت EMA 20 على اليومي
+            short_condition = (current_bar['rsi'] > RSI_SELL and current_bar['daily_close'] < current_bar['daily_ema'])
             
             if long_condition:
                 in_position = True
@@ -170,21 +178,23 @@ def calculate_metrics(trades_df, split_ratio=0.7):
             'te_n': te_n, 'te_wr': te_wr, 'te_pf': te_pf, 'te_total': te_total}
 
 # ==========================================
-# 🚀 تشغيل الباكتيست (Daily Only)
+# 🚀 تشغيل الباكتيست
 # ==========================================
 if __name__ == "__main__":
     results = []
     
     for coin in COINS:
-        print(f"\n{'='*50}\nمعالجة {coin} (يومي)...\n{'='*50}")
-        df_raw = fetch_data(coin, TIMEFRAME, LIMIT_CANDLES)
+        print(f"\n{'='*50}\nمعالجة {coin}...\n{'='*50}")
+        df_4h_raw = fetch_data(coin, TIMEFRAME_4H, LIMIT_CANDLES)
+        df_1d_raw = fetch_data(coin, TIMEFRAME_1D, 200)
         
-        if df_raw.empty:
+        if df_4h_raw.empty or df_1d_raw.empty:
             print(f"تخطي {coin} بسبب نقص البيانات.")
             continue
             
-        df = calculate_indicators(df_raw)
-        trades = run_backtest(df)
+        df_4h = calculate_indicators(df_4h_raw)
+        df_1d = calculate_indicators(df_1d_raw)
+        trades = run_backtest(df_4h, df_1d)
         
         if trades.empty:
             print(f"لا توجد صفقات لـ {coin}.")
@@ -202,7 +212,7 @@ if __name__ == "__main__":
         columns_order = ['coin', 'type', 'tr_n', 'tr_wr', 'tr_pf', 'tr_total', 'te_n', 'te_wr', 'te_pf', 'te_total']
         results_df = results_df[columns_order]
         
-        output_filename = 'bt_1d_v12_4.csv'
+        output_filename = 'bt_4h_v12_5.csv'
         results_df.to_csv(output_filename, index=False)
         print(f"\n✅ تم حفظ النتائج بنجاح في {output_filename}")
         print(results_df.to_string(index=False))
