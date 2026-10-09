@@ -1,21 +1,3 @@
- 📄 v10.1 — Pullback Trend + Random Test
-
-التعديلات المطبقة من Claude:
-
-1. ✅ إزالة 15m و 1h من التحليل (4h + 1d فقط)
-2. ✅ إزالة TP 5R و 8R (بقاء TP1=2R و TP2=3.5R)
-3. ✅ SL ديناميكي (قاع pullback - 0.3 ATR، محصور 1.2-2.5 ATR)
-4. ✅ BE متأخر (بعد شمعة فوق 2R، عند -0.2R)
-5. ✅ Trail 2.0 ATR (بدل 1.0/1.5)
-6. ✅ MAX_HOLD 40 شمعة
-7. ✅ Time Stop (R < 0.3 بعد 10 شموع → اخرج)
-8. ✅ BTC Filter (لا Long إذا BTC تحت EMA200)
-9. ✅ ATR Filter (تجاهل إذا ATR% في أدنى 25%)
-10. ✅ Cool Down 6 شموع + صفقة واحدة لكل عملة
-11. ✅ Metrics: exit_reason, MFE, MAE, bars_held
-12. ✅ Random Entry Test
-
-```python
 import os, io, json, time, re, logging, threading, random
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor
