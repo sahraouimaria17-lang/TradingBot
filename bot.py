@@ -1,96 +1,132 @@
 import os
 import io
+import re
+import json
+import time
+import html
 import asyncio
 import logging
-import time
-import json
 import threading
+import functools
 import datetime as dt
+from concurrent.futures import ThreadPoolExecutor
 
-import requests
 import numpy as np
 import pandas as pd
+import requests
 import ccxt
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import (ApplicationBuilder, CommandHandler, MessageHandler,
-                          ContextTypes, filters, CallbackQueryHandler)
+                          ContextTypes, filters)
 
-# ============================ الإعدادات ============================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_TOKEN_HERE")
-CHANNEL_ID = os.getenv("CHANNEL_ID", "")
-VIP_CHANNEL_ID = os.getenv("VIP_CHANNEL_ID", "")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "7002618091"))
-GIST_ID = os.getenv("GIST_ID", "")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
-CONTACT_LINK = os.getenv("CONTACT_LINK", "@rym_rima1")
-VIP_LINK = os.getenv("VIP_LINK", "https://t.me/+gTMJiBiiC_IyZjZk")
+# ═══════════════════════════ الإعدادات ═══════════════════════════
+def _e(k, d=""):
+    return (os.getenv(k, d) or d).strip()
+
+
+def _int(k, d=0):
+    try:
+        return int(_e(k, str(d)))
+    except Exception:
+        return d
+
+
+def _chat(v):
+    v = (v or "").strip()
+    if not v:
+        return None
+    return int(v) if re.fullmatch(r"-?\d+", v) else v
+
+
+BOT_TOKEN = _e("BOT_TOKEN")
+CHANNEL = _chat(_e("CHANNEL_ID"))
+VIP_CHANNEL = _chat(_e("VIP_CHANNEL_ID"))
+ADMIN_ID = _int("ADMIN_ID", 0)
+GIST_ID = _e("GIST_ID")
+GITHUB_TOKEN = _e("GITHUB_TOKEN")
+CONTACT_LINK = _e("CONTACT_LINK", "@rym_rima1")
+VIP_LINK = _e("VIP_LINK")
+PAYMENT_INFO = _e("PAYMENT_INFO")
+PROFILE = _e("PROFILE", "spec").lower()
+PROTECT = _e("PROTECT_CONTENT", "1") == "1"
+
+BRAND = "ryma crypto"
+EXCHANGES = ["binance", "bybit", "okx", "kucoin", "gateio", "mexc", "bitget"]
+MAJORS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK",
+          "DOT", "LTC", "TRX"}
+COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT",
+         "LTC", "TRX", "ATOM", "NEAR", "UNI", "AAVE", "ARB", "OP", "INJ", "SUI"]
+STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "DAI", "BUSD", "USDP", "USDD", "USDE",
+           "PYUSD", "EUR", "AEUR"}
+PLANS = [("شهر", 30, 50), ("3 أشهر", 90, 100), ("سنة", 365, 300)]   # بالدولار
 
 TRIAL_DAYS = 7
 VIP_FORCE_DAY = 13
-PLANS = [("1m", 30, 50), ("3m", 90, 100), ("1y", 365, 300)]
-
-WATERMARK = "ryma crypto"
-EXCHANGES = ["binance", "bybit", "okx", "kucoin", "gateio", "mexc", "bitget"]
+FEE, SLIP = 0.0008, 0.0005
+TF_MS = {"4h": 14_400_000, "1d": 86_400_000}
+CANDLE_TTL, PRICE_TTL = 240, 60
+MIN_BARS = 215
 CHART_BARS = 90
-STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "DAI", "BUSD"}
+SCAN_WORKERS = 4
+MAX_OPEN = _int("MAX_OPEN", 10)
+VIP_POSTS_PER_CYCLE = _int("VIP_POSTS_PER_CYCLE", 5)
+FREE_POSTS_PER_CYCLE = _int("FREE_POSTS_PER_CYCLE", 2)
+FREE_MAX_PER_DAY = _int("FREE_MAX_PER_DAY", 6)
 
-MAJOR_COINS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE",
-               "AVAX", "LINK", "DOT", "LTC", "TRX"}
-
-
-def get_tf(sym):
-    return "1d" if sym in MAJOR_COINS else "4h"
-
-
-# ---- معاملات الاستراتيجية ----
-ADX_MIN = 12
-ATRP_MIN = 20
-RSI_LONG = (35, 72)
-RSI_SHORT = (28, 65)
-RSI_OVERBOUGHT_BLOCK = 72
-RSI_OVERSOLD_BLOCK = 32
-SL_MIN_ATR, SL_MAX_ATR = 2.0, 4.5
-TP_PCTS = [2.5, 5.0, 7.0, 10.0]
-TP_FRACS = [0.40, 0.30, 0.20, 0.10]
-BE_R = -0.1
-TRAIL_ATR = 3.0
-TIME_STOP_BARS, TIME_STOP_R = 10, 0.3
+# إدارة الصفقة
+ENTRY_ATR = 0.02          # الدخول = قمة/قاع الشمعة +/- 0.02 ATR
+SWING_N = 10              # عدد الشموع لحساب السعر الهيكلي
+TIME_STOP_BARS = 10       # إن لم يتحقق الهدف 1 خلالها يُغلق
 MAX_HOLD = 60
-ORDER_EXPIRE = 2
-COOLDOWN = 6
-FEE = 0.0008
-SLIP = 0.0005
-BREAKOUT_RVOL = 1.5
+PENDING_BARS = 2          # صلاحية أمر الدخول (عدد الشموع)
 
-SCAN_LIST = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK",
-             "DOT", "NEAR", "SUI", "ARB", "OP", "INJ", "AAVE", "UNI", "LTC",
-             "ATOM", "TRX", "KAIA", "RLC", "AKE"]
-
-AUTO_SCAN_INTERVAL = 4 * 3600
+PROFILES = {
+    "spec": dict(adx_min=12, atrp_min=20, rsi_long=(35, 72), rsi_short=(28, 65),
+                 short_rsi_floor=32, gray_long=(45, 70), gray_short=(30, 55),
+                 confirm_and=False, breakout_trend=False, loose_b=True,
+                 sl_min=2.0, sl_max=4.5,
+                 tp_mode="pct", tps=[2.5, 5.0, 7.0, 10.0], fracs=[0.4, 0.3, 0.2, 0.1],
+                 be_lock=-0.1, trail_atr=3.0, trail_after=2),
+    "safe": dict(adx_min=20, atrp_min=25, rsi_long=(40, 65), rsi_short=(35, 60),
+                 short_rsi_floor=0, gray_long=(45, 65), gray_short=(35, 55),
+                 confirm_and=True, breakout_trend=True, loose_b=False,
+                 sl_min=1.2, sl_max=2.5,
+                 tp_mode="r", tps=[2.0, 3.0, 5.0, 8.0], fracs=[0.33, 0.22, 0.20, 0.25],
+                 be_lock=-0.2, trail_atr=3.0, trail_after=1),
+}
+P = PROFILES.get(PROFILE, PROFILES["spec"])
+COND_KEYS = ["trend", "adx", "vol", "pullback", "rsi", "confirm",
+             "breakout", "gray_zone", "btc", "d1", "rs"]
+GRADE = {2: "A", 1: "B", 0: "C"}
 
 logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(message)s")
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("ryma")
+START_TS = time.time()
+DAY = 86400
 
-_ex_cache = {}
-_data_cache = {}
 
-# ============================ Store ============================
-DEFAULTS = {"users": {}, "vip": {}, "signals": [], "history": []}
+def now_s():
+    return int(time.time())
+
+
+# ═══════════════════════════ التخزين (Gist + ذاكرة) ═══════════════════════════
+KEYS = ["users", "vip", "signals", "history", "posted"]
+DEFAULTS = {"users": {}, "vip": {}, "signals": [], "history": [], "posted": {}}
 
 
 class Store:
-    def __init__(self):
+    def __init__(self, local_path="data_local.json"):
         self.lock = threading.RLock()
+        self.local_path = local_path
         self.data = json.loads(json.dumps(DEFAULTS))
         self.dirty = set()
-        self.remote_ok = False
-        self.remote_msg = "local only"
+        self.fname = {k: k + ".json" for k in KEYS}
+        self.remote_ok, self.remote_msg = False, "غير مضبوط (in-memory)"
         self._load()
 
     def _hdr(self):
@@ -98,28 +134,33 @@ class Store:
                 "Accept": "application/vnd.github+json"}
 
     def _load(self):
-        if not GIST_ID or not GITHUB_TOKEN:
-            return
-        try:
-            r = requests.get(f"https://api.github.com/gists/{GIST_ID}",
-                             headers=self._hdr(), timeout=20)
-            r.raise_for_status()
-            files = r.json().get("files", {})
-            for k in DEFAULTS:
-                name = next((n for n in (k + ".json", k) if n in files), None)
-                if not name:
-                    continue
-                f = files[name]
-                txt = f.get("content")
-                if f.get("truncated"):
-                    txt = requests.get(f["raw_url"], headers=self._hdr(),
-                                       timeout=20).text
-                if txt and txt.strip():
-                    self.data[k] = json.loads(txt)
-            self.remote_ok = True
-            self.remote_msg = "Gist OK"
-        except Exception as e:
-            self.remote_msg = f"Gist fail: {str(e)[:50]}"
+        if GIST_ID and GITHUB_TOKEN:
+            try:
+                r = requests.get(f"https://api.github.com/gists/{GIST_ID}",
+                                 headers=self._hdr(), timeout=20)
+                r.raise_for_status()
+                files = r.json().get("files", {})
+                for k in KEYS:
+                    f = files.get(k + ".json")
+                    if not f:
+                        continue
+                    txt = f.get("content")
+                    if f.get("truncated"):
+                        txt = requests.get(f["raw_url"], headers=self._hdr(), timeout=20).text
+                    val = json.loads(txt) if txt and txt.strip() else DEFAULTS[k]
+                    if type(val) is type(DEFAULTS[k]):
+                        self.data[k] = val
+                self.remote_ok, self.remote_msg = True, "Gist يعمل"
+                return
+            except Exception as e:
+                self.remote_msg = f"فشل Gist: {str(e)[:60]} (in-memory)"
+                log.warning("gist load failed: %s", e)
+        if os.path.exists(self.local_path):
+            try:
+                with open(self.local_path, encoding="utf-8") as fh:
+                    self.data.update(json.load(fh))
+            except Exception:
+                pass
 
     def save(self, *keys):
         with self.lock:
@@ -131,19 +172,24 @@ class Store:
             if not keys:
                 return
             snap = {k: json.dumps(self.data[k], ensure_ascii=False) for k in keys}
+            try:
+                with open(self.local_path, "w", encoding="utf-8") as fh:
+                    json.dump(self.data, fh, ensure_ascii=False)
+            except Exception:
+                pass
             if not self.remote_ok:
                 self.dirty.clear()
                 return
         try:
             r = requests.patch(f"https://api.github.com/gists/{GIST_ID}",
                                headers=self._hdr(), timeout=25,
-                               json={"files": {f"{k}.json": {"content": snap[k]}
-                                               for k in keys}})
+                               json={"files": {self.fname[k]: {"content": snap[k]} for k in keys}})
             r.raise_for_status()
             with self.lock:
                 self.dirty.difference_update(keys)
         except Exception as e:
-            log.warning(f"gist flush: {e}")
+            self.remote_msg = f"فشل الحفظ: {str(e)[:60]}"
+            log.warning("gist save failed: %s", e)
 
     def start_flusher(self, every=20):
         def loop():
@@ -157,20 +203,15 @@ class Store:
 
 
 store = Store()
-DAY = 86400
 
 
-def u_now():
-    return int(time.time())
-
-
+# ═══════════════════════════ المستخدمون / VIP ═══════════════════════════
 def touch_user(user):
     uid = str(user.id)
     with store.lock:
-        u = store.data["users"].get(uid) or dict(id=user.id, first_seen=u_now(),
-                                                  requests=0)
-        u.update(name=user.first_name or "", username=user.username or "",
-                 last_seen=u_now())
+        u = store.data["users"].get(uid) or dict(id=user.id, first_seen=now_s(), requests=0)
+        u.update(name=getattr(user, "first_name", "") or "",
+                 username=getattr(user, "username", "") or "", last_seen=now_s())
         u["requests"] = u.get("requests", 0) + 1
         store.data["users"][uid] = u
         store.save("users")
@@ -182,15 +223,15 @@ def vip_until(uid):
 
 
 def is_vip(uid):
-    return vip_until(uid) > u_now()
+    return vip_until(uid) > now_s()
 
 
 def user_status(uid, rec):
-    if uid == ADMIN_ID:
+    if ADMIN_ID and uid == ADMIN_ID:
         return "admin", 0
     if is_vip(uid):
         return "vip", 0
-    day = (u_now() - int(rec.get("first_seen", u_now()))) // DAY + 1
+    day = (now_s() - int(rec.get("first_seen", now_s()))) // DAY + 1
     if day <= TRIAL_DAYS:
         return "trial", day
     if day < VIP_FORCE_DAY:
@@ -200,10 +241,8 @@ def user_status(uid, rec):
 
 def add_vip(uid, days):
     with store.lock:
-        base = max(u_now(), vip_until(uid))
-        exp = base + int(days) * DAY
-        store.data["vip"][str(uid)] = dict(expires=exp, added=u_now(),
-                                            days=int(days))
+        exp = max(now_s(), vip_until(uid)) + int(days) * DAY
+        store.data["vip"][str(uid)] = dict(expires=exp, added=now_s(), days=int(days))
         store.save("vip")
     return exp
 
@@ -215,555 +254,636 @@ def remove_vip(uid):
     return ok
 
 
-# ============================ API ============================
+# ═══════════════════════════ البيانات (ccxt متعدد المنصات) ═══════════════════════════
+class PairNotFound(Exception):
+    pass
+
+
+class NoData(Exception):
+    pass
+
+
+_ex, _ex_lock, _down = {}, {}, {}
+_ex_init = threading.Lock()
+
+
 def get_ex(name):
-    if name not in _ex_cache:
-        _ex_cache[name] = getattr(ccxt, name)({"enableRateLimit": True,
-                                                "timeout": 12000})
-    return _ex_cache[name]
+    with _ex_init:
+        if name not in _ex:
+            _ex[name] = getattr(ccxt, name)({"enableRateLimit": True, "timeout": 15000})
+            _ex_lock[name] = threading.Lock()
+    return _ex[name]
 
 
-def clean_symbol(text):
-    s = text.upper().strip().replace("$", "").replace("/", "").replace("-", "")
-    for suf in ("USDT", "USDC", "PERP", "USD"):
-        if s.endswith(suf) and len(s) > len(suf):
-            s = s[: -len(suf)]
-    return "".join(ch for ch in s if ch.isalnum())
+def default_tf(sym):
+    return "1d" if sym in MAJORS else "4h"
 
 
-def _to_df(rows):
-    df = pd.DataFrame(rows, columns=["t", "o", "h", "l", "c", "v"])
+def _rows_to_df(rows, tf, bars):
+    cols = ["t", "open", "high", "low", "close", "volume"]
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    df = pd.DataFrame(rows, columns=cols).dropna()
     df = df.drop_duplicates("t").sort_values("t").reset_index(drop=True)
-    df["t"] = pd.to_datetime(df["t"], unit="ms")
-    return df
+    df["t"] = df["t"].astype("int64")
+    df = df[df["t"] + TF_MS[tf] <= int(time.time() * 1000)]   # بدون الشمعة غير المكتملة
+    return df.tail(bars).reset_index(drop=True)
 
 
-def fetch_ohlcv(sym, tf, bars=300, ttl=240):
-    key = (sym, tf, bars)
-    hit = _data_cache.get(key)
+def _fetch_exchange(name, sym, tf, bars):
+    """جلب الشموع مع Pagination (بعض المنصات تحد بـ 1000 أو أقل)."""
+    ex = get_ex(name)
+    tfms = TF_MS[tf]
+    now = int(time.time() * 1000)
+    since = now - bars * tfms
+    rows, last_ts = [], None
+    with _ex_lock[name]:
+        for _ in range(80):
+            chunk = ex.fetch_ohlcv(f"{sym}/USDT", tf, since=since, limit=1000)
+            if not chunk:
+                break
+            rows += chunk
+            if last_ts is not None and chunk[-1][0] <= last_ts:
+                break
+            last_ts = chunk[-1][0]
+            if last_ts + tfms >= now:
+                break
+            since = last_ts + tfms
+    return rows
+
+
+_cg_ids = {}
+
+
+def cg_id(sym):
+    if sym in _cg_ids:
+        return _cg_ids[sym]
+    cid = None
+    try:
+        r = requests.get("https://api.coingecko.com/api/v3/search",
+                         params={"query": sym}, timeout=12)
+        r.raise_for_status()
+        coins = [c for c in r.json().get("coins", [])
+                 if str(c.get("symbol", "")).upper() == sym]
+        cid = coins[0]["id"] if coins else None
+    except Exception as e:
+        log.info("coingecko search failed: %s", e)
+    _cg_ids[sym] = cid
+    return cid
+
+
+def cg_candles(sym, tf):
+    """مصدر احتياطي أخير (بيانات أقل دقة)."""
+    cid = cg_id(sym)
+    if not cid:
+        return None
+    try:
+        if tf == "4h":
+            r = requests.get(f"https://api.coingecko.com/api/v3/coins/{cid}/ohlc",
+                             params=dict(vs_currency="usd", days=30), timeout=15)
+            r.raise_for_status()
+            df = pd.DataFrame(r.json(), columns=["t", "open", "high", "low", "close"])
+            df["volume"] = 0.0
+        else:
+            r = requests.get(f"https://api.coingecko.com/api/v3/coins/{cid}/market_chart",
+                             params=dict(vs_currency="usd", days=365, interval="daily"), timeout=15)
+            r.raise_for_status()
+            j = r.json()
+            pr = pd.DataFrame(j["prices"], columns=["t", "close"])
+            vol = pd.DataFrame(j["total_volumes"], columns=["t", "volume"])
+            df = pr.merge(vol, on="t", how="left")
+            df["open"] = df["close"].shift(1).fillna(df["close"])
+            df["high"] = df[["open", "close"]].max(axis=1)
+            df["low"] = df[["open", "close"]].min(axis=1)
+            df = df.iloc[:-1]                                   # آخر نقطة غير مكتملة
+        df = df[["t", "open", "high", "low", "close", "volume"]].dropna()
+        df["t"] = df["t"].astype("int64")
+        return df.reset_index(drop=True) if len(df) >= 40 else None
+    except Exception as e:
+        log.info("coingecko candles failed: %s", e)
+        return None
+
+
+_candle_cache = {}
+
+
+def get_candles(sym, tf, bars=450, ttl=CANDLE_TTL, min_bars=MIN_BARS):
+    """يجرب المنصات بالترتيب. يرجع (df). df.attrs: source, degraded."""
+    key = (sym, tf, bars, min_bars)
+    hit = _candle_cache.get(key)
     if hit and time.time() - hit[0] < ttl:
+        return hit[1]
+    notfound, best = 0, None
+    for name in EXCHANGES:
+        if _down.get(name, 0) > time.time():
+            continue
+        try:
+            df = _rows_to_df(_fetch_exchange(name, sym, tf, bars), tf, bars)
+        except ccxt.BadSymbol:
+            notfound += 1
+            continue
+        except ccxt.NetworkError as e:                       # حجب/انقطاع: نتجاوز المنصة مؤقتاً
+            _down[name] = time.time() + 300
+            log.info("%s down: %s", name, str(e)[:80])
+            continue
+        except Exception as e:
+            log.info("%s error: %s", name, str(e)[:80])
+            continue
+        if len(df) >= min_bars:
+            df.attrs.update(source=name, degraded=False)
+            _candle_cache[key] = (time.time(), df)
+            return df
+        if len(df) >= 40 and (best is None or len(df) > len(best)):
+            df.attrs.update(source=name, degraded=True)
+            best = df
+    if best is None:
+        cg = cg_candles(sym, tf)
+        if cg is not None:
+            cg.attrs.update(source="coingecko", degraded=True)
+            best = cg
+    if best is not None:
+        best.attrs["degraded"] = True
+        _candle_cache[key] = (time.time(), best)
+        return best
+    if notfound:
+        raise PairNotFound(sym)
+    raise NoData(sym)
+
+
+_price_cache = {}
+
+
+def live_price(sym):
+    hit = _price_cache.get(sym)
+    if hit and time.time() - hit[0] < PRICE_TTL:
         return hit[1], hit[2]
     for name in EXCHANGES:
+        if _down.get(name, 0) > time.time():
+            continue
         try:
             ex = get_ex(name)
-            tfms = ex.parse_timeframe(tf) * 1000
-            since = ex.milliseconds() - bars * tfms
-            rows = []
-            for _ in range(12):
-                chunk = ex.fetch_ohlcv(f"{sym}/USDT", tf, since=since, limit=1000)
-                if not chunk:
-                    break
-                rows += chunk
-                since = chunk[-1][0] + tfms
-                if len(chunk) < 50 or len(rows) >= bars or since >= ex.milliseconds():
-                    break
-            if len(rows) >= 120:
-                df = _to_df(rows).tail(bars).reset_index(drop=True)
-                _data_cache[key] = (time.time(), df, name)
-                return df, name
+            with _ex_lock[name]:
+                t = ex.fetch_ticker(f"{sym}/USDT")
+            p = float(t.get("last") or 0)
+            if p > 0:
+                _price_cache[sym] = (time.time(), p, name)
+                return p, name
+        except ccxt.NetworkError:
+            _down[name] = time.time() + 300
         except Exception:
             continue
+    cid = cg_id(sym)
+    if cid:
+        try:
+            r = requests.get("https://api.coingecko.com/api/v3/simple/price",
+                             params=dict(ids=cid, vs_currencies="usd"), timeout=12)
+            p = float(r.json()[cid]["usd"])
+            _price_cache[sym] = (time.time(), p, "coingecko")
+            return p, "coingecko"
+        except Exception:
+            pass
     return None, None
 
 
-def fetch_prices(sym):
-    out = {}
-    for name in EXCHANGES:
+def all_prices(sym):
+    def one(name):
         try:
-            t = get_ex(name).fetch_ticker(f"{sym}/USDT")
-            if t and t.get("last"):
-                out[name] = float(t["last"])
+            ex = get_ex(name)
+            with _ex_lock[name]:
+                t = ex.fetch_ticker(f"{sym}/USDT")
+            p = float(t.get("last") or 0)
+            return name, p if p > 0 else None
+        except Exception:
+            return name, None
+    with ThreadPoolExecutor(len(EXCHANGES)) as pool:
+        return {n: p for n, p in pool.map(one, EXCHANGES) if p}
+
+
+_top_cache = [0, []]
+
+
+def top_symbols(n=60):
+    if time.time() - _top_cache[0] < 1800 and _top_cache[1]:
+        return _top_cache[1][:n]
+    for name in EXCHANGES:
+        if _down.get(name, 0) > time.time():
+            continue
+        try:
+            ex = get_ex(name)
+            with _ex_lock[name]:
+                tk = ex.fetch_tickers()
+            rows = []
+            for s, t in tk.items():
+                if not s.endswith("/USDT") or ":" in s:
+                    continue
+                base = s.split("/")[0]
+                if base in STABLES or len(base) < 2 or re.search(r"(UP|DOWN|BULL|BEAR|3L|3S)$", base):
+                    continue
+                qv = t.get("quoteVolume") or 0
+                if qv and qv > 2e6:
+                    rows.append((qv, base))
+            rows.sort(reverse=True)
+            if rows:
+                _top_cache[0], _top_cache[1] = time.time(), [b for _, b in rows]
+                return _top_cache[1][:n]
         except Exception:
             continue
+    return COINS[:n]
+
+
+# ═══════════════════════════ المؤشرات (pandas فقط) ═══════════════════════════
+def wilder(s, n):
+    return s.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
+
+
+def ema(s, n):
+    return s.ewm(span=n, adjust=False, min_periods=n).mean()
+
+
+def true_range(df):
+    pc = df["close"].shift()
+    return pd.concat([df["high"] - df["low"], (df["high"] - pc).abs(),
+                      (df["low"] - pc).abs()], axis=1).max(axis=1)
+
+
+def rsi_calc(close, n=14):
+    d = close.diff()
+    up, dn = wilder(d.clip(lower=0), n), wilder((-d).clip(lower=0), n)
+    out = 100 - 100 / (1 + up / dn.replace(0, np.nan))
+    out[(dn == 0) & up.notna()] = 100.0
     return out
 
 
-def fetch_funding(sym):
-    try:
-        ex = get_ex("binanceusdm")
-        f = ex.fetch_funding_rate(f"{sym}/USDT:USDT")
-        return float(f["fundingRate"]) * 100
-    except Exception:
-        return None
-
-
-def coingecko_info(sym):
-    try:
-        r = requests.get("https://api.coingecko.com/api/v3/search",
-                         params={"query": sym}, timeout=10).json()
-        coins = [c for c in r.get("coins", [])
-                 if c.get("symbol", "").upper() == sym]
-        if not coins:
-            return None
-        cid = coins[0]["id"]
-        m = requests.get("https://api.coingecko.com/api/v3/coins/markets",
-                         params={"vs_currency": "usd", "ids": cid},
-                         timeout=10).json()
-        return (m[0], cid) if m else None
-    except Exception:
-        return None
-
-
-# ============================ المؤشرات ============================
-def ema(s, n):
-    return s.ewm(span=n, adjust=False).mean()
-
-
-def calc_rsi(s, n=14):
-    d = s.diff()
-    up = d.clip(lower=0).ewm(alpha=1 / n, adjust=False).mean()
-    dn = (-d.clip(upper=0)).ewm(alpha=1 / n, adjust=False).mean()
-    return (100 - 100 / (1 + up / dn.replace(0, np.nan))).fillna(50)
-
-
-def calc_atr(df, n=14):
-    pc = df["c"].shift()
-    tr = pd.concat([df["h"] - df["l"], (df["h"] - pc).abs(),
-                    (df["l"] - pc).abs()], axis=1).max(axis=1)
-    return tr.ewm(alpha=1 / n, adjust=False).mean()
-
-
-def calc_adx(df, n=14):
-    up, dn = df["h"].diff(), -df["l"].diff()
+def adx_calc(df, n=14):
+    up, dn = df["high"].diff(), -df["low"].diff()
     plus = pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=df.index)
     minus = pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0), index=df.index)
-    a = calc_atr(df, n).replace(0, np.nan)
-    pdi = 100 * plus.ewm(alpha=1 / n, adjust=False).mean() / a
-    mdi = 100 * minus.ewm(alpha=1 / n, adjust=False).mean() / a
+    a = wilder(true_range(df), n).replace(0, np.nan)
+    pdi, mdi = 100 * wilder(plus, n) / a, 100 * wilder(minus, n) / a
     dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
-    return dx.ewm(alpha=1 / n, adjust=False).mean().fillna(0)
+    return wilder(dx, n)
 
 
-def add_ind(df):
+def add_indicators(df):
     df = df.copy()
-    for n in (20, 50, 200):
-        df[f"ema{n}"] = ema(df["c"], n)
-    df["rsi"] = calc_rsi(df["c"])
-    df["atr"] = calc_atr(df)
-    df["adx"] = calc_adx(df)
-    ma, sd = df["c"].rolling(20).mean(), df["c"].rolling(20).std()
-    df["bb_up"], df["bb_lo"] = ma + 2 * sd, ma - 2 * sd
-    atrp = df["atr"] / df["c"]
-    df["atrp"] = atrp.rolling(100).apply(lambda x: (x[-1] >= x).mean() * 100,
-                                          raw=True)
-    df["rvol"] = df["v"] / df["v"].rolling(20).mean()
+    c = df["close"]
+    df["ema20"], df["ema50"], df["ema200"] = ema(c, 20), ema(c, 50), ema(c, 200)
+    df["rsi"] = rsi_calc(c)
+    df["atr"] = wilder(true_range(df), 14)
+    df["adx"] = adx_calc(df)
+    df["rvol"] = df["volume"] / df["volume"].rolling(20).mean().replace(0, np.nan)
+    atrp = df["atr"] / c
+    df["atrp"] = atrp.rolling(100).apply(lambda x: (x[-1] >= x).mean() * 100, raw=True)
+    mid, sd = c.rolling(20).mean(), c.rolling(20).std()
+    df["bb_mid"], df["bb_up"], df["bb_lo"] = mid, mid + 2 * sd, mid - 2 * sd
     return df
 
 
-# ============================ الاستراتيجية ============================
-def cond_frame(df, d):
-    c = pd.DataFrame(index=df.index)
-    c["trend"] = (d * (df.ema50 - df.ema200) > 0) & (d * (df.c - df.ema200) > 0)
-    c["adx"] = (df.adx > ADX_MIN) & (df.adx > df.adx.shift(3))
-    c["vol"] = df.atrp >= ATRP_MIN
-    touch = (df.l <= df.ema20) if d == 1 else (df.h >= df.ema20)
-    c["pullback"] = touch.astype(float).rolling(5).max() > 0
-    lo, hi = RSI_LONG if d == 1 else RSI_SHORT
-    rsi_ok = df.rsi.between(lo, hi)
+# ═══════════════════════════ الشروط والدرجات ═══════════════════════════
+def daily_table(dfd):
+    """جدول اتجاه EMA200 اليومي + عائد 30 يوم. avail = وقت إغلاق الشمعة اليومية."""
+    if dfd is None or len(dfd) < 30:
+        return None
+    c = dfd["close"]
+    e = ema(c, 200)
+    return pd.DataFrame({
+        "avail": dfd["t"].astype("int64").values + TF_MS["1d"],
+        "dir": np.where(e.isna(), 0, np.where(c > e, 1, -1)),
+        "ret30": (c / c.shift(30) - 1).values,
+    }).sort_values("avail").reset_index(drop=True)
+
+
+def asof_daily(df, tab, tf):
+    """يطابق كل شمعة مع آخر شمعة يومية مغلقة (بدون look-ahead)."""
+    left = pd.DataFrame({"key": df["t"].astype("int64").values + TF_MS[tf]})
+    return pd.merge_asof(left, tab, left_on="key", right_on="avail")
+
+
+def build_conds(df, d, sym, tf, btc_tab, own_tab):
+    """11 شرطاً لكل شمعة. d=+1 شراء / d=-1 بيع."""
+    c, o, h, l = df["close"], df["open"], df["high"], df["low"]
+    cond = pd.DataFrame(index=df.index)
+    trend = (d * (c - df["ema200"]) > 0) & (d * (df["ema50"] - df["ema200"]) > 0)
+    cond["trend"] = trend
+    cond["adx"] = (df["adx"] > P["adx_min"]) & (df["adx"] > df["adx"].shift(2))
+    cond["vol"] = df["atrp"] >= P["atrp_min"]
+    touch = (l <= df["ema20"]) if d == 1 else (h >= df["ema20"])
+    cond["pullback"] = touch.astype(float).rolling(5, min_periods=1).max() > 0
+    lo, hi = P["rsi_long"] if d == 1 else P["rsi_short"]
+    rsi_ok = df["rsi"].between(lo, hi)
     if d == -1:
-        rsi_ok = rsi_ok & (df.rsi > RSI_OVERSOLD_BLOCK)
-    c["rsi"] = rsi_ok
-    if d == 1:
-        c["confirm"] = (df.c > df.o) | (df.c > df.c.shift())
+        rsi_ok = rsi_ok & (df["rsi"] >= P["short_rsi_floor"])    # لا بيع في التشبع البيعي
+    cond["rsi"] = rsi_ok
+    a1, a2 = ((c > o), (c > c.shift())) if d == 1 else ((c < o), (c < c.shift()))
+    cond["confirm"] = (a1 & a2) if P["confirm_and"] else (a1 | a2)
+
+    # BTC + اتجاه العملة اليومي + القوة النسبية
+    btc_ret = None
+    if btc_tab is not None:
+        m = asof_daily(df, btc_tab, tf)
+        cond["btc"] = m["dir"].values == d
+        btc_ret = m["ret30"].values
     else:
-        c["confirm"] = (df.c < df.o) | (df.c < df.c.shift())
-    c["breakout"] = (d * (df.c - df.h.shift(1)) > 0) & (df.rvol > BREAKOUT_RVOL)
-    if d == 1:
-        c["gray_zone"] = (df.rsi.between(45, 70) & (df.c > df.ema20)
-                          & (df.ema20 > df.ema50))
+        cond["btc"] = False
+    if own_tab is not None:
+        cond["d1"] = asof_daily(df, own_tab, tf)["dir"].values == d
     else:
-        c["gray_zone"] = (df.rsi.between(30, 55) & (df.c < df.ema20)
-                          & (df.ema20 < df.ema50))
-    if d == 1:
-        c["confirm"] = c["confirm"] & ((df.rsi < RSI_OVERBOUGHT_BLOCK)
-                                        | c["breakout"])
-    return c.fillna(False)
-
-
-def trade_levels(df, i, d):
-    r = df.iloc[i]
-    a = float(r.atr)
-    entry = (r.h if d == 1 else r.l) + d * 0.02 * a
-    look = df.iloc[max(0, i - 7): i + 1]
-    sw = look.l.min() - 0.5 * a if d == 1 else look.h.max() + 0.5 * a
-    dist = min(max(abs(entry - sw), SL_MIN_ATR * a), SL_MAX_ATR * a)
-    return float(entry), float(entry - d * dist), float(dist)
-
-
-def build_targets(entry, d):
-    return [(entry * (1 + d * pct / 100.0), pct, frac)
-            for pct, frac in zip(TP_PCTS, TP_FRACS)]
-
-
-COND_AR = {
-    "btc": "نظام BTC متوافق",
-    "trend": "اتجاه (EMA50/200)",
-    "d1": "اتجاه 1d متوافق",
-    "adx": f"ADX>{ADX_MIN} وصاعد",
-    "vol": "تقلب كافٍ",
-    "pullback": "ارتداد EMA20",
-    "rsi": "RSI في المنطقة",
-    "confirm": "شمعة تأكيد",
-    "rs": "قوة نسبية vs BTC",
-    "breakout": "🚀 اختراق",
-    "gray_zone": "🌫️ منطقة رمادية",
-}
-
-
-def btc_regime():
-    df, _ = fetch_ohlcv("BTC", "1d", 320)
-    if df is None:
-        return 0
-    df = add_ind(df.iloc[:-1])
-    r = df.iloc[-1]
-    return 1 if r.c > r.ema200 else -1
-
-
-def analyze(sym):
-    tf = get_tf(sym)
-    df_main, ex_main = fetch_ohlcv(sym, tf, 400)
-    cg = coingecko_info(sym)
-    src = {tf: ex_main}
-    if df_main is None:
-        return None
-
-    live_price = float(df_main.iloc[-1].c)
-    d4 = add_ind(df_main.iloc[:-1]).reset_index(drop=True)
-    i = len(d4) - 1
-    last = d4.iloc[i]
-
-    d1df, ex1 = fetch_ohlcv(sym, "1d", 320)
-    d1_dir = 0
-    d1_close = d1_ema20 = None
-    if d1df is not None:
-        d1 = add_ind(d1df.iloc[:-1])
-        d1_dir = 1 if d1.iloc[-1].c > d1.iloc[-1].ema200 else -1
-        d1_close = float(d1.iloc[-1].c)
-        d1_ema20 = float(d1.iloc[-1].ema20)
-        src["1d"] = ex1
-
-    breg = btc_regime()
-    rs = 0.0
-    if sym != "BTC":
-        bdf, _ = fetch_ohlcv("BTC", tf, 400)
-        if bdf is not None and len(bdf) > 200 and len(d4) > 200:
-            rs = (float(d4.c.iloc[-1]) / float(d4.c.iloc[-181]) -
-                  float(bdf.c.iloc[-2]) / float(bdf.c.iloc[-182]))
+        cond["d1"] = False
+    if sym == "BTC":
+        cond["rs"] = True
+    elif btc_ret is None:
+        cond["rs"] = False
     else:
-        rs = None
+        lb = 180 if tf == "4h" else 30
+        diff = (c / c.shift(lb) - 1).values - btc_ret
+        cond["rs"] = (diff > 0) if d == 1 else (diff < 0)
 
-    results = {}
+    brk = ((c > h.shift(1)) if d == 1 else (c < l.shift(1))) & (df["rvol"] > 1.5)
+    if P["breakout_trend"]:
+        brk = brk & trend & cond["btc"]
+    cond["breakout"] = brk
+    glo, ghi = P["gray_long"] if d == 1 else P["gray_short"]
+    cond["gray_zone"] = trend & df["rsi"].between(glo, ghi)
+    return cond[COND_KEYS].fillna(False).astype(bool)
+
+
+def grade_frame(cond):
+    total = len(COND_KEYS)
+    ok = cond.sum(axis=1).values
+    brk = cond["breakout"].values
+    pb = cond[["trend", "adx", "vol", "pullback", "rsi", "confirm"]].all(axis=1).values
+    gray = (cond["gray_zone"] & cond["trend"]).values
+    core = (cond["btc"] & cond["d1"] & cond["trend"]).values
+    A = (ok == total) | brk
+    B = core | pb | gray
+    if P["loose_b"]:
+        B = B | (ok >= total - 5)
+    rank = np.where(A, 2, np.where(B, 1, 0))
+    setup = np.where(brk, "Breakout", np.where(pb, "Pullback", np.where(gray, "Gray", "Setup")))
+    return rank, ok, setup
+
+
+def evaluate(df, sym, tf, btc_tab, own_tab, degraded=False):
+    """يرجع جدول (side, rank, ok, setup) لكل شمعة، باختيار الاتجاه الأقوى."""
+    parts = {}
     for d in (1, -1):
-        cf = cond_frame(d4, d).iloc[i].to_dict()
-        cf["btc"] = (breg == d) if sym != "BTC" else (d1_dir == d)
-        cf["d1"] = (d1_dir == d) if d1_dir else True
-        cf["rs"] = True if rs is None else ((rs > 0) if d == 1 else (rs < 0))
-        results[d] = cf
-
-    n1 = sum(1 for k, v in results[1].items() if v and k != "rs")
-    n2 = sum(1 for k, v in results[-1].items() if v and k != "rs")
-
-    if sym != "BTC":
-        if breg == 1:
-            n1 += 3
-        elif breg == -1:
-            n2 += 3
-
-    current_rsi = float(last.rsi)
-
-    if current_rsi < RSI_OVERSOLD_BLOCK:
-        n2 = 0
-
-    cf_long = cond_frame(d4, 1).iloc[i].to_dict()
-    if current_rsi > RSI_OVERBOUGHT_BLOCK and not cf_long.get("breakout"):
-        n1 = 0
-
-    if n1 != n2:
-        d = 1 if n1 > n2 else -1
-    else:
-        d = 1 if last.ema50 >= last.ema200 else -1
-
-    if d == -1 and d1_close and d1_ema20 and d1_close > d1_ema20 * 1.02:
-        d = 1 if n1 > 0 else 1
-
-    conds = results[d]
-    total = len(conds)
-    ok = sum(conds.values())
-
-    cf_row = cond_frame(d4, d).iloc[i].to_dict()
-    is_breakout = cf_row.get("breakout") and cf_row.get("trend")
-    is_pullback = (cf_row.get("trend") and cf_row.get("adx") and cf_row.get("vol")
-                   and cf_row.get("pullback") and cf_row.get("rsi")
-                   and cf_row.get("confirm"))
-    is_gray = (cf_row.get("adx") and cf_row.get("vol")
-               and cf_row.get("gray_zone") and cf_row.get("confirm"))
-
-    core_ok = conds.get("btc") and conds.get("d1") and conds.get("trend")
-    if ok == total or is_breakout:
-        grade = "A"
-    elif core_ok or is_pullback or is_gray or ok >= total - 5:
-        grade = "B"
-    else:
-        grade = "C"
-
-    entry, sl, risk = trade_levels(d4, i, d)
-    targets = build_targets(entry, d)
-
-    prices = fetch_prices(sym)
-    funding = fetch_funding(sym)
-    warn = []
-    if funding is not None:
-        if d == 1 and funding > 0.05:
-            warn.append(f"Funding مرتفع ({funding:.3f}%)")
-        if d == -1 and funding < -0.05:
-            warn.append(f"Funding سلبي ({funding:.3f}%)")
-    if abs(live_price - entry) / risk > 3:
-        warn.append("السعر بعيد عن الدخول - لا تطارد")
-
-    return dict(sym=sym, d4=d4, side=d, grade=grade, ok=ok,
-                total=total, conds=conds, entry=entry,
-                sl=sl, risk=risk, targets=targets, price=live_price,
-                atr=float(last.atr), rsi=float(last.rsi), adx=float(last.adx),
-                rs=rs, prices=prices, funding=funding, warn=warn, cg=cg,
-                src=src, breg=breg, tf=tf,
-                is_pullback=is_pullback, is_breakout=is_breakout,
-                is_gray=is_gray)
+        parts[d] = grade_frame(build_conds(df, d, sym, tf, btc_tab, own_tab))
+    kl = parts[1][0] * 100 + parts[1][1]
+    ks = parts[-1][0] * 100 + parts[-1][1]
+    tie = np.where((df["ema50"] >= df["ema200"]).values, 1, -1)
+    side = np.where(kl > ks, 1, np.where(ks > kl, -1, tie))
+    rank = np.where(side == 1, parts[1][0], parts[-1][0])
+    if degraded:
+        rank = np.minimum(rank, 0)
+    return pd.DataFrame({
+        "side": side, "rank": rank,
+        "ok": np.where(side == 1, parts[1][1], parts[-1][1]),
+        "setup": np.where(side == 1, parts[1][2], parts[-1][2]),
+    }, index=df.index)
 
 
-# ============================ تتبع الصفقات ============================
-def track_signal(res):
-    entry = res["entry"]
-    sl = res["sl"]
-    risk = abs(entry - sl)
-    if risk <= 0:
+# ═══════════════════════════ مستويات الصفقة وإدارتها ═══════════════════════════
+def make_levels(df, i, side, tf):
+    r = df.iloc[i]
+    atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0.0
+    if atr <= 0:
         return None
-    rec = dict(
-        id=f"{res['sym']}-{res['tf']}-{int(time.time())}",
-        coin=res["sym"], tf=res["tf"], side=res["side"],
-        entry=entry, sl=sl, risk=risk,
-        opened=int(time.time() * 1000),
-        next_t=int(time.time() * 1000),
-        remaining=1.0, realized=0.0, be=False, bars_held=0,
-        mfe=0.0, mae=0.0, status="open",
-        targets=[dict(px=t[0], pct=t[1], frac=t[2], hit=False)
-                 for t in res["targets"]],
-        max_hours=MAX_HOLD * (24 if res["tf"] == "1d" else 4)
-    )
-    with store.lock:
-        store.data["signals"].append(rec)
-        store.save("signals")
-    return rec
+    entry = float(r["high"]) + ENTRY_ATR * atr if side == 1 else float(r["low"]) - ENTRY_ATR * atr
+    w = df.iloc[max(0, i - SWING_N + 1): i + 1]
+    swing = float(w["low"].min()) if side == 1 else float(w["high"].max())
+    dist = min(max(abs(entry - swing), P["sl_min"] * atr), P["sl_max"] * atr)
+    tps = []
+    for tp, f in zip(P["tps"], P["fracs"]):
+        px = entry * (1 + side * tp / 100) if P["tp_mode"] == "pct" else entry + side * tp * dist
+        tps.append(dict(px=float(px), frac=f, hit=False))
+    return dict(entry=entry, sl=entry - side * dist, risk=dist, tps=tps, atr=atr)
 
 
-def _step(pos, h, l, c, atr_now=None):
-    side = pos["side"]
-    entry = pos["entry"]
-    risk = pos["risk"]
-    ev = []
-    pos["bars_held"] += 1
-    if side == 1:
-        pos["mfe"] = max(pos.get("mfe", 0), (h - entry) / risk)
-        pos["mae"] = max(pos.get("mae", 0), (entry - l) / risk)
-    else:
-        pos["mfe"] = max(pos.get("mfe", 0), (entry - l) / risk)
-        pos["mae"] = max(pos.get("mae", 0), (h - entry) / risk)
+def new_trade(sym, tf, side, lv, bar_t, grade, setup):
+    return dict(id=f"{sym}-{tf}-{bar_t}", coin=sym, tf=tf, side=side, grade=grade, setup=setup,
+                entry=lv["entry"], sl=lv["sl"], risk=lv["risk"],
+                tps=[dict(t) for t in lv["tps"]], state="pending", wait=0, fill=None,
+                ext=None, remaining=1.0, realized=0.0, bars=0, be=False, trail_on=False,
+                mfe=0.0, mae=0.0, created=int(time.time() * 1000), opened=None,
+                closed=None, next_t=int(bar_t) + TF_MS[tf], R=None, result=None)
 
-    if (side == 1 and l <= pos["sl"]) or (side == -1 and h >= pos["sl"]):
-        pos["realized"] += pos["remaining"] * side * (pos["sl"] - entry) / risk
-        pos["remaining"] = 0.0
-        return [dict(kind="SL")]
 
-    for j, tp in enumerate(pos["targets"]):
-        if tp["hit"]:
-            continue
-        if (side == 1 and h >= tp["px"]) or (side == -1 and l <= tp["px"]):
-            pos["realized"] += tp["frac"] * (tp["pct"] / 100.0) * entry / risk
-            pos["remaining"] -= tp["frac"]
-            tp["hit"] = True
-            ev.append(dict(kind="TP", j=j + 1, px=tp["px"], pct=tp["pct"]))
-        else:
-            break
+def _tighten(side, cur, new):
+    return max(cur, new) if side == 1 else min(cur, new)
 
-    if not pos["be"] and pos["mfe"] >= abs(BE_R):
-        if pos["remaining"] > 1e-9:
-            pos["sl"] = entry - side * BE_R * risk
-            pos["be"] = True
 
-    if pos["remaining"] > 1e-9 and atr_now and atr_now > 0:
-        if len(pos["targets"]) > 1 and pos["targets"][1]["hit"]:
-            if side == 1:
-                pos["sl"] = max(pos["sl"], c - TRAIL_ATR * atr_now)
-            else:
-                pos["sl"] = min(pos["sl"], c + TRAIL_ATR * atr_now)
-
-    if pos["remaining"] <= 1e-9:
-        ev.append(dict(kind="DONE"))
+def _finish(p, ev, kind):
+    p["remaining"], p["state"], p["result"] = 0.0, "closed", kind
+    p["closed"] = int(time.time() * 1000)
+    cost = (2 * FEE + SLIP) * p["fill"] / p["risk"]
+    p["R"] = round(p["realized"] - cost, 3)
+    ev.append(dict(kind="DONE"))
     return ev
 
 
-def _close(pos, result):
-    pos["status"] = "closed"
-    pos["result"] = result
-    pos["closed"] = int(time.time() * 1000)
-    pos["R"] = round(pos["realized"] - 2 * (FEE + SLIP) * pos["entry"] / pos["risk"], 3)
-    with store.lock:
-        store.data["history"].append(dict(
-            coin=pos["coin"], tf=pos["tf"], side=pos["side"], R=pos["R"],
-            result=result, opened=pos["opened"], closed=pos["closed"]))
-        del store.data["history"][:-1000]
-        store.data["signals"] = [p for p in store.data["signals"]
-                                  if p["status"] == "open"
-                                  or time.time() * 1000 - p.get("closed", 0) < 7 * 86400000]
-        store.save("signals", "history")
+def close_at(p, price, kind, ev=None):
+    ev = [] if ev is None else ev
+    p["realized"] += p["remaining"] * p["side"] * (price - p["fill"]) / p["risk"]
+    ev.append(dict(kind=kind, px=price))
+    return _finish(p, ev, kind)
 
 
-def check_active(bot):
-    with store.lock:
-        opens = [p for p in store.data["signals"] if p["status"] == "open"]
-    by_coin = {}
-    for p in opens:
-        by_coin.setdefault(p["coin"], []).append(p)
-    for coin, plist in by_coin.items():
-        try:
-            df = fetch_ohlcv(coin, "4h", 400)[0]
-        except Exception:
+def trade_step(p, o, h, l, c, atr):
+    """شمعة مغلقة واحدة. يُستخدم في التتبع الحي والـ Backtest (نفس المنطق)."""
+    ev, s = [], p["side"]
+    if p["state"] not in ("pending", "open"):
+        return ev
+    if p["state"] == "pending":
+        p["wait"] += 1
+        trig = (h >= p["entry"]) if s == 1 else (l <= p["entry"])
+        if not trig:
+            dead = (l <= p["sl"]) if s == 1 else (h >= p["sl"])
+            if dead or p["wait"] >= PENDING_BARS:
+                p["state"] = "expired"
+                ev.append(dict(kind="EXPIRED"))
+            return ev
+        fill = max(p["entry"], o) if s == 1 else min(p["entry"], o)
+        risk = abs(fill - p["sl"])
+        if risk <= 0:
+            p["state"] = "expired"
+            return [dict(kind="EXPIRED")]
+        p.update(state="open", fill=fill, risk=risk, ext=fill, opened=int(time.time() * 1000))
+        ev.append(dict(kind="ENTRY", px=fill))
+    p["bars"] += 1
+    fill, risk = p["fill"], p["risk"]
+    fav, adv = (h, l) if s == 1 else (l, h)
+    p["mfe"] = max(p["mfe"], s * (fav - fill) / risk)
+    p["mae"] = max(p["mae"], s * (fill - adv) / risk)
+
+    # 1) الوقف أولاً (تحفظ)
+    if (s == 1 and l <= p["sl"]) or (s == -1 and h >= p["sl"]):
+        kind = "TRAIL" if p["trail_on"] else ("BE" if p["be"] else "SL")
+        return close_at(p, p["sl"], kind, ev)
+    # 2) الأهداف
+    for j, tp in enumerate(p["tps"]):
+        if tp["hit"]:
             continue
-        if df is None:
-            continue
+        if not ((s == 1 and h >= tp["px"]) or (s == -1 and l <= tp["px"])):
+            break
+        tp["hit"] = True
+        p["realized"] += tp["frac"] * s * (tp["px"] - fill) / risk
+        p["remaining"] -= tp["frac"]
+        ev.append(dict(kind="TP", j=j + 1, px=tp["px"]))
+    if p["remaining"] <= 1e-9:
+        return _finish(p, ev, "TP")
+    # 3) Breakeven مبكر بعد الهدف 1
+    if p["tps"][0]["hit"] and not p["be"]:
+        p["sl"] = _tighten(s, p["sl"], fill + s * P["be_lock"] * risk)
+        p["be"] = True
+        ev.append(dict(kind="BE_MOVED", px=p["sl"]))
+    # 4) Trailing (Chandelier) بعد الهدف المحدد
+    p["ext"] = max(p["ext"], h) if s == 1 else min(p["ext"], l)
+    if sum(t["hit"] for t in p["tps"]) >= P["trail_after"]:
+        p["trail_on"] = True
+        if atr and atr > 0:
+            p["sl"] = _tighten(s, p["sl"], p["ext"] - s * P["trail_atr"] * atr)
+    # 5) Time stop + الحد الأقصى
+    if p["bars"] >= TIME_STOP_BARS and not p["tps"][0]["hit"]:
+        return close_at(p, c, "TIME_STOP", ev)
+    if p["bars"] >= MAX_HOLD:
+        return close_at(p, c, "TIME", ev)
+    return ev
+
+
+# ═══════════════════════════ التحليل الحي ═══════════════════════════
+_analysis_cache = {}
+
+
+def analyze(sym):
+    tf = default_tf(sym)
+    df = get_candles(sym, tf, 450)
+    degraded = bool(df.attrs.get("degraded"))
+    source = df.attrs.get("source", "?")
+    try:
+        btc_d = df if (sym == "BTC" and tf == "1d") else get_candles("BTC", "1d", 320)
+    except Exception:
+        btc_d = None
+    try:
+        own_d = df if tf == "1d" else get_candles(sym, "1d", 320)
+    except Exception:
+        own_d = None
+    df = add_indicators(df)
+    sig = evaluate(df, sym, tf, daily_table(btc_d), daily_table(own_d), degraded)
+    i = len(df) - 1
+    side, rank = int(sig["side"].iloc[i]), int(sig["rank"].iloc[i])
+    lv = make_levels(df, i, side, tf)
+    if lv is None:
+        raise NoData(sym)
+    price, psrc = live_price(sym)
+    price = float(price or df["close"].iloc[-1])
+    last = df.iloc[-1]
+    return dict(sym=sym, tf=tf, df=df, side=side, rank=rank, grade=GRADE[rank],
+                setup=str(sig["setup"].iloc[i]), ok=int(sig["ok"].iloc[i]),
+                total=len(COND_KEYS), lv=lv, price=price, source=source,
+                price_src=psrc, degraded=degraded,
+                rsi=float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0,
+                adx=float(last["adx"]) if not pd.isna(last["adx"]) else 0.0,
+                bar_t=int(last["t"]))
+
+
+def get_analysis(sym, force=False):
+    hit = _analysis_cache.get(sym)
+    if hit and not force and time.time() - hit[0] < 60:
+        return hit[1]
+    res = analyze(sym)
+    _analysis_cache[sym] = (time.time(), res)
+    return res
+
+
+def scan_sync(symbols, workers=SCAN_WORKERS):
+    def one(s):
         try:
-            dfx = add_ind(df.copy())
-            atr_series = dfx["atr"]
-        except Exception:
-            atr_series = None
-        for pos in plist:
-            events = []
-            with store.lock:
-                new_df = df[df["t"].astype("int64") >= pos["next_t"]]
-                for idx, row in new_df.iterrows():
-                    atr_now = (float(atr_series.iloc[idx])
-                               if atr_series is not None and idx < len(atr_series)
-                               else None)
-                    ev = _step(pos, float(row.h), float(row.l), float(row.c), atr_now)
-                    pos["next_t"] = int(row.t.timestamp() * 1000) + 14400000
-                    events += ev
-                    if pos["remaining"] <= 1e-9:
-                        break
-                store.save("signals")
-            for ev in events:
-                if ev["kind"] != "DONE":
-                    try:
-                        notify_event(bot, pos, ev)
-                    except Exception:
-                        pass
-            if pos["remaining"] <= 1e-9:
-                kinds = [e["kind"] for e in events]
-                res = "SL" if "SL" in kinds else "TP"
-                _close(pos, res)
+            return get_analysis(s)
+        except Exception as e:
+            log.info("scan %s failed: %s", s, str(e)[:80])
+            return None
+    with ThreadPoolExecutor(workers) as ex:
+        return [r for r in ex.map(one, symbols) if r]
 
 
-def notify_event(bot, pos, ev):
-    side = "🟢" if pos["side"] == 1 else "🔴"
-    head = f"{side} #{pos['coin']} · {pos['tf']}"
-    if ev["kind"] == "TP":
-        msg = f"{head}\n🎯 TP{ev['j']} ✅ (+{ev['pct']}%)"
-    elif ev["kind"] == "SL":
-        msg = f"{head}\n🛑 وقف الخسارة"
-    else:
-        msg = f"{head}\n• {ev['kind']}"
-    for cid in (VIP_CHANNEL_ID, ADMIN_ID):
-        if not cid:
-            continue
-        try:
-            bot.send_message(cid, msg)
-        except Exception:
-            pass
+# ═══════════════════════════ الشارت والرسالة ═══════════════════════════
+def fmt(x):
+    x = float(x)
+    if x >= 1000:
+        return f"{x:,.2f}"
+    if x >= 1:
+        return f"{x:.4f}".rstrip("0").rstrip(".")
+    if x >= 0.01:
+        return f"{x:.5f}"
+    return f"{x:.8f}"
 
 
-def stats(days=7):
-    since = (time.time() - days * 86400) * 1000
-    with store.lock:
-        h = [x for x in store.data["history"] if x["closed"] >= since]
-    if not h:
-        return dict(n=0, wr=0, total=0.0)
-    r = [x["R"] for x in h]
-    return dict(n=len(r), wr=round(100 * sum(v > 0 for v in r) / len(r), 1),
-                total=round(sum(r), 1))
-
-
-# ============================ الشارت ============================
-def fmt(p):
-    if p >= 1000:
-        return f"{p:,.2f}"
-    if p >= 1:
-        return f"{p:.4f}"
-    if p >= 0.01:
-        return f"{p:.5f}"
-    return f"{p:.8f}"
-
-
-def make_chart(res):
-    df = res["d4"].tail(CHART_BARS).reset_index(drop=True)
-    bg, fg = "#0b1220", "#d9e2f2"
+def render_chart(res, n_tps=4):
+    df = res["df"].tail(CHART_BARS).reset_index(drop=True)
+    lv, side, tf = res["lv"], res["side"], res["tf"]
+    bg, fg, grid = "#0b1220", "#d9e2f2", "#1c2740"
     up_c, dn_c = "#16c784", "#ea3943"
-    d = res["side"]
-    fig = plt.figure(figsize=(11, 8), facecolor=bg)
-    gs = fig.add_gridspec(3, 1, height_ratios=[5, 1.2, 1.2], hspace=0.05)
+    fig = plt.figure(figsize=(11, 7.5), facecolor=bg)
+    gs = fig.add_gridspec(2, 1, height_ratios=[4.2, 1], hspace=0.06)
     ax = fig.add_subplot(gs[0], facecolor=bg)
-    axv = fig.add_subplot(gs[1], facecolor=bg, sharex=ax)
-    axr = fig.add_subplot(gs[2], facecolor=bg, sharex=ax)
-    for i, r in df.iterrows():
-        col = up_c if r.c >= r.o else dn_c
-        ax.vlines(i, r.l, r.h, color=col, linewidth=1)
-        ax.add_patch(Rectangle((i - 0.3, min(r.o, r.c)), 0.6,
-                               max(abs(r.c - r.o), 1e-12), color=col))
-        axv.bar(i, r.v, color=col, width=0.7, alpha=0.7)
-    ax.plot(df.index, df.ema20, color="#f5c518", lw=1.1, label="EMA20")
-    ax.plot(df.index, df.ema50, color="#3b82f6", lw=1.1, label="EMA50")
-    ax.plot(df.index, df.ema200, color="#c084fc", lw=1.1, label="EMA200")
-    ax.fill_between(df.index, df.bb_lo, df.bb_up, color="#8892a6", alpha=0.06)
-    levels = [(res["entry"], "ENTRY", "#ffffff"), (res["sl"], "STOP", "#ff4d4d")]
-    for i, (tp_px, tp_pct, frac) in enumerate(res["targets"], 1):
-        levels.append((tp_px, f"TP{i} ({tp_pct}%)", "#16c784"))
-    x_end = len(df) - 1
-    for p, name, col in levels:
-        ax.axhline(p, color=col, lw=0.9, ls="--", alpha=0.85)
-        ax.text(x_end + 0.5, p, f" {name} {fmt(p)}", color=col, fontsize=8,
-                va="center", fontweight="bold")
-    lo = min(df.l.min(), res["sl"], min(t[0] for t in res["targets"]))
-    hi = max(df.h.max(), res["sl"], max(t[0] for t in res["targets"]))
+    axr = fig.add_subplot(gs[1], facecolor=bg, sharex=ax)
+    x = np.arange(len(df))
+    up = (df["close"] >= df["open"]).values
+    cols = [up_c if u else dn_c for u in up]
+    ax.vlines(x, df["low"], df["high"], colors=cols, linewidth=1)
+    body_lo = np.minimum(df["open"], df["close"])
+    body_h = np.maximum((df["close"] - df["open"]).abs(), (df["high"] - df["low"]) * 0.003)
+    ax.bar(x, body_h, bottom=body_lo, width=0.6, color=cols)
+    ax.plot(x, df["ema20"], color="#f5c518", lw=1.2, label="EMA20")
+    ax.plot(x, df["ema50"], color="#3b82f6", lw=1.2, label="EMA50")
+    ax.plot(x, df["ema200"], color="#c084fc", lw=1.3, label="EMA200")
+    ax.plot(x, df["bb_up"], color="#8892a6", lw=0.7, ls="--")
+    ax.plot(x, df["bb_lo"], color="#8892a6", lw=0.7, ls="--")
+    ax.fill_between(x, df["bb_lo"], df["bb_up"], color="#8892a6", alpha=0.07, label="Bollinger")
+
+    levels = [(lv["entry"], "ENTRY", "#ffffff", "-."), (lv["sl"], "STOP", "#ff4d4d", "--")]
+    for j, tp in enumerate(lv["tps"][:n_tps], 1):
+        levels.append((tp["px"], f"TP{j}", "#16c784", "--"))
+    xe = len(df) - 1
+    for p_, name, col, ls in levels:
+        ax.axhline(p_, color=col, lw=1.0, ls=ls, alpha=0.9)
+        ax.text(xe + 0.6, p_, f" {name} {fmt(p_)}", color=col, fontsize=8, va="center",
+                fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.15", fc=bg, ec=col, lw=0.6, alpha=0.9))
+    lo = min([float(df["low"].min())] + [v[0] for v in levels])
+    hi = max([float(df["high"].max())] + [v[0] for v in levels])
     pad = (hi - lo) * 0.05
     ax.set_ylim(lo - pad, hi + pad)
-    ax.set_xlim(-1, len(df) + 16)
-    axr.plot(df.index, df.rsi, color="#c084fc", lw=1)
-    axr.axhline(70, color=dn_c, lw=0.6, ls="--")
-    axr.axhline(30, color=up_c, lw=0.6, ls="--")
-    axr.set_ylim(0, 100)
-    for a_ in (ax, axv, axr):
+    ax.set_xlim(-1, len(df) + 17)
+
+    axr.plot(x, df["rsi"], color="#c084fc", lw=1.3, label="RSI 14")
+    axr.axhline(70, color=dn_c, lw=0.7, ls="--")
+    axr.axhline(30, color=up_c, lw=0.7, ls="--")
+    axr.fill_between(x, 30, 70, color="#c084fc", alpha=0.06)
+    axr.set_ylim(10, 90)
+
+    for a_ in (ax, axr):
         a_.tick_params(colors=fg, labelsize=8)
-        a_.grid(color="#1c2740", lw=0.5)
+        a_.grid(color=grid, lw=0.6)
         for sp in a_.spines.values():
-            sp.set_color("#1c2740")
+            sp.set_color(grid)
+        a_.yaxis.tick_right()
     plt.setp(ax.get_xticklabels(), visible=False)
-    plt.setp(axv.get_xticklabels(), visible=False)
     step = max(len(df) // 6, 1)
+    ts = pd.to_datetime(df["t"], unit="ms")
+    f_ = "%m-%d %H:%M" if tf == "4h" else "%Y-%m-%d"
     axr.set_xticks(range(0, len(df), step))
-    axr.set_xticklabels([df.t[i].strftime("%m-%d %H:%M")
-                          for i in range(0, len(df), step)], fontsize=8)
-    ax.yaxis.tick_right()
-    side_col = up_c if d == 1 else dn_c
-    mode = ("🚀 BREAKOUT" if res.get("is_breakout")
-            else ("🎯 PULLBACK" if res.get("is_pullback")
-                  else ("🌫️ GRAY" if res.get("is_gray") else "SETUP")))
-    ax.set_title(f"{res['sym']}/USDT • {res['tf'].upper()} • "
-                 f"{'LONG' if d == 1 else 'SHORT'} • "
-                 f"Grade {res['grade']} ({res['ok']}/{res['total']}) • {mode}",
-                 color=side_col, fontsize=13, fontweight="bold", loc="left")
-    ax.legend(loc="upper left", fontsize=8, facecolor=bg, edgecolor=bg,
-              labelcolor=fg)
-    fig.text(0.5, 0.5, WATERMARK, fontsize=70, color="white", alpha=0.10,
-             ha="center", va="center", rotation=25, fontweight="bold")
-    fig.text(0.985, 0.012, WATERMARK, fontsize=11, color="#f5c518",
-             ha="right", va="bottom", fontweight="bold")
+    axr.set_xticklabels([ts.iloc[i].strftime(f_) for i in range(0, len(df), step)], fontsize=8)
+    col = up_c if side == 1 else dn_c
+    ax.set_title(f"{res['sym']}/USDT  •  {tf.upper()}  •  {'LONG' if side == 1 else 'SHORT'}"
+                 f"  •  Grade {res['grade']}  •  {res['setup']}",
+                 color=col, fontsize=14, fontweight="bold", loc="left")
+    ax.legend(loc="upper left", fontsize=8, facecolor=bg, edgecolor=grid, labelcolor=fg)
+    axr.legend(loc="upper left", fontsize=7.5, facecolor=bg, edgecolor=grid, labelcolor=fg)
+    fig.text(0.5, 0.52, BRAND, fontsize=72, color="white", alpha=0.10, ha="center",
+             va="center", rotation=25, fontweight="bold")
+    fig.text(0.985, 0.012, BRAND, fontsize=11, color="#f5c518", ha="right",
+             va="bottom", fontweight="bold")
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=130, facecolor=bg, bbox_inches="tight")
     plt.close(fig)
@@ -771,142 +891,401 @@ def make_chart(res):
     return buf
 
 
-# ============================ الرسائل ============================
-def build_caption(res, tier="free"):
-    d = res["side"]
-    word = "شراء (LONG) 🟢" if d == 1 else "بيع (SHORT) 🔴"
-    gcol = {"A": "🟢", "B": "🟡", "C": "🔴"}[res["grade"]]
-    mode = ("🚀 Breakout" if res.get("is_breakout")
-            else ("🎯 Pullback" if res.get("is_pullback")
-                  else ("🌫️ Gray Zone" if res.get("is_gray") else "⚙️ Setup")))
-    lines = [
-        f"📊 <b>#{res['sym']}/USDT</b>",
-        "",
-        "⚡ OKX",
-        f"⏱ الفريم: {res['tf'].upper()}",
-        f"🔍 النوع: {mode}",
-        "",
-        f"💡 <b>التوصية: {word}</b>",
-        f"{gcol} الجودة: <b>{res['grade']}</b>",
-        "",
-        f"💵 السعر الحالي: <code>{fmt(res['price'])}</code>",
-        f"🚪 الدخول: <code>{fmt(res['entry'])}</code>",
-        f"🛑 الوقف: <code>{fmt(res['sl'])}</code>",
-    ]
-    if tier in ("vip", "admin"):
-        for i, (tp_px, tp_pct, frac) in enumerate(res["targets"], 1):
-            lines.append(f"🎯 الهدف {i} ({tp_pct}%): <code>{fmt(tp_px)}</code>")
-    else:
-        for i, (tp_px, tp_pct, frac) in enumerate(res["targets"][:2], 1):
-            lines.append(f"🎯 الهدف {i} ({tp_pct}%): <code>{fmt(tp_px)}</code>")
-        lines.append("🔒 الهدفان 3 و 4 في VIP")
-    lines += [
-        "",
-        f"📈 RSI {res['rsi']:.0f} | ADX {res['adx']:.0f}",
-        "━━━━━━━━━━━━━━━",
-        f"👤 <b>{WATERMARK}</b>",
-        "⚠️ ليس نصيحة مالية",
-    ]
-    return "\n".join(lines)[:1024]
+def build_caption(res, free=False):
+    side, lv, sym = res["side"], res["lv"], res["sym"]
+    tf_ar = {"1d": "يومي", "4h": "4 ساعات"}[res["tf"]]
+    word = "شراء LONG 🟢" if side == 1 else "بيع SHORT 🔴"
+    gem = {"A": "🟢", "B": "🟡", "C": "🔴"}[res["grade"]]
+    lines = [f"📊 <b>#{sym}/USDT</b> · {tf_ar}",
+             f"🎯 <b>التوصية: {word}</b>",
+             f"{gem} الدرجة <b>{res['grade']}</b> · النوع: {html.escape(res['setup'])}",
+             "",
+             f"💰 السعر الحالي: <code>{fmt(res['price'])}</code>",
+             f"🚪 الدخول (كسر): <code>{fmt(lv['entry'])}</code>"]
+    for j, tp in enumerate(lv["tps"], 1):
+        if free and j == 4:
+            lines.append("🔒 الهدف 4: في VIP")
+            break
+        pct = 100 * side * (tp["px"] - lv["entry"]) / lv["entry"]
+        lines.append(f"🎯 هدف {j}: <code>{fmt(tp['px'])}</code> ({pct:+.1f}%)")
+    sl_pct = 100 * lv["risk"] / lv["entry"]
+    r1 = abs(lv["tps"][0]["px"] - lv["entry"]) / lv["risk"]
+    lines += [f"🛑 الوقف: <code>{fmt(lv['sl'])}</code> (-{sl_pct:.1f}%)",
+              f"⚖️ الهدف 1 = {r1:.2f}R",
+              f"📈 RSI {res['rsi']:.0f} | ADX {res['adx']:.0f} | الشروط {res['ok']}/{res['total']}",
+              f"🔒 الوقف إلى Breakeven بعد الهدف 1 • Trail {P['trail_atr']:.0f}×ATR بعد الهدف {P['trail_after']}"]
+    if res["degraded"]:
+        lines.append("⚠️ بيانات محدودة/احتياطية - الدرجة C")
+    lines += ["⚠️ تحليل فني آلي وليس نصيحة مالية", f"<b>{BRAND}</b>"]
+    return "\n".join(lines)[:1020]
 
 
-def keyboard(sym, tf, tier):
-    if tier == "free":
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("💎 VIP", callback_data="vip")],
-            [InlineKeyboardButton("🔄 تحديث", callback_data=f"tf:{sym}:{tf}")]
-        ])
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 تحديث", callback_data=f"tf:{sym}:{tf}")]
-    ])
+# ═══════════════════════════ التتبع التلقائي ═══════════════════════════
+def active_signals():
+    with store.lock:
+        return [p for p in store.data["signals"] if p["state"] in ("pending", "open")]
 
 
-# ============================ أوامر البوت ============================
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    touch_user(update.effective_user)
-    await update.message.reply_text(
-        "👋 أهلاً بك في <b>ryma crypto</b>\n\n"
-        "• أرسل رمز العملة: <code>BTC</code>\n"
-        "• /scan — فحص السوق\n"
-        "• /bt BTC — اختبار تاريخي\n"
-        "• /vip — الاشتراك\n"
-        "• /myid — رقمك",
-        parse_mode=ParseMode.HTML)
+def can_track(res):
+    if res["rank"] < 1:
+        return False
+    act = active_signals()
+    return len(act) < MAX_OPEN and not any(p["coin"] == res["sym"] for p in act)
 
 
-async def cmd_myid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"🆔 {update.effective_user.id}")
+def track_signal(res):
+    p = new_trade(res["sym"], res["tf"], res["side"], res["lv"], res["bar_t"],
+                  res["grade"], res["setup"])
+    with store.lock:
+        store.data["signals"].append(p)
+        store.save("signals")
+    return p
 
 
-async def cmd_vip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if is_vip(uid):
-        days = (vip_until(uid) - u_now()) // DAY
-        await update.message.reply_text(f"💎 أنت VIP — باقي {days} يوم")
-        return
-    p = {k: pr for k, _, pr in PLANS}
-    await update.message.reply_text(
-        f"💎 <b>VIP — ryma crypto</b>\n\n"
-        f"✅ 4 أهداف كاملة\n"
-        f"✅ شورتات + Breakouts\n"
-        f"✅ تنبيهات لحظية\n"
-        f"✅ تحليل تلقائي كل 4 ساعات\n\n"
-        f"💰 {p['1m']}$ / {p['3m']}$ / {p['1y']}$\n"
-        f"📞 {CONTACT_LINK}\n"
-        f"🔗 {VIP_LINK}",
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True)
+def _archive(p):
+    with store.lock:
+        store.data["history"].append(dict(
+            coin=p["coin"], tf=p["tf"], side=p["side"], grade=p["grade"], setup=p["setup"],
+            R=p["R"], result=p["result"], opened=p["opened"], closed=p["closed"],
+            bars=p["bars"], mfe=round(p["mfe"], 2), mae=round(p["mae"], 2)))
+        del store.data["history"][:-1500]
+        cutoff = time.time() * 1000 - 3 * DAY * 1000
+        store.data["signals"] = [q for q in store.data["signals"]
+                                 if q["state"] in ("pending", "open") or (q.get("closed") or q["created"]) > cutoff]
+        store.save("signals", "history")
 
 
-async def handle_symbol(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
-                        text: str, to_channel=False):
-    sym = clean_symbol(text)
-    if not sym:
-        await update.message.reply_text("اكتب رمز عملة صحيح")
-        return
-    user = touch_user(update.effective_user)
-    st, day = user_status(user["id"], user)
-    if st == "blocked":
-        await update.message.reply_text("⛔ انتهت التجربة. اكتب /vip")
-        return
-    wait = await update.message.reply_text(f"⏳ تحليل {sym}...")
-    try:
-        res = await asyncio.to_thread(analyze, sym)
-        if res is None:
-            await wait.edit_text(f"❌ لا توجد بيانات لـ {sym}")
-            return
-
-        tier = "admin" if st == "admin" else ("vip" if st == "vip" else "free")
-        target = CHANNEL_ID if (to_channel and CHANNEL_ID) else update.effective_chat.id
-        kb = keyboard(sym, res["tf"], tier)
-        text_cap = build_caption(res, tier)
-
-        chart_sent = False
+def check_signals_sync():
+    """يمشي على الشموع المغلقة الجديدة لكل صفقة نشطة. يرجع [(coin, tf, side, event)]."""
+    notes = []
+    by = {}
+    for p in active_signals():
+        by.setdefault((p["coin"], p["tf"]), []).append(p)
+    for (coin, tf), plist in by.items():
         try:
-            img = await asyncio.to_thread(make_chart, res)
-            if img is not None:
-                await ctx.bot.send_photo(target, photo=img, caption=text_cap,
-                                          parse_mode=ParseMode.HTML, reply_markup=kb)
-                chart_sent = True
+            d = add_indicators(get_candles(coin, tf, 450, min_bars=60))
         except Exception as e:
-            log.error(f"chart failed for {sym}: {e}")
+            log.info("tracker data %s failed: %s", coin, str(e)[:80])
+            continue
+        for p in plist:
+            with store.lock:
+                for row in d[d["t"] >= p["next_t"]].itertuples():
+                    ev = trade_step(p, row.open, row.high, row.low, row.close, row.atr)
+                    p["next_t"] = int(row.t) + TF_MS[tf]
+                    notes += [(coin, tf, p["side"], e, p.get("R")) for e in ev if e["kind"] != "DONE"]
+                    if p["state"] in ("closed", "expired"):
+                        break
+                store.save("signals")
+            if p["state"] == "closed":
+                _archive(p)
+            elif p["state"] == "expired":
+                _archive_expired(p)
+    return notes
 
-        if not chart_sent:
-            await ctx.bot.send_message(target, text_cap,
-                                        parse_mode=ParseMode.HTML, reply_markup=kb)
 
-        if res["side"] != 0 and res["grade"] in ("A", "B"):
-            try:
-                await asyncio.to_thread(track_signal, res)
-            except Exception as e:
-                log.warning(f"track failed: {e}")
+def _archive_expired(p):
+    with store.lock:
+        store.data["signals"] = [q for q in store.data["signals"] if q["id"] != p["id"]]
+        store.save("signals")
 
-    except Exception as e:
-        log.exception("handle_symbol failed")
+
+def event_text(coin, tf, side, e, R):
+    head = f"{'🟢' if side == 1 else '🔴'} #{coin} · {tf}"
+    k = e["kind"]
+    if k == "ENTRY":
+        return f"{head}\n✅ تفعّل الدخول عند {fmt(e['px'])}"
+    if k == "TP":
+        return f"{head}\n🎯 تحقق الهدف {e['j']} ✅ ({fmt(e['px'])})"
+    if k == "BE_MOVED":
+        return f"{head}\n🔒 نُقل الوقف إلى Breakeven ({fmt(e['px'])})"
+    if k == "SL":
+        return f"{head}\n🛑 ضرب الوقف ({R:+.2f}R)" if R is not None else f"{head}\n🛑 ضرب الوقف"
+    if k == "BE":
+        return f"{head}\n🔒 خروج على Breakeven ({R:+.2f}R)" if R is not None else f"{head}\n🔒 خروج على Breakeven"
+    if k == "TRAIL":
+        return f"{head}\n🔁 خروج بالـ Trailing ({R:+.2f}R)" if R is not None else f"{head}\n🔁 خروج بالـ Trailing"
+    if k == "TIME_STOP":
+        return f"{head}\n⏱ Time Stop - أُغلقت الصفقة" + (f" ({R:+.2f}R)" if R is not None else "")
+    if k == "TIME":
+        return f"{head}\n⏱ انتهت مدة الاحتفاظ" + (f" ({R:+.2f}R)" if R is not None else "")
+    if k == "EXPIRED":
+        return f"{head}\n⌛ انتهت صلاحية أمر الدخول ولم يتفعل"
+    return None
+
+
+async def notify(bot, text):
+    for chat in (VIP_CHANNEL, ADMIN_ID or None):
+        if not chat:
+            continue
         try:
-            await wait.edit_text(f"⚠️ خطأ: {str(e)[:200]}")
+            await bot.send_message(chat, text, protect_content=PROTECT if chat != ADMIN_ID else False)
+        except Exception as e:
+            log.info("notify failed: %s", str(e)[:80])
+
+
+async def tracker_loop(app):
+    await asyncio.sleep(30)
+    while True:
+        try:
+            notes = await asyncio.to_thread(check_signals_sync)
+            for coin, tf, side, e, R in notes:
+                txt = event_text(coin, tf, side, e, R)
+                if txt:
+                    await notify(app.bot, txt)
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            pass
+            log.exception("tracker loop")
+        await asyncio.sleep(300)
+
+
+# ═══════════════════════════ النشر ═══════════════════════════
+async def publish(bot, res, vip=True, free=False):
+    sent = []
+    try:
+        if vip and VIP_CHANNEL:
+            img = await asyncio.to_thread(render_chart, res, 4)
+            await bot.send_photo(VIP_CHANNEL, img, caption=build_caption(res),
+                                 parse_mode=ParseMode.HTML, protect_content=PROTECT)
+            sent.append("VIP")
+        if free and CHANNEL:
+            img = await asyncio.to_thread(render_chart, res, 3)
+            await bot.send_photo(CHANNEL, img, caption=build_caption(res, free=True),
+                                 parse_mode=ParseMode.HTML, protect_content=PROTECT)
+            sent.append("FREE")
+    except Exception as e:
+        log.warning("publish failed: %s", e)
+        sent.append(f"خطأ: {str(e)[:60]}")
+    return sent
+
+
+_free_day = {"d": "", "n": 0}
+
+
+async def run_autopost(bot):
+    results = await asyncio.to_thread(scan_sync, COINS)
+    cands = [r for r in results if r["rank"] >= 1]
+    cands.sort(key=lambda r: (-r["rank"], -r["ok"]))
+    today = dt.datetime.utcnow().strftime("%Y%m%d")
+    if _free_day["d"] != today:
+        _free_day.update(d=today, n=0)
+    vip_n = free_n = 0
+    for r in cands:
+        key = f"{r['sym']}:{r['tf']}:{r['bar_t']}"
+        if key in store.data["posted"] or not can_track(r):
+            continue
+        if vip_n >= VIP_POSTS_PER_CYCLE:
+            break
+        free = free_n < FREE_POSTS_PER_CYCLE and _free_day["n"] < FREE_MAX_PER_DAY
+        sent = await publish(bot, r, vip=True, free=free)
+        if sent and not any(s.startswith("خطأ") for s in sent):
+            track_signal(r)
+            with store.lock:
+                store.data["posted"][key] = now_s()
+                cut = now_s() - 14 * DAY
+                store.data["posted"] = {k: v for k, v in store.data["posted"].items() if v > cut}
+                store.save("posted")
+            vip_n += 1
+            if free:
+                free_n += 1
+                _free_day["n"] += 1
+            await asyncio.sleep(2)
+    log.info("autopost: %d candidates, vip=%d free=%d", len(cands), vip_n, free_n)
+
+
+async def autopost_loop(app):
+    await asyncio.sleep(20)
+    while True:
+        try:
+            now = time.time()
+            nxt = (int(now // 14400) + 1) * 14400 + 90      # بعد إغلاق شمعة 4h بدقيقة ونصف
+            await asyncio.sleep(max(5, nxt - now))
+            await run_autopost(app.bot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("autopost loop")
+            await asyncio.sleep(60)
+
+
+# ═══════════════════════════ Backtest (نفس المنطق الحي) ═══════════════════════════
+def simulate(df, sig, sym, tf, min_rank=1):
+    n = len(df)
+    o, h, l, c = (df[k].values for k in ("open", "high", "low", "close"))
+    atr, t = df["atr"].values, df["t"].values
+    side_a, rank_a, setup_a = sig["side"].values, sig["rank"].values, sig["setup"].values
+    trades, i = [], 210
+    while i < n - 1:
+        if rank_a[i] < min_rank:
+            i += 1
+            continue
+        s = int(side_a[i])
+        lv = make_levels(df, i, s, tf)
+        if lv is None:
+            i += 1
+            continue
+        p = new_trade(sym, tf, s, lv, int(t[i]), GRADE[int(rank_a[i])], str(setup_a[i]))
+        j = i + 1
+        while j < n:
+            trade_step(p, o[j], h[j], l[j], c[j], atr[j])
+            if p["state"] in ("closed", "expired"):
+                break
+            j += 1
+        if p["state"] == "open":
+            close_at(p, float(c[n - 1]), "TIME")
+            j = n - 1
+        if p["state"] == "closed":
+            trades.append(dict(coin=sym, t=int(t[min(j, n - 1)]), R=p["R"], exit=p["result"],
+                               setup=p["setup"], grade=p["grade"], side=s, bars=p["bars"]))
+        i = j + 1
+    return trades
+
+
+def backtest_symbol(sym, years=3.0):
+    tf = default_tf(sym)
+    per_year = 6 * 365 if tf == "4h" else 365
+    bars = int(years * per_year) + 260
+    dbars = int(years * 365) + 300
+    df = get_candles(sym, tf, bars, ttl=900)
+    btc_d = get_candles("BTC", "1d", dbars, ttl=900)
+    own_d = df if tf == "1d" else get_candles(sym, "1d", dbars, ttl=900)
+    df = add_indicators(df)
+    sig = evaluate(df, sym, tf, daily_table(btc_d), daily_table(own_d),
+                   bool(df.attrs.get("degraded")))
+    return simulate(df, sig, sym, tf), int(df["t"].iloc[210]), int(df["t"].iloc[-1])
+
+
+def metrics(trs):
+    if not trs:
+        return dict(n=0, wr=0.0, pf=0.0, total=0.0, avg=0.0, dd=0.0)
+    R = np.array([x["R"] for x in sorted(trs, key=lambda z: z["t"])], dtype=float)
+    g, l = R[R > 0].sum(), -R[R <= 0].sum()
+    eq = np.cumsum(R)
+    return dict(n=len(R), wr=round(100 * float((R > 0).mean()), 1),
+                pf=round(float(g / l), 2) if l > 0 else 999.0,
+                total=round(float(R.sum()), 1), avg=round(float(R.mean()), 3),
+                dd=round(float((np.maximum.accumulate(eq) - eq).max()), 1))
+
+
+def _mline(tag, m):
+    return f"{tag}: n={m['n']} | WR {m['wr']}% | PF {m['pf']} | {m['total']:+}R | متوسط {m['avg']:+}R | DD {m['dd']}R"
+
+
+def _breakdown(trs, key):
+    by = {}
+    for x in trs:
+        by.setdefault(x[key], []).append(x["R"])
+    return [f"  {k}: n={len(v)} | متوسط {np.mean(v):+.2f}R" for k, v in sorted(by.items())]
+
+
+def bt_report(per, tmin, tmax):
+    allt = [x for tr in per.values() for x in tr]
+    cut = tmin + 0.65 * (tmax - tmin)
+    tr = [x for x in allt if x["t"] < cut]
+    te = [x for x in allt if x["t"] >= cut]
+    lines = [f"📊 Backtest ({PROFILE}) - {len(per)} عملة",
+             _mline("TRAIN", metrics(tr)), _mline("TEST ", metrics(te)), "",
+             "أنواع الخروج (TEST):"] + _breakdown(te, "exit") + \
+            ["", "حسب النوع (TEST):"] + _breakdown(te, "setup") + \
+            ["", "حسب الدرجة (TEST):"] + _breakdown(te, "grade")
+    me = metrics(te)
+    if me["n"] < 30:
+        v = "عينة صغيرة - لا تعتمد"
+    elif me["pf"] >= 1.5:
+        v = "جيد (مع الحذر)"
+    elif me["pf"] >= 1.1:
+        v = "مقبول"
+    else:
+        v = "ضعيف - لا تنشر بهذه القواعد"
+    lines += ["", f"الحكم: {v}", "الرسوم والانزلاق محسوبة. الأداء السابق لا يضمن المستقبل."]
+    csv = "coin,type,tr_n,tr_wr,tr_pf,tr_total,te_n,te_wr,te_pf,te_total\n"
+    for coin, trs in per.items():
+        a = metrics([x for x in trs if x["t"] < cut])
+        b = metrics([x for x in trs if x["t"] >= cut])
+        csv += f"{coin},{'M' if coin in MAJORS else 'A'},{a['n']},{a['wr']},{a['pf']},{a['total']},{b['n']},{b['wr']},{b['pf']},{b['total']}\n"
+    return "\n".join(lines), csv
+
+
+def backtest_many(symbols, years):
+    per, tmin, tmax = {}, None, None
+    for s in symbols:
+        try:
+            trs, a, b = backtest_symbol(s, years)
+            per[s] = trs
+            tmin = a if tmin is None else min(tmin, a)
+            tmax = b if tmax is None else max(tmax, b)
+        except Exception as e:
+            log.info("bt %s failed: %s", s, str(e)[:80])
+    return per, tmin, tmax
+
+
+# ═══════════════════════════ أوامر تليجرام ═══════════════════════════
+def admin_only(fn):
+    @functools.wraps(fn)
+    async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not ADMIN_ID or not update.effective_user or update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("⛔ هذا الأمر للأدمن فقط")
+            return
+        try:
+            return await fn(update, ctx)
+        except Exception as e:
+            log.exception("admin cmd failed")
+            await update.message.reply_text(f"⚠️ خطأ: {str(e)[:200]}")
+    return wrapper
+
+
+def clean_symbol(text):
+    s = (text or "").upper().strip().replace("$", "").replace("/", "").replace("-", "")
+    for suf in ("USDT", "USDC", "PERP", "USD"):
+        if s.endswith(suf) and len(s) > len(suf):
+            s = s[: -len(suf)]
+    return s if re.fullmatch(r"[A-Z0-9]{2,12}", s) else ""
+
+
+_cooldown = {}
+
+
+async def gate(update):
+    """يسجل المستخدم ويفحص التجربة/VIP. يرجع (status, ok)."""
+    user = update.effective_user
+    rec = touch_user(user)
+    st, day = user_status(user.id, rec)
+    if st == "blocked":
+        await update.message.reply_text(
+            f"⛔ انتهت فترة التجربة المجانية.\nللاشتراك في VIP: /vip أو تواصل {CONTACT_LINK}")
+        return st, False
+    if st != "admin":
+        if time.time() - _cooldown.get(user.id, 0) < 3:
+            await update.message.reply_text("⏳ انتظر ثلاث ثوانٍ بين الطلبات")
+            return st, False
+        _cooldown[user.id] = time.time()
+    return st, True
+
+
+async def handle_symbol(update: Update, raw: str):
+    st, ok = await gate(update)
+    if not ok:
+        return
+    sym = clean_symbol(raw)
+    if not sym:
+        await update.message.reply_text("اكتب رمز العملة مثل: BTC")
+        return
+    wait = await update.message.reply_text(f"⏳ جاري تحليل {sym} ...")
+    try:
+        res = await asyncio.to_thread(get_analysis, sym)
+        img = await asyncio.to_thread(render_chart, res, 4)
+        cap = build_caption(res)
+        if st == "warning":
+            cap = cap[:960] + "\n⚠️ انتهت تجربتك المجانية - اشترك VIP: /vip"
+        await update.message.reply_photo(photo=img, caption=cap, parse_mode=ParseMode.HTML,
+                                         protect_content=(st != "admin" and PROTECT))
+    except PairNotFound:
+        await update.message.reply_text(f"❌ لم أجد العملة {sym} في أي منصة")
+    except NoData:
+        await update.message.reply_text("⚠️ تعذر جلب البيانات الآن، حاول بعد قليل")
+    except Exception:
+        log.exception("analysis failed")
+        await update.message.reply_text("⚠️ حدث خطأ أثناء التحليل")
     finally:
         try:
             await wait.delete()
@@ -914,516 +1293,375 @@ async def handle_symbol(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
             pass
 
 
-async def cmd_a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not ctx.args:
-        await update.message.reply_text("مثال: /a BTC")
-        return
-    await handle_symbol(update, ctx, ctx.args[0])
-
-
-async def cmd_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if not ctx.args:
-        await update.message.reply_text("مثال: /post BTC")
-        return
-    await handle_symbol(update, ctx, ctx.args[0], to_channel=True)
-
-
-async def cmd_bt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not ctx.args:
-        await update.message.reply_text("مثال: /bt BTC")
-        return
-    sym = clean_symbol(ctx.args[0])
-    wait = await update.message.reply_text(f"⏳ Backtest {sym}...")
-    try:
-        txt = await asyncio.to_thread(backtest_simple, sym)
-        await wait.edit_text(txt, parse_mode=ParseMode.HTML)
-    except Exception as e:
-        log.exception("bt failed")
-        await wait.edit_text(f"⚠️ خطأ: {str(e)[:200]}")
-
-
-async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await cmd_bt(update, ctx)
-
-
-def backtest_simple(sym, bars=3000):
-    tf = get_tf(sym)
-    df, _ = fetch_ohlcv(sym, tf, bars, ttl=900)
-    if df is None:
-        return f"❌ لا توجد بيانات لـ {sym}"
-    df = add_ind(df.iloc[:-1]).reset_index(drop=True)
-    n = len(df)
-    if n < 500:
-        return f"❌ عينة صغيرة لـ {sym}"
-
-    if sym == "BTC":
-        reg = (df.c > ema(df.c, 1200)).astype(int) * 2 - 1
-    else:
-        bdf, _ = fetch_ohlcv("BTC", tf, bars, ttl=900)
-        if bdf is None:
-            return f"❌ لا توجد بيانات BTC"
-        bdf = bdf.iloc[:-1].copy()
-        bdf["reg"] = (bdf.c > ema(bdf.c, 1200)).astype(int) * 2 - 1
-        reg = pd.merge_asof(df[["t"]], bdf[["t", "reg"]], on="t")["reg"].fillna(0)
-
-    sigs = {}
-    for d in (1, -1):
-        cf = cond_frame(df, d)
-        pullback = (cf["trend"] & cf["adx"] & cf["vol"] & cf["pullback"]
-                    & cf["rsi"] & cf["confirm"])
-        breakout = (cf["trend"] & cf["breakout"])
-        gray = (cf["adx"] & cf["vol"] & cf["gray_zone"] & cf["confirm"])
-        sigs[d] = ((pullback | breakout | gray) & (reg.values == d)).values
-
-    H, L, C, O = df.h.values, df.l.values, df.c.values, df.o.values
-    ATR = df.atr.values
-    trades = []
-    i, cd = 250, 0
-    while i < n - 2:
-        if i < cd:
-            i += 1
-            continue
-        d = 1 if sigs[1][i] else (-1 if sigs[-1][i] else 0)
-        if d == 0:
-            i += 1
-            continue
-        entry, sl, risk = trade_levels(df, i, d)
-        fill = None
-        for j in range(i + 1, min(i + 1 + ORDER_EXPIRE, n)):
-            if (d == 1 and H[j] >= entry) or (d == -1 and L[j] <= entry):
-                fill = j
-                break
-        if fill is None:
-            i += 1
-            continue
-        px = max(entry, O[fill]) if d == 1 else min(entry, O[fill])
-        risk = abs(px - sl)
-        if risk <= 0:
-            i = fill + 1
-            continue
-        targets = build_targets(px, d)
-        rem, realized = 1.0, 0.0
-        tp_hits = [False] * 4
-        cur_sl = sl
-        exit_i = None
-        for k in range(fill, min(fill + MAX_HOLD + 1, n)):
-            if (d == 1 and L[k] <= cur_sl) or (d == -1 and H[k] >= cur_sl):
-                realized += rem * d * (cur_sl - px) / risk
-                rem, exit_i = 0.0, k
-                break
-            for ti, (tp_px, tp_pct, frac) in enumerate(targets):
-                if tp_hits[ti]:
-                    continue
-                if (d == 1 and H[k] >= tp_px) or (d == -1 and L[k] <= tp_px):
-                    realized += frac * (tp_pct / 100.0) * px / risk
-                    rem -= frac
-                    tp_hits[ti] = True
-            if tp_hits[0]:
-                cur_sl = (max(cur_sl, px + d * BE_R * risk) if d == 1
-                          else min(cur_sl, px + d * BE_R * risk))
-            if tp_hits[1]:
-                cur_sl = (max(cur_sl, C[k] - d * TRAIL_ATR * ATR[k]) if d == 1
-                          else min(cur_sl, C[k] + d * TRAIL_ATR * ATR[k]))
-        if rem > 0:
-            k = min(fill + MAX_HOLD, n - 1)
-            realized += rem * d * (C[k] - px) / risk
-            exit_i = k
-        cost = 2 * (FEE + SLIP) * px / risk
-        trades.append(realized - cost)
-        cd = exit_i + COOLDOWN
-        i = exit_i + 1
-
-    if not trades:
-        return f"📊 {sym} ({tf}): لا صفقات"
-    R = np.array(trades)
-    wr = 100 * (R > 0).mean()
-    pf = R[R > 0].sum() / max(-R[R < 0].sum(), 1e-9)
-    return (f"📊 <b>Backtest {sym}</b> ({tf}, {n} شمعة)\n"
-            f"الصفقات: {len(R)} | WR: {wr:.1f}% | PF: {pf:.2f}\n"
-            f"مجموع R: {R.sum():+.1f} | متوسط: {R.mean():+.2f}")
-
-
-async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    wait = await update.message.reply_text("⏳ فحص السوق...")
-    rows = []
-    for sym in SCAN_LIST:
-        try:
-            r = await asyncio.to_thread(analyze, sym)
-            if r and r["side"] != 0:
-                rows.append(r)
-        except Exception:
-            continue
-    rows.sort(key=lambda x: -x["ok"])
-    if not rows:
-        await wait.edit_text("لا توجد إشارات حالياً")
-        return
-    lines = ["<b>🎯 أفضل الإعدادات</b>\n"]
-    for r in rows[:10]:
-        s = "🟢 LONG" if r["side"] == 1 else "🔴 SHORT"
-        mode = ("🚀" if r.get("is_breakout")
-                else ("🎯" if r.get("is_pullback")
-                      else ("🌫️" if r.get("is_gray") else "⚙️")))
-        lines.append(f"{r['grade']} {mode} <b>{r['sym']}</b> "
-                     f"({r['tf']}) {s} {r['ok']}/{r['total']}")
-    await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
-
-
-async def cmd_short(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    wait = await update.message.reply_text("⏳ فحص الشورتات...")
-    rows = []
-    for sym in SCAN_LIST:
-        try:
-            r = await asyncio.to_thread(analyze, sym)
-            if r and r["side"] == -1:
-                rows.append(r)
-        except Exception:
-            continue
-    rows.sort(key=lambda x: -x["ok"])
-    if not rows:
-        await wait.edit_text("لا توجد شورتات حالياً")
-        return
-    lines = ["<b>🔴 إشارات البيع</b>\n"]
-    for r in rows[:10]:
-        mode = ("🚀" if r.get("is_breakout")
-                else ("🎯" if r.get("is_pullback")
-                      else ("🌫️" if r.get("is_gray") else "⚙️")))
-        lines.append(f"{r['grade']} {mode} <b>{r['sym']}</b> "
-                     f"({r['tf']}) {r['ok']}/{r['total']}")
-    await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
-
-
-async def cmd_pump(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    wait = await update.message.reply_text("⏳ فحص الانفجارات...")
-    rows = []
-    for sym in SCAN_LIST:
-        try:
-            df, _ = await asyncio.to_thread(fetch_ohlcv, sym, get_tf(sym), 100)
-            if df is None or len(df) < 30:
-                continue
-            d = add_ind(df)
-            last = d.iloc[-1]
-            if pd.isna(last.rvol):
-                continue
-            if last.rvol > 1.5:
-                chg = (last.c / d.iloc[-4].c - 1) * 100 if len(d) >= 4 else 0
-                if chg > 2:
-                    rows.append((sym, last.c, last.rvol, chg))
-        except Exception:
-            continue
-    rows.sort(key=lambda x: -x[2])
-    if not rows:
-        await wait.edit_text("لا توجد انفجارات حالياً")
-        return
-    lines = ["<b>💥 الانفجارات (RVOL > 1.5)</b>\n"]
-    for sym, price, rvol, chg in rows[:10]:
-        lines.append(f"🚀 <b>{sym}</b>: {fmt(price)} | x{rvol:.1f} | +{chg:.1f}%")
-    await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
-
-
-async def cmd_bottom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    wait = await update.message.reply_text("⏳ فحص القيعان...")
-    rows = []
-    for sym in SCAN_LIST:
-        try:
-            df, _ = await asyncio.to_thread(fetch_ohlcv, sym, "1d", 200)
-            if df is None or len(df) < 100:
-                continue
-            d = add_ind(df)
-            last = d.iloc[-1]
-            lo90 = float(d.l.tail(90).min())
-            near_low = (last.c / lo90 - 1) * 100
-            if pd.isna(last.rsi) or last.rsi > 45:
-                continue
-            if near_low > 30:
-                continue
-            rows.append((sym, last.c, last.rsi, near_low))
-        except Exception:
-            continue
-    rows.sort(key=lambda x: x[2])
-    if not rows:
-        await wait.edit_text("لا توجد قيعان حالياً")
-        return
-    lines = ["<b>🧲 مناطق القيعان</b>\n"]
-    for sym, price, rsi, near in rows[:10]:
-        lines.append(f"🔻 <b>{sym}</b>: {fmt(price)} | RSI {rsi:.0f} | {near:+.1f}% من القاع")
-    await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
-
-
-async def cmd_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not ctx.args:
-        await update.message.reply_text("مثال: /price BTC")
-        return
-    sym = clean_symbol(ctx.args[0])
-    try:
-        prices = await asyncio.to_thread(fetch_prices, sym)
-        if not prices:
-            await update.message.reply_text(f"❌ لا يوجد سعر لـ {sym}")
-            return
-        import statistics
-        avg = statistics.median(prices.values())
-        lines = [f"💰 <b>{sym}/USDT</b>"]
-        for name, p in prices.items():
-            lines.append(f"• {name}: {fmt(p)}")
-        lines.append(f"\n📊 متوسط: {fmt(avg)} ({len(prices)} منصات)")
-        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ {str(e)[:150]}")
-
-
-async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    with store.lock:
-        us = sorted(store.data["users"].values(),
-                    key=lambda u: -u.get("last_seen", 0))[:25]
-    lines = [f"👥 <b>المستخدمون</b> ({len(store.data['users'])})", ""]
-    for u in us:
-        name = (u.get('name') or '').strip()
-        un = (u.get('username') or '').strip()
-        label = f"{name} (@{un})" if name and un else (name or (f"@{un}" if un else f"ID:{u['id']}"))
-        st, _ = user_status(int(u['id']), u)
-        icon = {"admin": "👑", "vip": "💎", "trial": "🆓",
-                "warning": "⚠️", "blocked": "⛔"}.get(st, "•")
-        lines.append(f"{icon} {label} — {u.get('requests', 0)} طلب")
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
-
-
-async def cmd_testchannels(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    out = []
-    for name, cid in (("Free", CHANNEL_ID), ("VIP", VIP_CHANNEL_ID)):
-        if not cid:
-            out.append(f"❌ {name}: غير مضبوط")
-            continue
-        try:
-            await ctx.bot.send_message(cid, f"✅ اختبار {name}")
-            out.append(f"✅ {name}: {cid}")
-        except Exception as e:
-            out.append(f"❌ {name}: {str(e)[:80]}")
-    await update.message.reply_text("\n".join(out))
-
-
-async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    s = stats(7)
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    touch_user(update.effective_user)
     await update.message.reply_text(
-        f"📈 آخر 7 أيام\nصفقات: {s['n']} | WR: {s['wr']}% | {s['total']}R")
+        f"👋 أهلاً بك في {BRAND}\n\n"
+        "أرسل رمز أي عملة (مثل BTC أو sol) وسأرسل لك الشارت مع التوصية كاملة.\n\n"
+        "/a SYMBOL - تحليل عملة\n/scan - أفضل الإعدادات الآن\n/vip - الاشتراك\n/myid - رقمك\n\n"
+        f"تجربة مجانية {TRIAL_DAYS} أيام للمستخدمين الجدد.\n"
+        "⚠️ ليس نصيحة مالية.")
 
 
-async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    with store.lock:
-        h = sorted(store.data["history"], key=lambda x: -x.get("closed", 0))[:15]
-    if not h:
-        await update.message.reply_text("لا يوجد")
-        return
-    lines = ["📜 آخر 15:"]
-    for x in h:
-        side = "🟢" if x["side"] == 1 else "🔴"
-        e = {"TP": "✅", "SL": "🛑"}.get(x.get("result", ""), "•")
-        lines.append(f"{e} {side} #{x['coin']} R={x['R']:+.2f}")
+async def cmd_myid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"🆔 رقمك: {update.effective_user.id}")
+
+
+async def cmd_vip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    rec = touch_user(u)
+    st, day = user_status(u.id, rec)
+    lines = ["💎 اشتراك VIP", ""]
+    for name, days, price in PLANS:
+        lines.append(f"• {name} ({days} يوم): {price}$")
+    lines += ["", "طريقة الدفع:", PAYMENT_INFO or f"تواصل مع {CONTACT_LINK}",
+              "", f"بعد الدفع أرسل رقمك (/myid) ولقطة الدفع إلى {CONTACT_LINK}"]
+    if VIP_LINK:
+        lines.append(f"\nقناة VIP: {VIP_LINK}")
+    if st == "vip":
+        lines.append(f"\n✅ اشتراكك فعّال، متبقي {(vip_until(u.id) - now_s()) // DAY} يوم")
+    elif st == "trial":
+        lines.append(f"\n🎁 تجربتك المجانية: اليوم {day} من {TRIAL_DAYS}")
+    elif st == "warning":
+        lines.append(f"\n⚠️ انتهت التجربة. سيُغلق الوصول عند اليوم {VIP_FORCE_DAY}")
     await update.message.reply_text("\n".join(lines))
 
 
-async def cmd_dashboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+async def cmd_analyze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        await update.message.reply_text("مثال: /a BTC")
         return
-    with store.lock:
-        users = len(store.data["users"])
-        vip = sum(1 for u in store.data["vip"].values()
-                  if u["expires"] > u_now())
-        opens = sum(1 for p in store.data["signals"]
-                    if p["status"] == "open")
-    await update.message.reply_text(
-        f"🖥 <b>Dashboard v9</b>\n\n"
-        f"👥 المستخدمون: {users}\n"
-        f"💎 VIP: {vip}\n"
-        f"📊 صفقات مفتوحة: {opens}\n"
-        f"💾 Store: {store.remote_msg}",
-        parse_mode=ParseMode.HTML)
-
-
-async def cmd_addvip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if len(ctx.args) < 2:
-        await update.message.reply_text("مثال: /addvip 123456789 30")
-        return
-    uid, days = int(ctx.args[0]), int(ctx.args[1])
-    exp = add_vip(uid, days)
-    e = dt.datetime.utcfromtimestamp(exp).strftime("%Y-%m-%d")
-    await update.message.reply_text(f"✅ VIP {uid} حتى {e}")
-
-
-async def cmd_removevip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if len(ctx.args) < 1:
-        await update.message.reply_text("مثال: /removevip 123456789")
-        return
-    ok = remove_vip(int(ctx.args[0]))
-    await update.message.reply_text("✅" if ok else "ليس VIP")
-
-
-async def cmd_viplist(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    now = u_now()
-    rows = [(u, v["expires"]) for u, v in store.data["vip"].items()
-            if v["expires"] > now]
-    if not rows:
-        await update.message.reply_text("لا يوجد")
-        return
-    rows.sort(key=lambda r: r[1])
-    await update.message.reply_text("💎 VIP\n" + "\n".join(
-        f"{u} — {(e-now)//86400} يوم" for u, e in rows))
+    await handle_symbol(update, ctx.args[0])
 
 
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await handle_symbol(update, ctx, update.message.text.split()[0])
+    if update.message and update.message.text:
+        await handle_symbol(update, update.message.text.split()[0])
 
 
-async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "vip":
-        await cmd_vip(update, ctx)
+@admin_only
+async def cmd_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        await update.message.reply_text("مثال: /post BTC")
         return
-    if q.data.startswith("tf:"):
-        parts = q.data.split(":")
-        sym, tf = parts[1], parts[2]
-        user = touch_user(q.from_user)
-        st, _ = user_status(q.from_user.id, user)
-        tier = "admin" if st == "admin" else ("vip" if st == "vip" else "free")
-        _data_cache.pop((sym, tf, 400), None)
-        try:
-            res = await asyncio.to_thread(analyze, sym)
-            if res is None:
-                await q.message.reply_text("❌ لا توجد بيانات")
-                return
-            kb = keyboard(sym, res["tf"], tier)
-            text_cap = build_caption(res, tier)
-            chart_sent = False
-            try:
-                img = await asyncio.to_thread(make_chart, res)
-                if img is not None:
-                    await ctx.bot.send_photo(q.message.chat.id, photo=img,
-                                              caption=text_cap,
-                                              parse_mode=ParseMode.HTML,
-                                              reply_markup=kb)
-                    chart_sent = True
-            except Exception as e:
-                log.error(f"cb chart failed: {e}")
-            if not chart_sent:
-                await ctx.bot.send_message(q.message.chat.id, text_cap,
-                                            parse_mode=ParseMode.HTML,
-                                            reply_markup=kb)
-        except Exception as e:
-            log.exception("cb failed")
-            await q.message.reply_text(f"⚠️ {str(e)[:200]}")
+    sym = clean_symbol(ctx.args[0])
+    if not sym:
+        await update.message.reply_text("رمز غير صالح")
+        return
+    res = await asyncio.to_thread(get_analysis, sym, True)
+    sent = await publish(ctx.bot, res, vip=True, free=True)
+    tracked = ""
+    if sent and can_track(res):
+        track_signal(res)
+        tracked = " + تتبع تلقائي"
+    elif res["rank"] < 1:
+        tracked = " (الدرجة C - بدون تتبع)"
+    await update.message.reply_text(f"✅ نُشر في: {', '.join(sent) or 'لا توجد قنوات مضبوطة'}{tracked}")
 
 
-# ============================ المهام التلقائية ============================
-def job_scan(bot):
-    log.info("🔄 Auto-scan started")
-    posted = 0
-    for sym in SCAN_LIST:
-        try:
-            res = analyze(sym)
-            if not res or res["side"] == 0:
-                continue
-            if res["grade"] not in ("A", "B"):
-                continue
-            if posted >= 5:
-                break
-            try:
-                if VIP_CHANNEL_ID:
-                    img = make_chart(res)
-                    text = build_caption(res, "vip")
-                    bot.send_photo(VIP_CHANNEL_ID, img, caption=text,
-                                    parse_mode=ParseMode.HTML)
-                    track_signal(res)
-                    posted += 1
-            except Exception as e:
-                log.warning(f"VIP post {sym}: {e}")
-            if posted <= 2 and CHANNEL_ID:
-                try:
-                    img = make_chart(res)
-                    text = build_caption(res, "free")
-                    bot.send_photo(CHANNEL_ID, img, caption=text,
-                                    parse_mode=ParseMode.HTML)
-                except Exception as e:
-                    log.warning(f"Free post {sym}: {e}")
-            time.sleep(1)
-        except Exception:
+@admin_only
+async def cmd_bt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        await update.message.reply_text("مثال: /bt BTC  أو  /bt ALL  أو  /bt BTC 2 (سنتان)")
+        return
+    arg = ctx.args[0].upper()
+    try:
+        years = float(ctx.args[1]) if len(ctx.args) > 1 else 3.0
+    except ValueError:
+        years = 3.0
+    syms = COINS if arg == "ALL" else [clean_symbol(arg)]
+    if not syms[0]:
+        await update.message.reply_text("رمز غير صالح")
+        return
+    wait = await update.message.reply_text(f"⏳ Backtest {arg} لمدة {years:g} سنة ({PROFILE}) - قد يستغرق عدة دقائق ...")
+    per, a, b = await asyncio.to_thread(backtest_many, syms, years)
+    if not per:
+        await wait.edit_text("❌ لا توجد بيانات كافية")
+        return
+    text, csv = bt_report(per, a, b)
+    await wait.edit_text(text[:4000])
+    if arg == "ALL":
+        buf = io.BytesIO(csv.encode())
+        buf.name = f"bt_{PROFILE}.csv"
+        await update.message.reply_document(buf)
+
+
+async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    st, ok = await gate(update)
+    if not ok:
+        return
+    wait = await update.message.reply_text("⏳ فحص القائمة ...")
+    res = await asyncio.to_thread(scan_sync, COINS)
+    res.sort(key=lambda r: (-r["rank"], -r["ok"]))
+    lines = ["📡 أفضل الإعدادات الآن", ""]
+    for r in res[:10]:
+        s = "LONG 📈" if r["side"] == 1 else "SHORT 📉"
+        lines.append(f"{r['grade']} | #{r['sym']} | {s} | {r['setup']} | {r['ok']}/{r['total']}")
+    if not res:
+        lines.append("لا توجد بيانات")
+    lines += ["", "أرسل رمز العملة لتحصل على الشارت والمستويات."]
+    await wait.edit_text("\n".join(lines))
+
+
+@admin_only
+async def cmd_short(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    wait = await update.message.reply_text("⏳ فحص إشارات البيع ...")
+    res = await asyncio.to_thread(scan_sync, COINS)
+    res = [r for r in res if r["side"] == -1 and r["rank"] >= 1]
+    res.sort(key=lambda r: (-r["rank"], -r["ok"]))
+    if not res:
+        await wait.edit_text("🔴 لا توجد إشارات بيع (A/B) الآن")
+        return
+    await wait.edit_text("🔴 إشارات البيع:\n" + "\n".join(
+        f"{r['grade']} | #{r['sym']} | {r['setup']} | {r['ok']}/{r['total']} | دخول {fmt(r['lv']['entry'])}"
+        for r in res[:15]))
+
+
+def _pump_one(s):
+    try:
+        d = get_candles(s, "4h", 60, min_bars=30)
+        v, c = d["volume"].values, d["close"].values
+        rvol = v[-1] / max(v[-21:-1].mean(), 1e-12)
+        chg3 = (c[-1] / c[-4] - 1) * 100
+        if rvol >= 1.5 and chg3 >= 2:
+            return dict(sym=s, price=float(c[-1]), rvol=float(rvol), chg=float(chg3))
+    except Exception:
+        pass
+    return None
+
+
+def pump_scan():
+    with ThreadPoolExecutor(SCAN_WORKERS) as ex:
+        rows = [r for r in ex.map(_pump_one, top_symbols(60)) if r]
+    return sorted(rows, key=lambda r: -(r["rvol"] * r["chg"]))[:15]
+
+
+def _bottom_one(s):
+    try:
+        d = get_candles(s, "1d", 120, min_bars=60)
+        r = rsi_calc(d["close"])
+        low90, c = d["low"].tail(90).min(), float(d["close"].iloc[-1])
+        near = (c / low90 - 1) * 100
+        if near <= 12 and r.iloc[-1] <= 40 and r.iloc[-1] > r.iloc[-2]:
+            return dict(sym=s, price=c, rsi=float(r.iloc[-1]), near=float(near))
+    except Exception:
+        pass
+    return None
+
+
+def bottom_scan():
+    with ThreadPoolExecutor(SCAN_WORKERS) as ex:
+        rows = [r for r in ex.map(_bottom_one, top_symbols(60)) if r]
+    return sorted(rows, key=lambda r: r["near"])[:15]
+
+
+@admin_only
+async def cmd_pump(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    wait = await update.message.reply_text("⏳ البحث عن الفوليوم العالي ...")
+    rows = await asyncio.to_thread(pump_scan)
+    await wait.edit_text("💥 فوليوم عالٍ (4h):\n" + "\n".join(
+        f"#{r['sym']} {fmt(r['price'])} | x{r['rvol']:.1f} | +{r['chg']:.1f}%" for r in rows)
+        if rows else "💥 لا توجد عملات الآن")
+
+
+@admin_only
+async def cmd_bottom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    wait = await update.message.reply_text("⏳ البحث عن القيعان ...")
+    rows = await asyncio.to_thread(bottom_scan)
+    await wait.edit_text("🧲 مناطق قيعان (يومي: قرب أدنى 90 يوماً + RSI منخفض يرتد):\n" + "\n".join(
+        f"#{r['sym']} {fmt(r['price'])} | RSI {r['rsi']:.0f} | +{r['near']:.1f}% فوق القاع" for r in rows)
+        if rows else "🧲 لا توجد عملات الآن")
+
+
+@admin_only
+async def cmd_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    sym = clean_symbol(ctx.args[0]) if ctx.args else ""
+    if not sym:
+        await update.message.reply_text("مثال: /price BTC")
+        return
+    pr = await asyncio.to_thread(all_prices, sym)
+    if not pr:
+        await update.message.reply_text("❌ لا توجد أسعار")
+        return
+    lo, hi = min(pr.values()), max(pr.values())
+    lines = [f"💲 {sym}/USDT"] + [f"{n}: {fmt(p)}" for n, p in sorted(pr.items(), key=lambda z: z[1])]
+    lines.append(f"\nالفرق بين أعلى وأدنى سعر: {100 * (hi / lo - 1):.2f}%")
+    await update.message.reply_text("\n".join(lines))
+
+
+@admin_only
+async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    with store.lock:
+        users = list(store.data["users"].values())
+    c = dict(vip=0, trial=0, warning=0, blocked=0, admin=0)
+    for u in users:
+        c[user_status(int(u["id"]), u)[0]] += 1
+    users.sort(key=lambda u: -u.get("last_seen", 0))
+    lines = [f"👥 المستخدمون: {len(users)}",
+             f"VIP {c['vip']} | تجربة {c['trial']} | تحذير {c['warning']} | محظور {c['blocked']}", ""]
+    for u in users[:15]:
+        un = f"@{u['username']}" if u.get("username") else ""
+        lines.append(f"{u['id']} | {html.escape(u.get('name', ''))} {un} | {user_status(int(u['id']), u)[0]}")
+    await update.message.reply_text("\n".join(lines))
+
+
+@admin_only
+async def cmd_testchannels(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    out = []
+    for name, chat in (("FREE", CHANNEL), ("VIP", VIP_CHANNEL)):
+        if not chat:
+            out.append(f"{name}: غير مضبوط")
             continue
-    log.info(f"✅ Auto-scan done. Posted: {posted}")
+        try:
+            await ctx.bot.send_message(chat, f"✅ اختبار قناة {name} - {BRAND}")
+            out.append(f"{name}: ✅ يعمل")
+        except Exception as e:
+            out.append(f"{name}: ❌ {str(e)[:100]}")
+    await update.message.reply_text("\n".join(out))
 
 
-def scheduler(bot):
-    def loop():
-        time.sleep(60)
-        while True:
-            try:
-                job_scan(bot)
-                try:
-                    check_active(bot)
-                except Exception as e:
-                    log.warning(f"check_active: {e}")
-                time.sleep(AUTO_SCAN_INTERVAL)
-            except Exception as e:
-                log.exception("scheduler")
-                time.sleep(300)
-    threading.Thread(target=loop, daemon=True).start()
+def _stats(days):
+    since = (time.time() - days * DAY) * 1000
+    with store.lock:
+        h = [x for x in store.data["history"] if (x.get("closed") or 0) >= since]
+    if not h:
+        return dict(n=0, wr=0, pf=0, total=0, avg=0), h
+    R = np.array([x["R"] for x in h], dtype=float)
+    g, l = R[R > 0].sum(), -R[R <= 0].sum()
+    return dict(n=len(R), wr=round(100 * float((R > 0).mean()), 1),
+                pf=round(float(g / l), 2) if l > 0 else 999.0,
+                total=round(float(R.sum()), 1), avg=round(float(R.mean()), 2)), h
 
 
-# ============================ Main ============================
+@admin_only
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    s, h = _stats(7)
+    if not s["n"]:
+        await update.message.reply_text("📈 لا توجد صفقات مغلقة في آخر 7 أيام")
+        return
+    by = {}
+    for x in h:
+        by[x["result"]] = by.get(x["result"], 0) + 1
+    await update.message.reply_text(
+        f"📈 آخر 7 أيام\nالصفقات: {s['n']}\nWR: {s['wr']}% | PF: {s['pf']}\n"
+        f"المجموع: {s['total']:+}R | المتوسط: {s['avg']:+}R\n"
+        f"النتائج: {by}")
+
+
+@admin_only
+async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    with store.lock:
+        h = store.data["history"][-15:][::-1]
+    if not h:
+        await update.message.reply_text("لا يوجد سجل بعد")
+        return
+    await update.message.reply_text("🗂 آخر الصفقات:\n" + "\n".join(
+        f"{'✅' if x['R'] > 0 else '❌'} #{x['coin']} {'LONG' if x['side'] == 1 else 'SHORT'} "
+        f"{x['R']:+.2f}R | {x['result']} | {x.get('grade', '')}/{x.get('setup', '')}" for x in h))
+
+
+@admin_only
+async def cmd_dashboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    s7, _ = _stats(7)
+    s30, _ = _stats(30)
+    act = active_signals()
+    with store.lock:
+        nu, nv = len(store.data["users"]), sum(1 for k in store.data["vip"] if is_vip(int(k)))
+    down = [n for n, t in _down.items() if t > time.time()]
+    up = int((time.time() - START_TS) // 3600)
+    await update.message.reply_text(
+        f"🎛 لوحة التحكم ({PROFILE})\n"
+        f"المستخدمون: {nu} | VIP فعّال: {nv}\n"
+        f"صفقات نشطة: {len(act)} (pending {sum(p['state'] == 'pending' for p in act)})\n"
+        f"7 أيام: n={s7['n']} WR {s7['wr']}% PF {s7['pf']} {s7['total']:+}R\n"
+        f"30 يوم: n={s30['n']} WR {s30['wr']}% PF {s30['pf']} {s30['total']:+}R\n"
+        f"التخزين: {store.remote_msg}\n"
+        f"منصات متوقفة مؤقتاً: {', '.join(down) or 'لا يوجد'}\n"
+        f"القنوات: FREE {'✅' if CHANNEL else '—'} | VIP {'✅' if VIP_CHANNEL else '—'}\n"
+        f"التشغيل منذ {up} ساعة")
+
+
+@admin_only
+async def cmd_addvip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        uid, days = int(ctx.args[0]), int(ctx.args[1])
+    except Exception:
+        await update.message.reply_text("الاستخدام: /addvip USER_ID DAYS")
+        return
+    exp = add_vip(uid, days)
+    await update.message.reply_text(f"✅ VIP للمستخدم {uid} حتى {dt.datetime.utcfromtimestamp(exp):%Y-%m-%d}")
+    try:
+        await ctx.bot.send_message(uid, f"🎉 تم تفعيل VIP لمدة {days} يوم. شكراً لك!")
+    except Exception:
+        pass
+
+
+@admin_only
+async def cmd_removevip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        uid = int(ctx.args[0])
+    except Exception:
+        await update.message.reply_text("الاستخدام: /removevip USER_ID")
+        return
+    await update.message.reply_text("✅ أُزيل" if remove_vip(uid) else "لم يكن VIP")
+
+
+@admin_only
+async def cmd_viplist(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    with store.lock:
+        rows = sorted(store.data["vip"].items(), key=lambda kv: kv[1].get("expires", 0))
+    lines = [f"👑 VIP ({len(rows)})"]
+    for uid, v in rows[:40]:
+        left = (int(v.get("expires", 0)) - now_s()) // DAY
+        lines.append(f"{uid} | {'متبقي ' + str(left) + ' يوم' if left >= 0 else 'منتهي'}")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def on_error(update, ctx: ContextTypes.DEFAULT_TYPE):
+    log.error("handler error: %s", ctx.error, exc_info=ctx.error)
+
+
+# ═══════════════════════════ التشغيل ═══════════════════════════
+PUBLIC_COMMANDS = [("start", "ابدأ"), ("a", "تحليل عملة"), ("scan", "أفضل الإعدادات"),
+                   ("vip", "الاشتراك"), ("myid", "رقمك")]
+
+
+async def post_init(app):
+    try:
+        await app.bot.set_my_commands([BotCommand(c, d) for c, d in PUBLIC_COMMANDS])
+    except Exception:
+        pass
+    app.bot_data["tasks"] = [asyncio.create_task(autopost_loop(app)),
+                             asyncio.create_task(tracker_loop(app))]
+    log.info("started | profile=%s | storage=%s", PROFILE, store.remote_msg)
+
+
+async def post_shutdown(app):
+    for t in app.bot_data.get("tasks", []):
+        t.cancel()
+    try:
+        store.flush()
+    except Exception:
+        pass
+
+
 def main():
-    if not BOT_TOKEN or BOT_TOKEN == "PUT_YOUR_TOKEN_HERE":
-        raise SystemExit("ضع BOT_TOKEN في Environment Variables")
-
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("myid", cmd_myid))
-    app.add_handler(CommandHandler("vip", cmd_vip))
-    app.add_handler(CommandHandler("a", cmd_a))
-    app.add_handler(CommandHandler("analyze", cmd_a))
-    app.add_handler(CommandHandler("post", cmd_post))
-    app.add_handler(CommandHandler("bt", cmd_bt))
-    app.add_handler(CommandHandler("backtest", cmd_backtest))
-    app.add_handler(CommandHandler("scan", cmd_scan))
-    app.add_handler(CommandHandler("short", cmd_short))
-    app.add_handler(CommandHandler("pump", cmd_pump))
-    app.add_handler(CommandHandler("bottom", cmd_bottom))
-    app.add_handler(CommandHandler("price", cmd_price))
-    app.add_handler(CommandHandler("users", cmd_users))
-    app.add_handler(CommandHandler("testchannels", cmd_testchannels))
-    app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(CommandHandler("history", cmd_history))
-    app.add_handler(CommandHandler("dashboard", cmd_dashboard))
-    app.add_handler(CommandHandler("addvip", cmd_addvip))
-    app.add_handler(CommandHandler("removevip", cmd_removevip))
-    app.add_handler(CommandHandler("viplist", cmd_viplist))
-    app.add_handler(CallbackQueryHandler(cb_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-
+    if not BOT_TOKEN:
+        raise SystemExit("BOT_TOKEN غير مضبوط في Environment Variables")
     store.start_flusher()
-    scheduler(app.bot)
-
-    log.info("🚀 ryma crypto v9 running...")
-    app.run_polling()
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
+    for name, fn in [("start", cmd_start), ("myid", cmd_myid), ("vip", cmd_vip),
+                     ("a", cmd_analyze), ("analyze", cmd_analyze), ("post", cmd_post),
+                     ("bt", cmd_bt), ("scan", cmd_scan), ("short", cmd_short),
+                     ("pump", cmd_pump), ("bottom", cmd_bottom), ("price", cmd_price),
+                     ("users", cmd_users), ("testchannels", cmd_testchannels),
+                     ("stats", cmd_stats), ("history", cmd_history),
+                     ("dashboard", cmd_dashboard), ("addvip", cmd_addvip),
+                     ("removevip", cmd_removevip), ("viplist", cmd_viplist)]:
+        app.add_handler(CommandHandler(name, fn))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, on_text))
+    app.add_error_handler(on_error)
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
