@@ -944,6 +944,10 @@ async def cmd_bt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await wait.edit_text(f"⚠️ خطأ: {str(e)[:200]}")
 
 
+async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await cmd_bt(update, ctx)
+
+
 def backtest_simple(sym, bars=3000):
     tf = get_tf(sym)
     df, _ = fetch_ohlcv(sym, tf, bars, ttl=900)
@@ -1066,6 +1070,148 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
+async def cmd_short(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    wait = await update.message.reply_text("⏳ فحص الشورتات...")
+    rows = []
+    for sym in SCAN_LIST:
+        try:
+            r = await asyncio.to_thread(analyze, sym)
+            if r and r["side"] == -1:
+                rows.append(r)
+        except Exception:
+            continue
+    rows.sort(key=lambda x: -x["ok"])
+    if not rows:
+        await wait.edit_text("لا توجد شورتات حالياً")
+        return
+    lines = ["<b>🔴 إشارات البيع</b>\n"]
+    for r in rows[:10]:
+        mode = ("🚀" if r.get("is_breakout")
+                else ("🎯" if r.get("is_pullback")
+                      else ("🌫️" if r.get("is_gray") else "⚙️")))
+        lines.append(f"{r['grade']} {mode} <b>{r['sym']}</b> "
+                     f"({r['tf']}) {r['ok']}/{r['total']}")
+    await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def cmd_pump(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    wait = await update.message.reply_text("⏳ فحص الانفجارات...")
+    rows = []
+    for sym in SCAN_LIST:
+        try:
+            df, _ = await asyncio.to_thread(fetch_ohlcv, sym, get_tf(sym), 100)
+            if df is None or len(df) < 30:
+                continue
+            d = add_ind(df)
+            last = d.iloc[-1]
+            if pd.isna(last.rvol):
+                continue
+            if last.rvol > 1.5:
+                chg = (last.c / d.iloc[-4].c - 1) * 100 if len(d) >= 4 else 0
+                if chg > 2:
+                    rows.append((sym, last.c, last.rvol, chg))
+        except Exception:
+            continue
+    rows.sort(key=lambda x: -x[2])
+    if not rows:
+        await wait.edit_text("لا توجد انفجارات حالياً")
+        return
+    lines = ["<b>💥 الانفجارات (RVOL > 1.5)</b>\n"]
+    for sym, price, rvol, chg in rows[:10]:
+        lines.append(f"🚀 <b>{sym}</b>: {fmt(price)} | x{rvol:.1f} | +{chg:.1f}%")
+    await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def cmd_bottom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    wait = await update.message.reply_text("⏳ فحص القيعان...")
+    rows = []
+    for sym in SCAN_LIST:
+        try:
+            df, _ = await asyncio.to_thread(fetch_ohlcv, sym, "1d", 200)
+            if df is None or len(df) < 100:
+                continue
+            d = add_ind(df)
+            last = d.iloc[-1]
+            lo90 = float(d.l.tail(90).min())
+            near_low = (last.c / lo90 - 1) * 100
+            if pd.isna(last.rsi) or last.rsi > 45:
+                continue
+            if near_low > 30:
+                continue
+            rows.append((sym, last.c, last.rsi, near_low))
+        except Exception:
+            continue
+    rows.sort(key=lambda x: x[2])
+    if not rows:
+        await wait.edit_text("لا توجد قيعان حالياً")
+        return
+    lines = ["<b>🧲 مناطق القيعان</b>\n"]
+    for sym, price, rsi, near in rows[:10]:
+        lines.append(f"🔻 <b>{sym}</b>: {fmt(price)} | RSI {rsi:.0f} | {near:+.1f}% من القاع")
+    await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def cmd_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        await update.message.reply_text("مثال: /price BTC")
+        return
+    sym = clean_symbol(ctx.args[0])
+    try:
+        prices = await asyncio.to_thread(fetch_prices, sym)
+        if not prices:
+            await update.message.reply_text(f"❌ لا يوجد سعر لـ {sym}")
+            return
+        import statistics
+        avg = statistics.median(prices.values())
+        lines = [f"💰 <b>{sym}/USDT</b>"]
+        for name, p in prices.items():
+            lines.append(f"• {name}: {fmt(p)}")
+        lines.append(f"\n📊 متوسط: {fmt(avg)} ({len(prices)} منصات)")
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ {str(e)[:150]}")
+
+
+async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    with store.lock:
+        us = sorted(store.data["users"].values(),
+                    key=lambda u: -u.get("last_seen", 0))[:25]
+    lines = [f"👥 <b>المستخدمون</b> ({len(store.data['users'])})", ""]
+    for u in us:
+        name = (u.get('name') or '').strip()
+        un = (u.get('username') or '').strip()
+        label = f"{name} (@{un})" if name and un else (name or (f"@{un}" if un else f"ID:{u['id']}"))
+        st, _ = user_status(int(u['id']), u)
+        icon = {"admin": "👑", "vip": "💎", "trial": "🆓",
+                "warning": "⚠️", "blocked": "⛔"}.get(st, "•")
+        lines.append(f"{icon} {label} — {u.get('requests', 0)} طلب")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def cmd_testchannels(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    out = []
+    for name, cid in (("Free", CHANNEL_ID), ("VIP", VIP_CHANNEL_ID)):
+        if not cid:
+            out.append(f"❌ {name}: غير مضبوط")
+            continue
+        try:
+            await ctx.bot.send_message(cid, f"✅ اختبار {name}")
+            out.append(f"✅ {name}: {cid}")
+        except Exception as e:
+            out.append(f"❌ {name}: {str(e)[:80]}")
+    await update.message.reply_text("\n".join(out))
+
+
 async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -1100,7 +1246,7 @@ async def cmd_dashboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         opens = sum(1 for p in store.data["signals"]
                     if p["status"] == "open")
     await update.message.reply_text(
-        f"🖥 <b>Dashboard v8</b>\n\n"
+        f"🖥 <b>Dashboard v9</b>\n\n"
         f"👥 المستخدمون: {users}\n"
         f"💎 VIP: {vip}\n"
         f"📊 صفقات مفتوحة: {opens}\n"
@@ -1256,7 +1402,14 @@ def main():
     app.add_handler(CommandHandler("analyze", cmd_a))
     app.add_handler(CommandHandler("post", cmd_post))
     app.add_handler(CommandHandler("bt", cmd_bt))
+    app.add_handler(CommandHandler("backtest", cmd_backtest))
     app.add_handler(CommandHandler("scan", cmd_scan))
+    app.add_handler(CommandHandler("short", cmd_short))
+    app.add_handler(CommandHandler("pump", cmd_pump))
+    app.add_handler(CommandHandler("bottom", cmd_bottom))
+    app.add_handler(CommandHandler("price", cmd_price))
+    app.add_handler(CommandHandler("users", cmd_users))
+    app.add_handler(CommandHandler("testchannels", cmd_testchannels))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("dashboard", cmd_dashboard))
@@ -1269,7 +1422,7 @@ def main():
     store.start_flusher()
     scheduler(app.bot)
 
-    log.info("🚀 ryma crypto v8 running...")
+    log.info("🚀 ryma crypto v9 running...")
     app.run_polling()
 
 
