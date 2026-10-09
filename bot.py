@@ -46,7 +46,6 @@ SL_ATR_MAX = 2.5
 SL_BUFFER = 0.4
 DEFAULT_ATR_MULT = 1.5
 
-# ═══════ v12.2: أهداف قريبة (قبل أبو تركي بشوي) ═══════
 TPS_R = [0.6, 1.25, 2.0, 2.75]
 TP_FRACS = [0.40, 0.30, 0.20, 0.10]
 
@@ -389,10 +388,12 @@ def extract_delisted_coins(arts):
             if w not in coins: coins[w] = title[:40]
     return coins
 
-# ═══════════════════════════ v12.2 SIGNAL ═══════════════════════════
+# ═══════════════════════════ v12.3 SIGNAL ═══════════════════════════
 def simple_signal(df, i):
     """
-    v12.2: RSI extremes أولاً، ثم ترند
+    v12.3: RSI أوسع (زي أبو تركي)
+    RSI < 38 → شراء
+    RSI > 62 → بيع
     """
     if i < 30: return 0, 50, None, []
     r = df.iloc[i]
@@ -406,31 +407,31 @@ def simple_signal(df, i):
     low3 = float(df["low"].iloc[max(0,i-3):i+1].min())
     high3 = float(df["high"].iloc[max(0,i-3):i+1].max())
     
-    # 1. RSI extremes (أولوية قصوى)
-    if rsi_v < 30:
-        score = 70 + int((30 - rsi_v) * 1.5)
-        return 1, min(score, 90), low3, ["oversold_bounce"]
+    # 1. RSI extremes (أوسع — زي أبو تركي)
+    if rsi_v < 38:
+        score = 70 + int((38 - rsi_v) * 1.5)
+        return 1, min(score, 92), low3, ["oversold_bounce"]
     
-    if rsi_v > 70:
-        score = 70 + int((rsi_v - 70) * 1.5)
-        return -1, min(score, 90), high3, ["overbought_drop"]
+    if rsi_v > 62:
+        score = 70 + int((rsi_v - 62) * 1.5)
+        return -1, min(score, 92), high3, ["overbought_drop"]
     
     # 2. Trend following
     trend_up = (c > e20) and (e20 > e50)
     trend_dn = (c < e20) and (e20 < e50)
     
-    if trend_up and rsi_v < 70 and c > o:
+    if trend_up and rsi_v < 62 and c > o:
         score = 60
-        if rsi_v < 60: score += 10
-        if rsi_v > 50: score += 10
+        if rsi_v < 55: score += 10
+        if rsi_v > 45: score += 10
         if c > e50 * 1.02: score += 5
         if float(r["rvol"]) > 1.0: score += 5
         return 1, min(score, 85), low3, ["trend_up"]
     
-    if trend_dn and rsi_v > 30 and c < o:
+    if trend_dn and rsi_v > 45 and c < o:
         score = 60
-        if rsi_v > 40: score += 10
-        if rsi_v < 50: score += 10
+        if rsi_v > 50: score += 10
+        if rsi_v < 55: score += 10
         if c < e50 * 0.98: score += 5
         if float(r["rvol"]) > 1.0: score += 5
         return -1, min(score, 85), high3, ["trend_dn"]
@@ -807,7 +808,7 @@ def run_backtest(years=3.0, tf="4h", min_score=30, send_to=None):
     def send(msg):
         try: bot.send_message(target, msg)
         except Exception: pass
-    send(f"v12.2 Backtest\nYears: {years} | TF: {tf} | MinScore: {min_score}\nLoading...")
+    send(f"v12.3 Backtest\nYears: {years} | TF: {tf} | MinScore: {min_score}\nLoading...")
     per = {}
     for idx, coin in enumerate(COINS, 1):
         try:
@@ -836,7 +837,7 @@ def run_backtest(years=3.0, tf="4h", min_score=30, send_to=None):
         except Exception as e:
             send(f"{coin}: {str(e)[:60]}")
     mt = _bt_metrics(all_tr); me = _bt_metrics(all_te)
-    lines = [f"=== v12.2 Results ===", "",
+    lines = [f"=== v12.3 Results ===", "",
              f"TRAIN ({mt['n']}): WR {mt['wr']}% | PF {mt['pf']} | {mt['total']}R",
              f"TEST ({me['n']}): WR {me['wr']}% | PF {me['pf']} | {me['total']}R | DD {me['dd']}R"]
     send("\n".join(lines))
@@ -858,7 +859,7 @@ def run_backtest(years=3.0, tf="4h", min_score=30, send_to=None):
         for c, tr, te in per_res:
             t = "M" if c in MAJORS else "A"
             csv += f"{c},{t},{tr['n']},{tr['wr']},{tr['pf']},{tr['total']},{te['n']},{te['wr']},{te['pf']},{te['total']}\n"
-        buf = io.BytesIO(csv.encode()); buf.name = f"bt_{tf}_v12_2.csv"
+        buf = io.BytesIO(csv.encode()); buf.name = f"bt_{tf}_v12_3.csv"
         bot.send_document(target, buf)
     except Exception: pass
 
@@ -1277,8 +1278,8 @@ def make_bot(token=None):
     def dash(m):
         c = counts(store)
         src = ", ".join(f"{k}:{v}" for k,v in source_status().items())
-        bot.reply_to(m, f"🖥 v12.2\n\n👥 {c['total']} | تجربة {c['trial']} | VIP {c['vip']}\n\n"
-                        f"🌐 {src}\n💾 {store.remote_msg}\n⚙️ RSI First | TPs 0.6/1.25/2/2.75R")
+        bot.reply_to(m, f"🖥 v12.3\n\n👥 {c['total']} | تجربة {c['trial']} | VIP {c['vip']}\n\n"
+                        f"🌐 {src}\n💾 {store.remote_msg}\n⚙️ RSI<38 شراء | RSI>62 بيع | TPs 0.6/1.25/2/2.75R")
 
     @bot.message_handler(commands=["price"])
     @admin_only
@@ -1370,7 +1371,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: pass
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v12.2 started")
+    log.info("bot v12.3 started")
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
