@@ -9,3 +9,4 @@ python-bidi
 ccxt
 pandas_ta
 python-telegram-bot>=20.0
+python-dotenv
