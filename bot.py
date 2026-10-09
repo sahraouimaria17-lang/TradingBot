@@ -304,7 +304,6 @@ def _mexc(sym, iv, limit):
     if not isinstance(rows, list) or not rows: raise PairNotFound(sym)
     return _num(rows)
 
-# OKX أولاً، ثم Binance، ثم Bybit، ثم MEXC
 SOURCES = [("okx", _okx), ("binance", _binance), ("bybit", _bybit), ("mexc", _mexc)]
 _down, _mem = {}, {}
 MEM_TTL = 60
@@ -344,7 +343,6 @@ def get_recent(symbol, interval, limit=500):
     raise ConnectionError("all sources unavailable")
 
 def top_symbols(n=60):
-    # OKX أولاً
     try:
         r = _get("https://www.okx.com/api/v5/market/tickers", params=dict(instType="SPOT"), timeout=20)
         j = r.json()
@@ -361,7 +359,6 @@ def top_symbols(n=60):
             out.sort(reverse=True)
             if out: return [b for _,b in out][:n]
     except Exception: pass
-    # Binance fallback
     try:
         rows = _get(f"{BINANCE_BASES[0]}/api/v3/ticker/24hr").json()
         out = []
@@ -385,7 +382,6 @@ def _cached(key, ttl, fn):
     return val
 
 def fetch_live_price(sym):
-    # OKX أولاً
     try:
         r = _get("https://www.okx.com/api/v5/market/ticker", params={"instId": f"{sym}-USDT"}, timeout=15)
         if r.status_code == 200:
@@ -394,7 +390,6 @@ def fetch_live_price(sym):
                 p = float(d[0].get("last", 0))
                 if p > 0: return p, "okx"
     except Exception: pass
-    # Binance
     for base in BINANCE_BASES:
         try:
             r = _get(f"{base}/api/v3/ticker/price", params={"symbol": sym+"USDT"}, timeout=15)
@@ -403,7 +398,6 @@ def fetch_live_price(sym):
                 if p > 0: return p, "binance"
             elif r.status_code == 400: break
         except Exception: continue
-    # Bybit + MEXC
     for name, url, params in [
         ("bybit", "https://api.bybit.com/v5/market/tickers", {"category": "spot", "symbol": sym+"USDT"}),
         ("mexc", "https://api.mexc.com/api/v3/ticker/price", {"symbol": sym+"USDT"}),
@@ -446,54 +440,57 @@ def extract_delisted_coins(arts):
             if w not in coins: coins[w] = title[:40]
     return coins
 
-# ═══════════════════════════ v12.5.1 SIGNAL (مطوّر) ═══════════════════════════
+# ═══════════════════════════ v12.5.2 SIGNAL (صياد الصواريخ) ═══════════════════════════
 def simple_signal(df, i):
     """
-    v12.5.1: منطق مطور
-    - متابعة الاتجاه (Trend Following) لصيد الصواريخ مثل KAIA/RLC
-    - عكس الاتجاه (Mean Reversion) للتشبع البيعي/الشرائي
+    v12.5.2: منطق صياد الصواريخ + متابعة الاتجاه + ارتداد التشبع
     """
     if i < 30: return 0, 50, None, []
     r = df.iloc[i]
     if pd.isna(r["ema20"]) or pd.isna(r["ema50"]) or pd.isna(r["atr"]) or r["atr"] <= 0:
         return 0, 50, None, []
-    
+
     c = float(r["close"]); o = float(r["open"])
     e20 = float(r["ema20"]); e50 = float(r["ema50"])
     rsi_v = float(r["rsi"]) if not pd.isna(r["rsi"]) else 50
-    
+    rvol = float(r["rvol"]) if not pd.isna(r["rvol"]) else 1.0
+
     low3 = float(df["low"].iloc[max(0,i-3):i+1].min())
     high3 = float(df["high"].iloc[max(0,i-3):i+1].max())
-    
+
     trend_up = (c > e20) and (e20 > e50)
     trend_dn = (c < e20) and (e20 < e50)
-    
-    # 1. متابعة الاتجاه الصاعد (لصيد KAIA/RLC)
-    if trend_up and c > o and 50 < rsi_v < 72:
-        score = 65
-        if rsi_v > 55: score += 10
-        if float(r["rvol"]) > 1.2: score += 10
-        if c > e50 * 1.01: score += 5
-        return 1, min(score, 88), low3, ["trend_following_long"]
-    
-    # 2. متابعة الاتجاه الهابط
-    if trend_dn and c < o and 28 < rsi_v < 50:
-        score = 65
-        if rsi_v < 45: score += 10
-        if float(r["rvol"]) > 1.2: score += 10
-        if c < e50 * 0.99: score += 5
-        return -1, min(score, 88), high3, ["trend_following_short"]
 
-    # 3. عكس الاتجاه - تشبع بيعي
-    if rsi_v < 40:
-        score = 70 + int((40 - rsi_v) * 1.5)
-        return 1, min(score, 92), low3, ["oversold_bounce"]
-    
-    # 4. عكس الاتجاه - تشبع شرائي
-    if rsi_v > 60:
-        score = 70 + int((rsi_v - 60) * 1.5)
-        return -1, min(score, 92), high3, ["overbought_drop"]
-    
+    # 1. صيد الصواريخ (Breakout) - يتجاهل الـ RSI العالي
+    if trend_up and c > high3 and rvol > 1.5:
+        return 1, 90, low3, ["breakout_long"]
+
+    # 2. صيد الانهيارات (Breakdown)
+    if trend_dn and c < low3 and rvol > 1.5:
+        return -1, 90, high3, ["breakout_short"]
+
+    # 3. متابعة الاتجاه الصاعد (المنطقة الرمادية)
+    if trend_up and 45 <= rsi_v <= 75 and c > o:
+        score = 65
+        if rsi_v < 60: score += 10
+        if rvol > 1.0: score += 5
+        return 1, min(score, 88), low3, ["trend_long"]
+
+    # 4. متابعة الاتجاه الهابط (المنطقة الرمادية)
+    if trend_dn and 25 <= rsi_v <= 55 and c < o:
+        score = 65
+        if rsi_v > 40: score += 10
+        if rvol > 1.0: score += 5
+        return -1, min(score, 88), high3, ["trend_short"]
+
+    # 5. ارتداد التشبع البيعي (احتياط)
+    if rsi_v < 30:
+        return 1, 80, low3, ["oversold"]
+
+    # 6. ارتداد التشبع الشرائي (احتياط)
+    if rsi_v > 70:
+        return -1, 80, high3, ["overbought"]
+
     return 0, 50, None, []
 
 def dynamic_sl(entry, side, atr, pb_extreme):
@@ -561,7 +558,7 @@ def analyze(sym, chart_tf=None):
 
     side, score, pb_extreme, reasons = simple_signal(bdf, len(bdf)-1)
 
-    # ═══════════════ v12.5.1 FILTER: EMA 20 Daily (متوازن) ═══════════════
+    # ═══════════════ v12.5.2 FILTER: EMA 20 Daily (ذكي) ═══════════════
     if side != 0 and "1d" in frames:
         try:
             daily_df = frames["1d"]
@@ -569,14 +566,19 @@ def analyze(sym, chart_tf=None):
             if not pd.isna(daily_last["ema20"]):
                 daily_close = float(daily_last["close"])
                 daily_ema20 = float(daily_last["ema20"])
-                # منع البيع إذا السعر فوق/قريب من EMA20 اليومي
-                if side == -1 and daily_close > daily_ema20 * 0.98:
+                daily_ema50 = float(daily_last["ema50"]) if not pd.isna(daily_last["ema50"]) else daily_ema20
+
+                daily_uptrend = daily_close > daily_ema20 and daily_ema20 > daily_ema50
+                daily_downtrend = daily_close < daily_ema20 and daily_ema20 < daily_ema50
+
+                # منع البيع إذا الفريم اليومي صاعد بقوة
+                if side == -1 and daily_uptrend:
                     side = 0; score = 0; reasons.append("daily_uptrend_block_short")
-                # منع الشراء إذا السعر تحت/قريب من EMA20 اليومي
-                elif side == 1 and daily_close < daily_ema20 * 1.02:
+                # منع الشراء إذا الفريم اليومي هابط بقوة
+                elif side == 1 and daily_downtrend:
                     side = 0; score = 0; reasons.append("daily_downtrend_block_long")
         except Exception: pass
-    # ═══════════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════
 
     protected = False
     lb = 6 if base_tf == "4h" else 1
@@ -773,12 +775,10 @@ def stats(store, days=None):
 
 # ═══════════════════════════ BACKTEST ═══════════════════════════
 def _fetch_hist(sym, iv, years):
-    # OKX أولاً
     try:
         df = _okx_hist(sym, iv, years)
         if len(df) >= 400: return df
     except Exception: pass
-    # Binance fallback
     now_ms = int(time.time()*1000)
     start_ms = now_ms - int(years*365*24*3600*1000)
     out = []; cur = start_ms
@@ -877,7 +877,7 @@ def run_backtest(years=3.0, tf="4h", min_score=30, send_to=None):
     def send(msg):
         try: bot.send_message(target, msg)
         except Exception: pass
-    send(f"v12.5.1 Backtest\nYears: {years} | TF: {tf} | MinScore: {min_score}\nLoading...")
+    send(f"v12.5.2 Backtest\nYears: {years} | TF: {tf} | MinScore: {min_score}\nLoading...")
     per = {}
     for idx, coin in enumerate(COINS, 1):
         try:
@@ -906,7 +906,7 @@ def run_backtest(years=3.0, tf="4h", min_score=30, send_to=None):
         except Exception as e:
             send(f"{coin}: {str(e)[:60]}")
     mt = _bt_metrics(all_tr); me = _bt_metrics(all_te)
-    lines = [f"=== v12.5.1 Results ===", "",
+    lines = [f"=== v12.5.2 Results ===", "",
              f"TRAIN ({mt['n']}): WR {mt['wr']}% | PF {mt['pf']} | {mt['total']}R",
              f"TEST ({me['n']}): WR {me['wr']}% | PF {me['pf']} | {me['total']}R | DD {me['dd']}R"]
     send("\n".join(lines))
@@ -928,7 +928,7 @@ def run_backtest(years=3.0, tf="4h", min_score=30, send_to=None):
         for c, tr, te in per_res:
             t = "M" if c in MAJORS else "A"
             csv += f"{c},{t},{tr['n']},{tr['wr']},{tr['pf']},{tr['total']},{te['n']},{te['wr']},{te['pf']},{te['total']}\n"
-        buf = io.BytesIO(csv.encode()); buf.name = f"bt_{tf}_v12_5_1.csv"
+        buf = io.BytesIO(csv.encode()); buf.name = f"bt_{tf}_v12_5_2.csv"
         bot.send_document(target, buf)
     except Exception: pass
 
@@ -1347,8 +1347,8 @@ def make_bot(token=None):
     def dash(m):
         c = counts(store)
         src = ", ".join(f"{k}:{v}" for k,v in source_status().items())
-        bot.reply_to(m, f"🖥 v12.5.1 (OKX)\n\n👥 {c['total']} | تجربة {c['trial']} | VIP {c['vip']}\n\n"
-                        f"🌐 {src}\n💾 {store.remote_msg}\n⚙️ TrendFollowing + MeanRev | فلتر EMA20 يومي | TPs 1.0/1.5/2.5/4.0R")
+        bot.reply_to(m, f"🖥 v12.5.2 (OKX)\n\n👥 {c['total']} | تجربة {c['trial']} | VIP {c['vip']}\n\n"
+                        f"🌐 {src}\n💾 {store.remote_msg}\n⚙️ Breakout Hunter + TrendFollow + MeanRev | فلتر EMA20 يومي ذكي")
 
     @bot.message_handler(commands=["price"])
     @admin_only
@@ -1366,7 +1366,7 @@ def make_bot(token=None):
         years = float(a[1]) if len(a) > 1 else 3.0
         tf = a[2] if len(a) > 2 else "4h"
         min_score = int(a[3]) if len(a) > 3 else 30
-        bot.reply_to(m, f"🚀 Backtest v12.5.1 {years}y {tf} Score>={min_score}...")
+        bot.reply_to(m, f"🚀 Backtest v12.5.2 {years}y {tf} Score>={min_score}...")
         threading.Thread(target=lambda: run_backtest(years, tf, min_score, send_to=m.chat.id), daemon=True).start()
 
     @bot.message_handler(commands=["bottom","pump"])
@@ -1440,7 +1440,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: pass
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v12.5.1 started (OKX primary)")
+    log.info("bot v12.5.2 started (OKX primary)")
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
