@@ -8,7 +8,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# ⚙️ إعدادات البوت v12.4
+# ⚙️ إعدادات البوت v12.4 (النسخة النهائية)
 # ==========================================
 COINS = [
     'ADA/USDT', 'AAVE/USDT', 'DOGE/USDT', 'INJ/USDT', 'BNB/USDT',
@@ -19,7 +19,7 @@ COINS = [
 
 TIMEFRAME_4H = '4h'
 TIMEFRAME_1D = '1d'
-LIMIT_CANDLES = 1000  # عدد الشموع المطلوبة (تقريباً 166 يوم على 4h)
+LIMIT_CANDLES = 1000  # عدد الشموع المطلوبة
 
 # إعدادات المؤشرات
 RSI_PERIOD = 14
@@ -38,9 +38,12 @@ TRAIL_ATR_MULT = 2.0   # التريلينج ستوب = 2.0 ATR
 TRAIN_SPLIT = 0.7
 
 # ==========================================
-# 📥 دالة جلب البيانات
+# 📥 دالة جلب البيانات (تم التعديل إلى Bybit)
 # ==========================================
-exchange = ccxt.binance({'enableRateLimit': True})
+exchange = ccxt.bybit({
+    'enableRateLimit': True,
+    'options': {'defaultType': 'spot'}  # استخدام بيانات السبوت
+})
 
 def fetch_data(symbol, timeframe, limit=1000):
     try:
@@ -82,19 +85,16 @@ def run_backtest(df_4h, df_1d):
     tp_prices = []
     tp_hits = [False] * 4
     be_triggered = False
-    trail_active = False
     entry_atr = 0
     entry_time = None
     
     for i in range(1, len(df)):
         current_bar = df.iloc[i]
-        prev_bar = df.iloc[i-1]
         
         # ==========================================
         # 1. إدارة الصفقة المفتوحة
         # ==========================================
         if in_position:
-            # حساب R الحالي (1R = 1.5 ATR)
             risk_per_unit = SL_ATR_MULT * entry_atr
             current_price = current_bar['close']
             high = current_bar['high']
@@ -130,9 +130,9 @@ def run_backtest(df_4h, df_1d):
                 if (position_type == 'LONG' and high >= entry_price + (BE_TRIGGER_R * risk_per_unit)) or \
                    (position_type == 'SHORT' and low <= entry_price - (BE_TRIGGER_R * risk_per_unit)):
                     be_triggered = True
-                    sl_price = entry_price  # نقل الوقف لنقطة الدخول
+                    sl_price = entry_price
                     
-            # تحديث التريلينج ستوب (Trailing)
+            # تحديث التريلينج ستوب
             if be_triggered:
                 trail_distance = TRAIL_ATR_MULT * entry_atr
                 if position_type == 'LONG':
@@ -171,7 +171,6 @@ def run_backtest(df_4h, df_1d):
                 tp_prices = [entry_price + (r * risk_per_unit) for r in TP_R_MULTS]
                 tp_hits = [False] * 4
                 be_triggered = False
-                trail_active = False
                 
             elif short_condition:
                 in_position = True
@@ -184,7 +183,6 @@ def run_backtest(df_4h, df_1d):
                 tp_prices = [entry_price - (r * risk_per_unit) for r in TP_R_MULTS]
                 tp_hits = [False] * 4
                 be_triggered = False
-                trail_active = False
 
     return pd.DataFrame(trades)
 
@@ -231,7 +229,6 @@ if __name__ == "__main__":
         print(f"معالجة {coin}...")
         print(f"{'='*50}")
         
-        # جلب البيانات
         df_4h_raw = fetch_data(coin, TIMEFRAME_4H, LIMIT_CANDLES)
         df_1d_raw = fetch_data(coin, TIMEFRAME_1D, 200)
         
@@ -239,22 +236,18 @@ if __name__ == "__main__":
             print(f"تخطي {coin} بسبب نقص البيانات.")
             continue
             
-        # حساب المؤشرات
         df_4h = calculate_indicators(df_4h_raw)
         df_1d = calculate_indicators(df_1d_raw)
         
-        # تشغيل الباكتيست
         trades = run_backtest(df_4h, df_1d)
         
         if trades.empty:
             print(f"لا توجد صفقات لـ {coin}.")
             continue
             
-        # حساب الإحصائيات
         metrics = calculate_metrics(trades, TRAIN_SPLIT)
         
         if metrics:
-            # تحديد النوع (M أو A) حسب رغبتك، هنا نضع 'M' كافتراضي
             coin_type = 'M' 
             results.append({
                 'coin': coin.replace('/USDT', ''),
@@ -263,16 +256,13 @@ if __name__ == "__main__":
             })
             print(f"اكتمل {coin} | تدريب: {metrics['tr_n']} صفقة | اختبار: {metrics['te_n']} صفقة")
         
-        time.sleep(1) # تجنب حظر API
+        time.sleep(1) # تجنب حظر الـ API
     
-    # حفظ النتائج في CSV
     if results:
         results_df = pd.DataFrame(results)
-        # إعادة ترتيب الأعمدة لتطابق التنسيق السابق
         columns_order = ['coin', 'type', 'tr_n', 'tr_wr', 'tr_pf', 'tr_total', 'te_n', 'te_wr', 'te_pf', 'te_total']
         results_df = results_df[columns_order]
         
-        # حفظ الملف
         output_filename = 'bt_4h_v12_4.csv'
         results_df.to_csv(output_filename, index=False)
         print(f"\n✅ تم حفظ النتائج بنجاح في {output_filename}")
