@@ -1,4 +1,3 @@
-
 import ccxt
 import pandas as pd
 import numpy as np
@@ -9,7 +8,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# ⚙️ إعدادات الباكتيست v12.4
+# ⚙️ الإعدادات الثابتة (v12.4)
 # ==========================================
 COINS = [
     'ADA/USDT', 'AAVE/USDT', 'DOGE/USDT', 'INJ/USDT', 'BNB/USDT',
@@ -22,14 +21,9 @@ TIMEFRAME_4H = '4h'
 TIMEFRAME_1D = '1d'
 LIMIT_CANDLES = 1000
 
-# إعدادات المؤشرات
 RSI_PERIOD = 14
-RSI_BUY = 42
-RSI_SELL = 58
 ATR_PERIOD = 14
 EMA_PERIOD = 50
-
-# إعدادات إدارة المخاطر v12.4
 SL_ATR_MULT = 1.5
 TP_R_MULTS = [1.0, 1.5, 2.5, 4.0]
 BE_TRIGGER_R = 1.0
@@ -37,7 +31,16 @@ TRAIL_ATR_MULT = 2.0
 TRAIN_SPLIT = 0.7
 
 # ==========================================
-# 📥 إعداد منصة OKX
+# 🧪 السيناريوهات الثلاثة للمقارنة
+# ==========================================
+SCENARIOS = [
+    {'name': 'A_42_58', 'rsi_buy': 42, 'rsi_sell': 58},
+    {'name': 'B_40_60', 'rsi_buy': 40, 'rsi_sell': 60},
+    {'name': 'C_38_62', 'rsi_buy': 38, 'rsi_sell': 62},
+]
+
+# ==========================================
+# 📥 إعداد OKX
 # ==========================================
 exchange = ccxt.okx({
     'enableRateLimit': True,
@@ -46,7 +49,6 @@ exchange = ccxt.okx({
 
 def fetch_data(symbol, timeframe, limit=1000):
     try:
-        print(f"جلب بيانات {symbol} - {timeframe}...")
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -63,7 +65,7 @@ def calculate_indicators(df):
     df['ema50'] = ta.ema(df['close'], length=EMA_PERIOD)
     return df
 
-def run_backtest(df_4h, df_1d):
+def run_backtest(df_4h, df_1d, rsi_buy, rsi_sell):
     df_1d = df_1d[['close', 'ema50']].rename(columns={'close': 'daily_close', 'ema50': 'daily_ema50'})
     df = pd.merge_asof(df_4h, df_1d, left_index=True, right_index=True, direction='backward')
     df.dropna(inplace=True)
@@ -125,8 +127,8 @@ def run_backtest(df_4h, df_1d):
                     new_sl = current_price + trail_distance
                     if new_sl < sl_price: sl_price = new_sl
         else:
-            long_condition = (current_bar['rsi'] < RSI_BUY and current_bar['daily_close'] > current_bar['daily_ema50'])
-            short_condition = (current_bar['rsi'] > RSI_SELL and current_bar['daily_close'] < current_bar['daily_ema50'])
+            long_condition = (current_bar['rsi'] < rsi_buy and current_bar['daily_close'] > current_bar['daily_ema50'])
+            short_condition = (current_bar['rsi'] > rsi_sell and current_bar['daily_close'] < current_bar['daily_ema50'])
             
             if long_condition:
                 in_position = True
@@ -177,43 +179,53 @@ def calculate_metrics(trades_df, split_ratio=0.7):
             'te_n': te_n, 'te_wr': te_wr, 'te_pf': te_pf, 'te_total': te_total}
 
 # ==========================================
-# 🚀 تشغيل الباكتيست
+# 🚀 تشغيل كل السيناريوهات
 # ==========================================
 if __name__ == "__main__":
-    results = []
+    print("=" * 60)
+    print("🧪 تشغيل 3 سيناريوهات RSI في نفس الوقت")
+    print("=" * 60)
     
-    for coin in COINS:
-        print(f"\n{'='*50}\nمعالجة {coin}...\n{'='*50}")
-        df_4h_raw = fetch_data(coin, TIMEFRAME_4H, LIMIT_CANDLES)
-        df_1d_raw = fetch_data(coin, TIMEFRAME_1D, 200)
+    for scenario in SCENARIOS:
+        print(f"\n{'#' * 60}")
+        print(f"# 🎯 السيناريو: {scenario['name']} | RSI Buy={scenario['rsi_buy']} Sell={scenario['rsi_sell']}")
+        print(f"{'#' * 60}")
         
-        if df_4h_raw.empty or df_1d_raw.empty:
-            print(f"تخطي {coin} بسبب نقص البيانات.")
-            continue
+        results = []
+        
+        for coin in COINS:
+            print(f"معالجة {coin}...")
+            df_4h_raw = fetch_data(coin, TIMEFRAME_4H, LIMIT_CANDLES)
+            df_1d_raw = fetch_data(coin, TIMEFRAME_1D, 200)
             
-        df_4h = calculate_indicators(df_4h_raw)
-        df_1d = calculate_indicators(df_1d_raw)
-        trades = run_backtest(df_4h, df_1d)
-        
-        if trades.empty:
-            print(f"لا توجد صفقات لـ {coin}.")
-            continue
+            if df_4h_raw.empty or df_1d_raw.empty:
+                continue
+                
+            df_4h = calculate_indicators(df_4h_raw)
+            df_1d = calculate_indicators(df_1d_raw)
+            trades = run_backtest(df_4h, df_1d, scenario['rsi_buy'], scenario['rsi_sell'])
             
-        metrics = calculate_metrics(trades, TRAIN_SPLIT)
-        if metrics:
-            results.append({'coin': coin.replace('/USDT', ''), 'type': 'M', **metrics})
-            print(f"اكتمل {coin} | تدريب: {metrics['tr_n']} صفقة | اختبار: {metrics['te_n']} صفقة")
+            if trades.empty:
+                continue
+                
+            metrics = calculate_metrics(trades, TRAIN_SPLIT)
+            if metrics:
+                results.append({'coin': coin.replace('/USDT', ''), 'type': 'M', **metrics})
+            
+            time.sleep(1)
         
-        time.sleep(1)
+        if results:
+            results_df = pd.DataFrame(results)
+            columns_order = ['coin', 'type', 'tr_n', 'tr_wr', 'tr_pf', 'tr_total', 'te_n', 'te_wr', 'te_pf', 'te_total']
+            results_df = results_df[columns_order]
+            
+            output_filename = f'bt_v12_4_{scenario["name"]}.csv'
+            results_df.to_csv(output_filename, index=False)
+            print(f"\n✅ تم حفظ النتائج في {output_filename}")
+            print(results_df.to_string(index=False))
+        else:
+            print("❌ لا توجد نتائج.")
     
-    if results:
-        results_df = pd.DataFrame(results)
-        columns_order = ['coin', 'type', 'tr_n', 'tr_wr', 'tr_pf', 'tr_total', 'te_n', 'te_wr', 'te_pf', 'te_total']
-        results_df = results_df[columns_order]
-        
-        output_filename = 'bt_4h_v12_4.csv'
-        results_df.to_csv(output_filename, index=False)
-        print(f"\n✅ تم حفظ النتائج بنجاح في {output_filename}")
-        print(results_df.to_string(index=False))
-    else:
-        print("\n❌ لم يتم إنتاج أي نتائج.")
+    print("\n" + "=" * 60)
+    print("🎉 اكتمل تشغيل كل السيناريوهات! تحقق من ملفات CSV")
+    print("=" * 60)
