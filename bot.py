@@ -49,72 +49,41 @@ STABLES = {"USDT","USDC","FDUSD","TUSD","DAI","BUSD","USDP","USDD","USDE","PYUSD
 
 FEE, SLIP = 0.001, 0.0005
 
-# ═══════════════════════════ v9.0 — نظام مخاطر مزدوج ═══════════════════════════
-# MAJORS: SL 3% | TPs = 1R / 2R / 3R / 4R (أهداف واقعية للسعر الثقيل)
-# ALTCOINS: SL 4.5% | TPs = 1R / 2.5R / 4R / 6R (يسمح بحركة أكبر)
-RISK_MAJORS = dict(fixed_sl=3.0, tps=[(1.0, .30), (2.0, .30), (3.0, .25), (4.0, .15)])
-RISK_ALT    = dict(fixed_sl=4.5, tps=[(1.0, .30), (2.5, .30), (4.0, .25), (6.0, .15)])
-
-BE_AFTER_TP1 = False          # ← شلنا BE (كان يقتل الأرباح)
+# ═══════════════════════════ v10.0 — Pullback Trend ═══════════════════════════
+# SL = 1.5 × ATR | TPs = 1.5R / 3R / 5R / Runner
+BE_AFTER_TP1 = True
 TRAIL_AFTER_TP1 = True
-TRAIL_ATR_AFTER_TP1 = 2.5     # ← أوسع (كان 1.5)
-TRAIL_ATR_AFTER_TP2 = 2.0     # ← أوسع (كان 1.0)
-MAX_HOLD = {"4h": 30, "1d": 25}  # ← أطول قليلاً للترند
+TRAIL_ATR_AFTER_TP1 = 1.0
+TRAIL_ATR_AFTER_TP2 = 1.5
+MAX_HOLD = {"4h": 20, "1d": 20}
 
-SCORE_STRONG_BUY  = 35
-SCORE_BUY         = 8
-SCORE_CAUTIOUS    = -8
-SCORE_SELL        = -35
-MIN_VOTES_DEFAULT = 0
-ADX_MIN_DEFAULT = 22          # ← رفعنا من 10
-RVOL_MIN = 1.0
-ATR_PCT_MIN = 0.3
-ATR_PCT_MAX = 25.0
-MAX_OPEN_PER_COIN = 5
-MAX_OPEN_TOTAL = 20
+SL_ATR_MULT = 1.5          # ← SL = 1.5 × ATR
+TPS_R = [1.5, 3.0, 5.0, 8.0]
+TP_FRACS = [0.30, 0.30, 0.25, 0.15]
+
+# فلاتر
+ADX_MIN_TREND = 25         # ← ترند قوي
+RSI_LONG_MIN = 40
+RSI_LONG_MAX = 65
+RSI_SHORT_MIN = 35
+RSI_SHORT_MAX = 60
+PULLBACK_LOOKBACK = 5      # ← آخر 5 شموع للبحث عن pullback
+EMA20_PROXIMITY = 1.02     # ← السعر لمس EMA20 (tolerance 2%)
+MIN_SCORE_DEFAULT = 60     # ← Score من 100
 
 PUMP_PROTECT_SHORT = 15.0
 DUMP_PROTECT_LONG  = 15.0
 
-TIMEFRAMES = {"15m": 0.10, "1h": 0.25, "4h": 0.35, "1d": 0.30}
+TIMEFRAMES = {"4h": 0.6, "1d": 0.4}   # ← نستخدم 4h + 1d فقط للتحليل
 CANDLES_IN_CHART = 90
 
 _bot = None
-
-def _risk_model_for(sym):
-    """v9.0: يختار النموذج حسب نوع العملة"""
-    return RISK_MAJORS if sym in MAJORS else RISK_ALT
-
-def params_for(tf, risk_model=None, adx_min=None, btc_filter=None, min_votes=None, sym=None):
-    rm = risk_model or _e("RISK_MODEL", "").strip()
-    if sym is not None:
-        model = _risk_model_for(sym)
-        rm_label = "majors" if sym in MAJORS else "alt"
-    else:
-        model = RISK_MAJORS
-        rm_label = "majors"
-        rm = rm or "majors"
-    p = dict(tf=tf, risk_model=rm_label, rvol_min=RVOL_MIN,
-             atr_pct_min=ATR_PCT_MIN, atr_pct_max=ATR_PCT_MAX,
-             be_after_tp1=BE_AFTER_TP1,
-             trail_after_tp1=TRAIL_AFTER_TP1,
-             trail_atr_tp1=TRAIL_ATR_AFTER_TP1,
-             trail_atr_tp2=TRAIL_ATR_AFTER_TP2,
-             max_hold=MAX_HOLD[tf],
-             adx_min=int(adx_min if adx_min is not None else _e("ADX_MIN", str(ADX_MIN_DEFAULT))),
-             btc_filter=bool(btc_filter if btc_filter is not None else _e("BTC_FILTER", "0") == "1"),
-             min_votes=int(min_votes if min_votes is not None else _e("MIN_VOTES", str(MIN_VOTES_DEFAULT))))
-    if "fixed_sl" in model:
-        p.update(risk_pct=model["fixed_sl"], sl_atr=None, tps=model["tps"])
-    else:
-        p.update(risk_pct=None, sl_atr=model["atr"], tps=model["tps"])
-    return p
 
 def default_tf_for(symbol):
     return "1d" if symbol in MAJORS else "4h"
 
 SCAN_TOP_N = int(_e("SCAN_TOP_N", "60"))
-AUTOPOST_MIN_SCORE = int(_e("AUTOPOST_MIN_SCORE", "25"))   # ← رفعنا من 15
+AUTOPOST_MIN_SCORE = int(_e("AUTOPOST_MIN_SCORE", "60"))
 MAX_POSTS_PER_SCAN = int(_e("MAX_POSTS_PER_SCAN", "5"))
 FREE_CHANNEL_MAX_PER_DAY = int(_e("FREE_CHANNEL_MAX_PER_DAY", "3"))
 PROTECT_CONTENT = _e("PROTECT_CONTENT", "1") == "1"
@@ -281,9 +250,6 @@ def macd_hist_calc(close):
     return m - ema(m,9)
 def macd_line(close):
     return ema(close,12) - ema(close,26)
-def stoch_calc(df, n=14):
-    ll, hh = df["low"].rolling(n).min(), df["high"].rolling(n).max()
-    return 100 * (df["close"] - ll) / (hh - ll).replace(0, np.nan)
 def atr_calc(df, n=14): return wilder(true_range(df), n)
 
 def add_indicators(df):
@@ -299,13 +265,12 @@ def add_indicators(df):
     df["rvol"] = df["volume"]/df["volume"].rolling(20).mean()
     df["hh20"] = df["high"].rolling(20).max().shift(1)
     df["ll20"] = df["low"].rolling(20).min().shift(1)
-    df["stoch"] = stoch_calc(df)
     df["st_dir"],df["st_line"] = supertrend(df)
     return df
 
 MS = {"15m":900000,"1h":3600000,"4h":14400000,"1d":86400000}
 COLS = ["t","open","high","low","close","volume"]
-MIN_BARS = 60
+MIN_BARS = 220
 BINANCE_BASES = ["https://data-api.binance.vision","https://api.binance.com"]
 
 class PairNotFound(Exception): pass
@@ -575,37 +540,120 @@ def delist_radar():
         except Exception: continue
     return sorted(out, key=lambda x: x["chg24"])
 
+# ═══════════════════════════ v10.0 — Pullback Trend Strategy ═══════════════════════════
+def trend_signal(df, i):
+    """يرجع (side, score, reasons) عند الشمعة i
+    side = 1 Long | -1 Short | 0 لا شيء
+    score = 0-100
+    """
+    if i < 210: return 0, 0, []
+    r = df.iloc[i]
+    if pd.isna(r["ema200"]) or pd.isna(r["adx"]) or pd.isna(r["atr"]): return 0, 0, []
+    if r["atr"] <= 0: return 0, 0, []
+
+    c = float(r["close"]); o = float(r["open"])
+    h_ = float(r["high"]); l_ = float(r["low"])
+    e20 = float(r["ema20"]); e50 = float(r["ema50"]); e200 = float(r["ema200"])
+    adx_v = float(r["adx"]); pdi = float(r["pdi"]); mdi = float(r["mdi"])
+    rsi_v = float(r["rsi"]); rvol = float(r["rvol"]) if not pd.isna(r["rvol"]) else 1.0
+
+    # ─── 1. فحص الترند ───
+    trend_up = (e50 > e200) and (c > e200)
+    trend_dn = (e50 < e200) and (c < e200)
+    if not (trend_up or trend_dn): return 0, 0, ["no_trend"]
+
+    # ─── 2. فحص ADX ───
+    if adx_v < ADX_MIN_TREND: return 0, 0, ["weak_adx"]
+
+    # ─── 3. فحص DI ───
+    if trend_up and pdi <= mdi: return 0, 0, ["wrong_di"]
+    if trend_dn and mdi <= pdi: return 0, 0, ["wrong_di"]
+
+    # ─── 4. فحص Pullback ───
+    # نبحث في آخر 5 شموع عن لمسة EMA20
+    lookback = min(PULLBACK_LOOKBACK, i)
+    pulled_back = False
+    pb_low_min = None; pb_high_max = None
+    if trend_up:
+        # Long: السعر لمس EMA20 (low <= ema20 * 1.02)
+        lows = df["low"].iloc[i-lookback:i+1].values
+        e20s = df["ema20"].iloc[i-lookback:i+1].values
+        for k in range(len(lows)):
+            if not np.isnan(e20s[k]) and lows[k] <= e20s[k] * EMA20_PROXIMITY:
+                pulled_back = True
+                pb_low_min = float(lows[k])
+                break
+    else:
+        # Short: السعر لمس EMA20 من الأسفل (high >= ema20 * 0.98)
+        highs = df["high"].iloc[i-lookback:i+1].values
+        e20s = df["ema20"].iloc[i-lookback:i+1].values
+        for k in range(len(highs)):
+            if not np.isnan(e20s[k]) and highs[k] >= e20s[k] * (2 - EMA20_PROXIMITY):
+                pulled_back = True
+                pb_high_max = float(highs[k])
+                break
+
+    if not pulled_back: return 0, 0, ["no_pullback"]
+
+    # ─── 5. فحص RSI ───
+    if trend_up and not (RSI_LONG_MIN <= rsi_v <= RSI_LONG_MAX): return 0, 0, ["rsi_out"]
+    if trend_dn and not (RSI_SHORT_MIN <= rsi_v <= RSI_SHORT_MAX): return 0, 0, ["rsi_out"]
+
+    # ─── 6. شمعة تأكيد ───
+    prev = df.iloc[i-1]
+    if trend_up:
+        if not (c > o and c > float(prev["close"])): return 0, 0, ["no_bounce"]
+    else:
+        if not (c < o and c < float(prev["close"])): return 0, 0, ["no_bounce"]
+
+    # ─── 7. الحجم (اختياري لكن يرفع score) ───
+    vol_ok = rvol > 1.0
+
+    # ─── 8. حساب Score ───
+    score = 0
+    # ترند قوي (ADX): 0-25
+    score += min(25, int((adx_v - 20) * 1.25))
+    # EMA alignment: 0-20
+    if trend_up:
+        if e20 > e50 > e200: score += 20
+        elif e50 > e200: score += 10
+    else:
+        if e20 < e50 < e200: score += 20
+        elif e50 < e200: score += 10
+    # Pullback quality: 0-20
+    if trend_up and pb_low_min:
+        dist = (e20 - pb_low_min) / e20 * 100
+        score += min(20, int(dist * 5))
+    elif trend_dn and pb_high_max:
+        dist = (pb_high_max - e20) / e20 * 100
+        score += min(20, int(dist * 5))
+    # RSI position (closer to 50 = better): 0-15
+    rsi_score = 15 - int(abs(rsi_v - 50) * 0.5)
+    score += max(0, rsi_score)
+    # Confirmation candle: 0-10
+    if trend_up:
+        body = (c - o) / o * 100
+        score += min(10, int(body * 5))
+    else:
+        body = (o - c) / o * 100
+        score += min(10, int(body * 5))
+    # Volume: 0-10
+    if vol_ok: score += min(10, int((rvol - 1) * 20))
+
+    score = min(100, score)
+    side = 1 if trend_up else -1
+    reasons = ["pullback_trend", f"adx={adx_v:.0f}", f"rsi={rsi_v:.0f}"]
+    return side, score, reasons
+
 def score_tf(df):
-    if len(df) < 60: return 0.0, []
-    r = df.iloc[-1]; p = df.iloc[-2]
-    sig = []
-    sig.append(1 if r["close"] > r["ema20"] else -1)
-    sig.append(1 if r["ema20"] > r["ema50"] else -1)
-    if not pd.isna(r["ema200"]):
-        sig.append(1 if r["ema50"] > r["ema200"] else -1)
-        sig.append(1 if r["close"] > r["ema200"] else -1)
-    if r["rsi"] < 30: sig.append(1)
-    elif r["rsi"] > 70: sig.append(-1)
-    else: sig.append(0.5 if r["rsi"] > 50 else -0.5)
-    sig.append(1 if r["macd_hist"] > 0 else -1)
-    sig.append(1 if r["macd_hist"] > p["macd_hist"] else -1)
-    sig.append(1 if r["macd_line"] > r["macd_hist"] else -1)
-    if not pd.isna(r["bb_up"]):
-        if r["close"] < r["bb_lo"]: sig.append(1)
-        elif r["close"] > r["bb_up"]: sig.append(-1)
-        else: sig.append(0.5 if r["close"] > r["bb_mid"] else -0.5)
-    if not pd.isna(r["stoch"]):
-        if r["stoch"] < 20: sig.append(1)
-        elif r["stoch"] > 80: sig.append(-1)
-        else: sig.append(0.5 if r["stoch"] > 50 else -0.5)
-    if r["rvol"] and r["rvol"] > 1.3:
-        sig.append(1 if r["close"] > r["open"] else -1)
-    sig.append(1 if r["st_dir"] == 1 else -1)
-    return float(np.mean(sig)), sig
+    """للعرض فقط — نستخدم آخر شمعة"""
+    if len(df) < 210: return 0.0, []
+    side, score, reasons = trend_signal(df, len(df)-1)
+    return score / 100.0 if side != 0 else 0.0, [side]
 
 def get_tf_data(sym, tf):
     try:
-        df = get_recent(sym, tf, 300)
+        df = get_recent(sym, tf, 400)
         return add_indicators(df), df.attrs.get("source","?")
     except PairNotFound: raise
     except Exception: raise PairNotFound(sym)
@@ -632,17 +680,16 @@ def patch_with_live(df, tf, live_price):
 
 BAR = {"15m":900000,"1h":3600000,"4h":4*3600*1000,"1d":24*3600*1000}
 
-def risk_of(entry, atr, p):
-    return entry * p["risk_pct"] / 100 if p.get("risk_pct") else p["sl_atr"] * atr
-
-def build_plan(entry, side, atr, p, tf, ref_avail=None):
-    risk = risk_of(entry, atr, p)
+def build_plan(entry, side, atr, tf, ref_avail=None):
+    """v10.0: SL = 1.5 × ATR | TPs = 1.5R / 3R / 5R / 8R"""
+    risk = SL_ATR_MULT * atr
     bar_h = BAR.get(tf, 24*3600*1000) // 3600000
-    return dict(entry=float(entry), sl=float(entry-side*risk), risk=float(risk),
+    return dict(entry=float(entry), sl=float(entry - side*risk), risk=float(risk),
                 risk_pct=100*risk/entry,
-                tps=[(entry+side*r*risk, r, f, 100*side*r*risk/entry) for r,f in p["tps"]],
+                tps=[(entry + side*r*risk, r, f, 100*side*r*risk/entry)
+                     for r, f in zip(TPS_R, TP_FRACS)],
                 age_hours=0, opened_ms=int(ref_avail or time.time()*1000),
-                max_hours=p["max_hold"]*bar_h, atr_at_entry=float(atr))
+                max_hours=MAX_HOLD.get(tf, 20)*bar_h, atr_at_entry=float(atr))
 
 def analyze(sym, chart_tf=None):
     frames = {}; used = {}
@@ -665,12 +712,7 @@ def analyze(sym, chart_tf=None):
     base_tf = chart_tf if chart_tf in frames else ("4h" if "4h" in frames else list(frames)[0])
     orig_last_close = float(frames[base_tf].iloc[-1]["close"])
 
-    lb = 6 if base_tf == "4h" else (24 if base_tf == "1h" else 1)
-    chg24 = 0.0
-    if len(frames[base_tf]) > lb:
-        ref_close = float(frames[base_tf]["close"].iloc[-lb])
-        chg24 = (price / ref_close - 1) * 100 if ref_close else 0.0
-
+    # Patch آخر شمعة بالسعر الحي + إعادة الحساب
     for tf in list(frames.keys()):
         try:
             frames[tf], _ = patch_with_live(frames[tf], tf, price)
@@ -678,56 +720,79 @@ def analyze(sym, chart_tf=None):
         except Exception as e:
             log.warning("patch %s %s failed: %s", sym, tf, str(e)[:80])
 
-    total_w = sum(TIMEFRAMES[t] for t in frames)
-    total_score = 0.0; all_sig = []
-    for tf, df in frames.items():
-        s, sig = score_tf(df)
-        total_score += s * TIMEFRAMES[tf] / total_w
-        all_sig += sig
-    score100 = round(total_score * 100, 1)
-
-    if score100 >= SCORE_STRONG_BUY:
-        rec, emoji, side, quality = "شراء قوي", "🟢🟢", 1, "strong"
-    elif score100 >= SCORE_BUY:
-        rec, emoji, side, quality = "شراء", "🟢", 1, "buy"
-    elif score100 > SCORE_CAUTIOUS:
-        side = 1 if score100 >= 0 else -1
-        rec = "شراء بحذر" if side == 1 else "بيع بحذر"
-        emoji, quality = "🟡", "cautious"
-    elif score100 > SCORE_SELL:
-        rec, emoji, side, quality = "بيع", "🔴", -1, "sell"
-    else:
-        rec, emoji, side, quality = "بيع قوي", "🔴🔴", -1, "strong_sell"
-
-    direction = side
-    agree = sum(1 for x in all_sig if x * direction > 0)
-    agreement = round(100 * agree / max(len(all_sig), 1))
-
     bdf = frames[base_tf]
     last = bdf.iloc[-1]
-    atr = float(last["atr"])
-    price_pct = 100*atr/price
-    if not (ATR_PCT_MIN <= price_pct <= ATR_PCT_MAX):
-        if quality in ("strong","strong_sell"): quality = "buy" if side == 1 else "sell"
 
+    # Signal من الفريم الأساسي
+    side, score, reasons = trend_signal(bdf, len(bdf)-1)
+
+    # Trend filter من فريم أعلى (للتأكيد فقط)
+    htf_ok = True
+    htf_name = "1d" if base_tf == "4h" else None
+    if htf_name and htf_name in frames:
+        hdf = frames[htf_name]
+        hlast = hdf.iloc[-1]
+        if not pd.isna(hlast["ema200"]):
+            if side == 1 and not (hlast["ema50"] > hlast["ema200"] and hlast["close"] > hlast["ema200"]):
+                htf_ok = False
+            if side == -1 and not (hlast["ema50"] < hlast["ema200"] and hlast["close"] < hlast["ema200"]):
+                htf_ok = False
+
+    if not htf_ok:
+        side = 0; score = 0; reasons.append("htf_mismatch")
+
+    # حماية Pump/Dump
+    lb = 6 if base_tf == "4h" else 1
+    chg24 = 0.0
+    if len(bdf) > lb:
+        ref_close = float(bdf["close"].iloc[-lb])
+        chg24 = (price / ref_close - 1) * 100 if ref_close else 0.0
     protected = False
     if side == -1 and chg24 > PUMP_PROTECT_SHORT:
-        side = 0; rec = "لا توجد صفقة"; emoji = "⚪"; quality = "blocked"; protected = True
+        side = 0; score = 0; protected = True; reasons.append("pump_protect")
     if side == 1 and chg24 < -DUMP_PROTECT_LONG:
-        side = 0; rec = "لا توجد صفقة"; emoji = "⚪"; quality = "blocked"; protected = True
+        side = 0; score = 0; protected = True; reasons.append("dump_protect")
 
+    # Score من 100 → Score100 لسهولة العرض
+    score100 = score
+
+    # الخطة
     plan = None
-    if side:
-        p = params_for(base_tf, sym=sym)
-        plan = build_plan(price, side, atr, p, base_tf, last["t"])
+    if side != 0:
+        atr_v = float(last["atr"])
+        if atr_v > 0:
+            plan = build_plan(price, side, atr_v, base_tf, last["t"])
+
+    # rec + emoji
+    if side == 1:
+        if score100 >= 80: rec, emoji, quality = "شراء قوي", "🟢🟢", "strong"
+        elif score100 >= 65: rec, emoji, quality = "شراء", "🟢", "buy"
+        else: rec, emoji, quality = "شراء بحذر", "🟡", "cautious"
+    elif side == -1:
+        if score100 >= 80: rec, emoji, quality = "بيع قوي", "🔴🔴", "strong_sell"
+        elif score100 >= 65: rec, emoji, quality = "بيع", "🔴", "sell"
+        else: rec, emoji, quality = "بيع بحذر", "🟡", "cautious"
+    else:
+        rec, emoji, quality = "لا توجد صفقة", "⚪", "none"
+
+    ctx = dict(regime="up" if (not pd.isna(last["ema200"]) and last["ema50"] > last["ema200"]) else
+               ("down" if (not pd.isna(last["ema200"]) and last["ema50"] < last["ema200"]) else "range"),
+               adx=float(last["adx"]) if not pd.isna(last["adx"]) else 0,
+               rsi=float(last["rsi"]) if not pd.isna(last["rsi"]) else 50,
+               ema20=float(last["ema20"]) if not pd.isna(last["ema20"]) else 0,
+               ema50=float(last["ema50"]) if not pd.isna(last["ema50"]) else 0,
+               atr_pct=100*float(last["atr"])/price if not pd.isna(last["atr"]) else 0,
+               reasons=reasons)
 
     return dict(sym=sym, frames=frames, used=used, base_tf=base_tf,
                 score=score100, rec=rec, emoji=emoji, side=side, quality=quality,
-                agreement=agreement, price=price, candle_close=orig_last_close,
+                agreement=score100, price=price, candle_close=orig_last_close,
                 live_src=live_src or "binance",
-                plan=plan, chg24=chg24, atr=atr, atr_pct=price_pct,
-                rsi=float(last["rsi"]), adx=float(last["adx"]),
-                protected=protected, df=bdf, is_major=sym in MAJORS)
+                plan=plan, chg24=chg24,
+                atr=float(last["atr"]) if not pd.isna(last["atr"]) else 0,
+                atr_pct=ctx["atr_pct"],
+                rsi=ctx["rsi"], adx=ctx["adx"],
+                protected=protected, df=bdf, is_major=sym in MAJORS, ctx=ctx)
 
 def fmt(x):
     if x >= 1000: return f"{x:,.2f}"
@@ -850,8 +915,8 @@ def format_signal_vip(res):
         lines.append(f"🎯 الهدف {i}: <code>{fmt(tp[0])}</code>")
     lines.append(f"🛑 وقف الخسارة: <code>{fmt(plan['sl'])}</code>")
     lines += ["", f"📈 RSI: {res['rsi']:.0f} | ADX: {res['adx']:.0f}",
-              f"📊 التوافق: {res['agreement']}%",
-              f"🎯 نوع: {'Major' if is_major else 'Altcoin'}", "",
+              f"🎯 جودة الإشارة: {res['score']:.0f}/100",
+              f"📊 نوع: {'Major' if is_major else 'Altcoin'}", "",
               f"👤 {BRAND}", f"📢 {CHANNEL_LINK}", "",
               "⚠️ تحليل فني وليس نصيحة مالية."]
     return "\n".join(lines)
@@ -916,8 +981,8 @@ def _cost(entry, risk): return (2*FEE+SLIP)*entry/risk
 def can_track(store, coin, tf, side, opened_ms=None):
     with store.lock:
         opens = [p for p in store.data["signals"] if p["status"]=="open"]
-        if len(opens) >= MAX_OPEN_TOTAL: return False
-        if sum(1 for p in opens if p["coin"]==coin) >= MAX_OPEN_PER_COIN: return False
+        if len(opens) >= 20: return False
+        if sum(1 for p in opens if p["coin"]==coin) >= 5: return False
         if any(p["coin"]==coin and p["tf"]==tf and p["side"]==side for p in opens): return False
     return True
 
@@ -1068,13 +1133,13 @@ def weekly_report_text(store):
         for c, r in worst: lines.append(f"  • #{c}: <b>{round(r,1)}R</b>")
     return "\n".join(lines)
 
-_scan_pool = ThreadPoolExecutor(8)
+_scan_pool = ThreadPoolExecutor(6)
 def _safe(fn, *a):
     try: return fn(*a)
     except Exception as e:
         log.debug("scan skip %s: %s", a, str(e)[:80]); return None
 
-def scan_signals(universe=None, min_score=25, only_side=None):
+def scan_signals(universe=None, min_score=60, only_side=None):
     syms = universe or top_symbols(SCAN_TOP_N)
     out = []
     def _an(s):
@@ -1083,11 +1148,11 @@ def scan_signals(universe=None, min_score=25, only_side=None):
         except Exception: return None
     for res in _scan_pool.map(_an, syms):
         if not res or not res["side"]: continue
-        if res["quality"] in ("cautious","blocked"): continue
-        if abs(res["score"]) < min_score: continue
+        if res["quality"] in ("cautious","none"): continue
+        if res["score"] < min_score: continue
         if only_side and res["side"] != only_side: continue
         out.append(res)
-    return sorted(out, key=lambda r: -abs(r["score"]))
+    return sorted(out, key=lambda r: -r["score"])
 
 def _daily(sym):
     df = get_recent(sym, "1d", 500)
@@ -1139,7 +1204,7 @@ def scan_pump(top=15):
                         kind="اختراق" if brk else "انفجار", score=float(score)))
     return sorted(out, key=lambda r: -r["score"])[:top]
 
-# ═══════════════════════════ BACKTEST v9.0 ═══════════════════════════
+# ═══════════════════════════ BACKTEST v10.0 ═══════════════════════════
 def _fetch_hist(sym, iv, years):
     now_ms = int(time.time()*1000)
     start_ms = now_ms - int(years*365*24*3600*1000)
@@ -1165,75 +1230,22 @@ def _fetch_hist(sym, iv, years):
     df["t"] = df["t"].astype("int64")
     return df[df["t"]+MS[iv] <= now_ms].reset_index(drop=True)
 
-def _score_at(df, i):
-    if i < 60: return 0.0
-    r = df.iloc[i]; p = df.iloc[i-1]
-    sig = []
-    sig.append(1 if r["close"] > r["ema20"] else -1)
-    sig.append(1 if r["ema20"] > r["ema50"] else -1)
-    if not pd.isna(r["ema200"]):
-        sig.append(1 if r["ema50"] > r["ema200"] else -1)
-        sig.append(1 if r["close"] > r["ema200"] else -1)
-    if r["rsi"] < 30: sig.append(1)
-    elif r["rsi"] > 70: sig.append(-1)
-    else: sig.append(0.5 if r["rsi"] > 50 else -0.5)
-    sig.append(1 if r["macd_hist"] > 0 else -1)
-    sig.append(1 if r["macd_hist"] > p["macd_hist"] else -1)
-    sig.append(1 if r["macd_line"] > r["macd_hist"] else -1)
-    if not pd.isna(r["bb_up"]):
-        if r["close"] < r["bb_lo"]: sig.append(1)
-        elif r["close"] > r["bb_up"]: sig.append(-1)
-        else: sig.append(0.5 if r["close"] > r["bb_mid"] else -0.5)
-    if not pd.isna(r["stoch"]):
-        if r["stoch"] < 20: sig.append(1)
-        elif r["stoch"] > 80: sig.append(-1)
-        else: sig.append(0.5 if r["stoch"] > 50 else -0.5)
-    if r["rvol"] and r["rvol"] > 1.3:
-        sig.append(1 if r["close"] > r["open"] else -1)
-    sig.append(1 if r["st_dir"] == 1 else -1)
-    return float(np.mean(sig)) * 100
-
-def _signal_at(df, i, tf, sym):
-    score = _score_at(df, i)
-    if score >= SCORE_STRONG_BUY: side = 1
-    elif score >= SCORE_BUY: side = 1
-    elif score > SCORE_CAUTIOUS: side = 1 if score >= 0 else -1
-    elif score > SCORE_SELL: side = -1
-    else: side = -1
-    if df.iloc[i]["adx"] <= ADX_MIN_DEFAULT: side = 0
-    lb = 6 if tf == "4h" else 1
-    if i > lb:
-        chg = (df.iloc[i]["close"]/df.iloc[i-lb]["close"]-1)*100
-        if side == -1 and chg > PUMP_PROTECT_SHORT: side = 0
-        if side == 1 and chg < -DUMP_PROTECT_LONG: side = 0
-    if side == 0: return 0, score, 0, 0, []
-    model = _risk_model_for(sym)
-    SL_PCT = model["fixed_sl"]
-    entry = float(df.iloc[i]["close"])
-    risk = entry * SL_PCT / 100
-    sl = entry - side*risk
-    tps = [(entry+side*r*risk, r, f, 100*side*r*risk/entry) for r, f in model["tps"]]
-    return side, score, entry, sl, tps
-
 def _bt_simulate(df, tf, min_score, sym):
     o = df["open"].values; h = df["high"].values
     l = df["low"].values; c = df["close"].values
     atr = df["atr"].values; t = df["t"].values
     n = len(df); trades = []; free = 0
-    max_hold = MAX_HOLD.get(tf, 24)
-    model = _risk_model_for(sym)
-    SL_PCT = model["fixed_sl"]
-    TPS = model["tps"]
-    for i in range(60, n-1):
+    max_hold = MAX_HOLD.get(tf, 20)
+    for i in range(220, n-1):
         if i < free: continue
-        side, score, entry, sl, tps = _signal_at(df, i, tf, sym)
-        if side == 0 or abs(score) < min_score: continue
+        side, score, reasons = trend_signal(df, i)
+        if side == 0 or score < min_score: continue
         if np.isnan(atr[i]) or atr[i] <= 0: continue
         entry_i = i+1
         entry_px = o[entry_i] * (1 + side*SLIP)
-        risk = entry_px * SL_PCT / 100
+        risk = SL_ATR_MULT * atr[i]
         cur_sl = entry_px - side*risk
-        tps_px = [(entry_px + side*r*risk, r, f) for r, f in TPS]
+        tps_px = [(entry_px + side*r*risk, r, f) for r, f in zip(TPS_R, TP_FRACS)]
         remaining = 1.0; realized = 0.0; k = 0
         exit_j = min(entry_i + max_hold, n-1); last = exit_j
         for j in range(entry_i, last+1):
@@ -1270,27 +1282,27 @@ def _bt_metrics(tr):
                 pf=round(g/lo,2) if lo>0 else 999,
                 total=round(Rs.sum(),1), avg=round(Rs.mean(),3), dd=round(dd,1))
 
-def run_backtest(years=3.0, tf="4h", min_score=25, send_to=None):
+def run_backtest(years=3.0, tf="4h", min_score=60, send_to=None):
     bot = _bot
     target = send_to or ADMIN_ID
     def send(msg):
         try: bot.send_message(target, msg)
         except Exception: pass
 
-    send(f"🚀 <b>Backtest v9.0</b>\n\n"
+    send(f"🚀 <b>Backtest v10.0 — Pullback Trend</b>\n\n"
          f"📊 Coins: {len(COINS)}\n"
          f"📅 Years: {years}\n"
          f"⏱ TF: {tf}\n"
-         f"🎯 MinScore: {min_score}\n\n"
-         f"⚙️ Majors: SL 3% | TPs 1R/2R/3R/4R\n"
-         f"⚙️ Altcoins: SL 4.5% | TPs 1R/2.5R/4R/6R\n"
-         f"🔄 BE: OFF | Trail: 2.5/2.0 ATR\n\n"
+         f"🎯 MinScore: {min_score}/100\n\n"
+         f"⚙️ SL = {SL_ATR_MULT}×ATR\n"
+         f"⚙️ TPs = 1.5R/3R/5R/8R\n"
+         f"⚙️ ADX ≥ {ADX_MIN_TREND} | Pullback LOOKBACK = {PULLBACK_LOOKBACK}\n\n"
          f"⏳ جاري تحميل البيانات...")
     per = {}
     for idx, coin in enumerate(COINS, 1):
         try:
             df = _fetch_hist(coin, tf, years)
-            if len(df) < 300:
+            if len(df) < 400:
                 send(f"⚠️ {coin}: بيانات غير كافية ({len(df)})"); continue
             df = add_indicators(df)
             per[coin] = df
@@ -1322,7 +1334,7 @@ def run_backtest(years=3.0, tf="4h", min_score=25, send_to=None):
             send(f"❌ {coin}: {str(e)[:60]}")
 
     mt = _bt_metrics(all_tr); me = _bt_metrics(all_te)
-    lines = [f"═══ 📊 <b>نتائج v9.0</b> ═══", ""]
+    lines = [f"═══ 📊 <b>نتائج v10.0</b> ═══", ""]
     lines.append(f"📅 Training حتى: {pd.to_datetime(cut, unit='ms'):%Y-%m-%d}")
     lines.append(f"📅 Testing حتى: {pd.to_datetime(tmax, unit='ms'):%Y-%m-%d}")
     lines.append("")
@@ -1341,21 +1353,21 @@ def run_backtest(years=3.0, tf="4h", min_score=25, send_to=None):
     top = per_res[:5]; bot5 = per_res[-5:]
     top_lines = ["🏆 <b>أفضل 5 عملات (TEST)</b>", ""]
     for c, tr, te in top:
-        tag = "Major" if c in MAJORS else "Alt"
-        top_lines.append(f"  #{c} ({tag}): {te['total']:+.1f}R | WR {te['wr']}% | PF {te['pf']}")
+        tag = "M" if c in MAJORS else "A"
+        top_lines.append(f"  #{c} ({tag}): {te['total']:+.1f}R | WR {te['wr']}% | PF {te['pf']} | n={te['n']}")
     top_lines += ["", "📉 <b>أسوأ 5 عملات (TEST)</b>", ""]
     for c, tr, te in bot5:
-        tag = "Major" if c in MAJORS else "Alt"
-        top_lines.append(f"  #{c} ({tag}): {te['total']:+.1f}R | WR {te['wr']}% | PF {te['pf']}")
+        tag = "M" if c in MAJORS else "A"
+        top_lines.append(f"  #{c} ({tag}): {te['total']:+.1f}R | WR {te['wr']}% | PF {te['pf']} | n={te['n']}")
     send("\n".join(top_lines))
 
-    if me["n"] >= 50 and me["pf"] >= 2.5 and me["wr"] >= 55:
+    if me["n"] >= 30 and me["pf"] >= 2.5 and me["wr"] >= 55:
         verdict = f"🎉 <b>ممتاز!</b> PF≥2.5\nPF={me['pf']} | WR={me['wr']}% | n={me['n']}"
-    elif me["n"] >= 30 and me["pf"] >= 2.0:
+    elif me["n"] >= 20 and me["pf"] >= 2.0:
         verdict = f"✅ <b>جيد جداً</b>\nPF={me['pf']} | WR={me['wr']}% | n={me['n']}"
-    elif me["n"] >= 30 and me["pf"] >= 1.5:
+    elif me["n"] >= 15 and me["pf"] >= 1.5:
         verdict = f"✅ <b>جيد</b>\nPF={me['pf']} | WR={me['wr']}% | n={me['n']}"
-    elif me["n"] >= 20 and me["total"] > 0:
+    elif me["n"] >= 10 and me["total"] > 0:
         verdict = f"⚠️ <b>مقبول</b>\nPF={me['pf']} | WR={me['wr']}% | n={me['n']}"
     else:
         verdict = f"❌ <b>ضعيف</b>\nPF={me['pf']} | WR={me['wr']}% | n={me['n']}"
@@ -1367,7 +1379,7 @@ def run_backtest(years=3.0, tf="4h", min_score=25, send_to=None):
             t = "M" if c in MAJORS else "A"
             csv += f"{c},{t},{tr['n']},{tr['wr']},{tr['pf']},{tr['total']},{te['n']},{te['wr']},{te['pf']},{te['total']}\n"
         buf = io.BytesIO(csv.encode())
-        buf.name = f"backtest_{tf}_v9.csv"
+        buf.name = f"backtest_{tf}_v10.csv"
         bot.send_document(target, buf)
     except Exception as e:
         send(f"⚠️ CSV: {str(e)[:60]}")
@@ -1611,7 +1623,7 @@ def make_bot(token=None):
             f"🔥 <b>لماذا VIP؟</b>\n\n"
             f"🎯 <b>4 أهداف</b> لكل صفقة (بدل 2)\n"
             f"📉 <b>إشارات شراء وبيع</b> (Short & Long)\n"
-            f"🔍 <b>تحليل أعمق</b> (7 منصات + 4 فريمات)\n"
+            f"🔍 <b>تحليل أعمق</b> (7 منصات + فريمات)\n"
             f"🐋 <b>تتبع الحيتان الذكي</b>\n"
             f"🧲 <b>عملات القاع</b> (فرص انعكاس)\n"
             f"💥 <b>رادار الانفجارات</b> الفوري\n"
@@ -1735,11 +1747,10 @@ def make_bot(token=None):
     def dashboard(m):
         c = counts(store)
         src = ", ".join(f"{k}:{'✅' if v=='ok' else '❌'}" for k,v in source_status().items())
-        bot.reply_to(m, f"🖥 <b>v9.0</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
+        bot.reply_to(m, f"🖥 <b>v10.0 — Pullback Trend</b>\n\n👥 {c['total']} (جدد: {c['new_today']})\n"
                         f"🆓 {c['trial']} | 💎 {c['vip']}\n\n🌐 {src}\n💾 {store.remote_msg}\n"
-                        f"⚙️ Majors: SL 3% | TPs 1/2/3/4R\n"
-                        f"⚙️ Altcoins: SL 4.5% | TPs 1/2.5/4/6R\n"
-                        f"BE: OFF | Trail: 2.5/2.0 ATR | ADX≥22")
+                        f"⚙️ SL {SL_ATR_MULT}×ATR | TPs 1.5/3/5/8R\n"
+                        f"⚙️ ADX≥{ADX_MIN_TREND} | MinScore={AUTOPOST_MIN_SCORE}")
 
     @bot.message_handler(commands=["price"])
     @admin_only
@@ -1757,8 +1768,8 @@ def make_bot(token=None):
         args = m.text.split()
         years = float(args[1]) if len(args) > 1 else 3.0
         tf = args[2] if len(args) > 2 else "4h"
-        min_score = int(args[3]) if len(args) > 3 else 25
-        bot.reply_to(m, f"🚀 بدء Backtest v9.0...\n{years} سنة | {tf} | Score≥{min_score}\n\n⏳ استلم النتائج خلال دقائق.")
+        min_score = int(args[3]) if len(args) > 3 else 60
+        bot.reply_to(m, f"🚀 بدء Backtest v10.0...\n{years} سنة | {tf} | Score≥{min_score}\n\n⏳ استلم النتائج خلال دقائق.")
         threading.Thread(
             target=lambda: run_backtest(years, tf, min_score, send_to=m.chat.id),
             daemon=True
@@ -1787,7 +1798,7 @@ def make_bot(token=None):
     def short_cmd(m):
         wait = bot.reply_to(m, "⏳ ...")
         try:
-            rows = scan_signals(min_score=25, only_side=-1)
+            rows = scan_signals(min_score=60, only_side=-1)
             if not rows:
                 bot.send_message(m.chat.id, "لا توجد إشارات شورت حالياً.")
             else:
@@ -1836,8 +1847,8 @@ def main():
     try: bot.remove_webhook()
     except Exception: pass
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v9.0 started")
+    log.info("bot v10.0 started")
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
-    main()
+    main() 
