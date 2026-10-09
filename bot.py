@@ -46,12 +46,13 @@ SL_ATR_MAX = 2.5
 SL_BUFFER = 0.4
 DEFAULT_ATR_MULT = 1.5
 
-TPS_R = [1.5, 3.0, 6.0]
-TP_FRACS = [0.40, 0.35, 0.25]
+# ═══════ v12.2: أهداف قريبة (قبل أبو تركي بشوي) ═══════
+TPS_R = [0.6, 1.25, 2.0, 2.75]
+TP_FRACS = [0.40, 0.30, 0.20, 0.10]
 
 BE_AFTER_TP1_DELAYED = True
-BE_TRIGGER_R = 1.5
-BE_BUFFER_R = -0.2
+BE_TRIGGER_R = 0.6
+BE_BUFFER_R = -0.1
 TRAIL_ATR_AFTER_TP1 = 2.0
 TRAIL_ATR_AFTER_TP2 = 2.0
 
@@ -63,9 +64,6 @@ MAX_HOLD = {"4h": 40, "1d": 25}
 MIN_SCORE = 30
 AUTOPOST_MIN_SCORE = 40
 
-BTC_FILTER = False
-MTF_CONFIRM = False
-
 PUMP_PROTECT = 20.0
 DUMP_PROTECT = 20.0
 
@@ -73,7 +71,6 @@ TIMEFRAMES = {"4h": 1.0}
 CANDLES_IN_CHART = 90
 
 _bot = None
-_lock = threading.RLock()
 
 def default_tf_for(symbol):
     return "1d" if symbol in MAJORS else "4h"
@@ -392,13 +389,10 @@ def extract_delisted_coins(arts):
             if w not in coins: coins[w] = title[:40]
     return coins
 
-# ============ v12.0 SIMPLE SIGNAL ============
+# ═══════════════════════════ v12.2 SIGNAL ═══════════════════════════
 def simple_signal(df, i):
     """
-    v12.0: بسيط جداً — يعطي إشارة دائماً
-    Long: close > EMA20 AND EMA20 > EMA50 (ترند صاعد)
-    Short: close < EMA20 AND EMA20 < EMA50 (ترند هابط)
-    Fallback: momentum (آخر 5 شموع)
+    v12.2: RSI extremes أولاً، ثم ترند
     """
     if i < 30: return 0, 50, None, []
     r = df.iloc[i]
@@ -409,41 +403,47 @@ def simple_signal(df, i):
     e20 = float(r["ema20"]); e50 = float(r["ema50"])
     rsi_v = float(r["rsi"]) if not pd.isna(r["rsi"]) else 50
     
-    # نطاق 3 شموع للـ pullback extreme
     low3 = float(df["low"].iloc[max(0,i-3):i+1].min())
     high3 = float(df["high"].iloc[max(0,i-3):i+1].max())
     
-    # الاتجاه الأساسي
+    # 1. RSI extremes (أولوية قصوى)
+    if rsi_v < 30:
+        score = 70 + int((30 - rsi_v) * 1.5)
+        return 1, min(score, 90), low3, ["oversold_bounce"]
+    
+    if rsi_v > 70:
+        score = 70 + int((rsi_v - 70) * 1.5)
+        return -1, min(score, 90), high3, ["overbought_drop"]
+    
+    # 2. Trend following
     trend_up = (c > e20) and (e20 > e50)
     trend_dn = (c < e20) and (e20 < e50)
     
-    # Long
-    if trend_up and rsi_v < 75 and c > o:
-        score = 55
+    if trend_up and rsi_v < 70 and c > o:
+        score = 60
         if rsi_v < 60: score += 10
         if rsi_v > 50: score += 10
         if c > e50 * 1.02: score += 5
         if float(r["rvol"]) > 1.0: score += 5
-        return 1, min(score, 90), low3, ["trend_up"]
+        return 1, min(score, 85), low3, ["trend_up"]
     
-    # Short
-    if trend_dn and rsi_v > 25 and c < o:
-        score = 55
+    if trend_dn and rsi_v > 30 and c < o:
+        score = 60
         if rsi_v > 40: score += 10
         if rsi_v < 50: score += 10
         if c < e50 * 0.98: score += 5
         if float(r["rvol"]) > 1.0: score += 5
-        return -1, min(score, 90), high3, ["trend_dn"]
+        return -1, min(score, 85), high3, ["trend_dn"]
     
-    # Momentum fallback — لا اتجاه واضح
+    # 3. Momentum fallback
     c5 = float(df["close"].iloc[i-5]) if i >= 5 else c
     recent = (c - c5) / c5 * 100 if c5 else 0
-    if recent > 0.3 or (rsi_v > 55 and c > e20):
+    
+    if recent > 0.5 or (rsi_v > 55 and c > e20):
         return 1, 50, low3, ["momentum_up"]
-    elif recent < -0.3 or (rsi_v < 45 and c < e20):
+    elif recent < -0.5 or (rsi_v < 45 and c < e20):
         return -1, 50, high3, ["momentum_dn"]
     else:
-        # آخر حل — نتبع RSI
         if rsi_v >= 50:
             return 1, 45, low3, ["rsi_long"]
         else:
@@ -496,7 +496,6 @@ def analyze(sym, chart_tf=None):
     base_tf = chart_tf if chart_tf in frames else list(frames)[0]
     orig_last_close = float(frames[base_tf].iloc[-1]["close"])
 
-    # Patch live
     for tf in list(frames.keys()):
         try:
             d = frames[tf].copy()
@@ -515,7 +514,6 @@ def analyze(sym, chart_tf=None):
 
     side, score, pb_extreme, reasons = simple_signal(bdf, len(bdf)-1)
 
-    # حماية من الانفجارات الشديدة فقط
     protected = False
     lb = 6 if base_tf == "4h" else 1
     chg24 = 0.0
@@ -687,7 +685,7 @@ def _notify_event(bot, pos, ev):
     if ev["kind"] == "TP":
         tp = pos["tps"][ev["j"]-1]
         pct_ = 100*pos["side"]*(tp["px"]-pos["entry"])/pos["entry"]
-        msg = f"{head}\n🎯 <b>TP{ev['j']}</b> ✅ ({pct_:+.2f}%)"
+        msg = f"{head}\n🎯 TP{ev['j']} ✅ ({pct_:+.2f}%)"
     elif ev["kind"] == "SL":
         pct_ = 100*pos["side"]*(pos["sl"]-pos["entry"])/pos["entry"]
         msg = f"{head}\n🛑 وقف ({pct_:+.2f}%)"
@@ -709,7 +707,7 @@ def stats(store, days=None):
     return dict(n=len(r), wr=round(100*sum(v>0 for v in r)/len(r),1),
                 pf=round(g/l,2) if l>0 else None, total=round(sum(r),1))
 
-# ============ BACKTEST ============
+# ═══════════════════════════ BACKTEST ═══════════════════════════
 def _fetch_hist(sym, iv, years):
     now_ms = int(time.time()*1000)
     start_ms = now_ms - int(years*365*24*3600*1000)
@@ -809,7 +807,7 @@ def run_backtest(years=3.0, tf="4h", min_score=30, send_to=None):
     def send(msg):
         try: bot.send_message(target, msg)
         except Exception: pass
-    send(f"v12.0 Backtest\nYears: {years} | TF: {tf} | MinScore: {min_score}\nLoading...")
+    send(f"v12.2 Backtest\nYears: {years} | TF: {tf} | MinScore: {min_score}\nLoading...")
     per = {}
     for idx, coin in enumerate(COINS, 1):
         try:
@@ -838,7 +836,7 @@ def run_backtest(years=3.0, tf="4h", min_score=30, send_to=None):
         except Exception as e:
             send(f"{coin}: {str(e)[:60]}")
     mt = _bt_metrics(all_tr); me = _bt_metrics(all_te)
-    lines = [f"=== v12.0 Results ===", "",
+    lines = [f"=== v12.2 Results ===", "",
              f"TRAIN ({mt['n']}): WR {mt['wr']}% | PF {mt['pf']} | {mt['total']}R",
              f"TEST ({me['n']}): WR {me['wr']}% | PF {me['pf']} | {me['total']}R | DD {me['dd']}R"]
     send("\n".join(lines))
@@ -860,11 +858,11 @@ def run_backtest(years=3.0, tf="4h", min_score=30, send_to=None):
         for c, tr, te in per_res:
             t = "M" if c in MAJORS else "A"
             csv += f"{c},{t},{tr['n']},{tr['wr']},{tr['pf']},{tr['total']},{te['n']},{te['wr']},{te['pf']},{te['total']}\n"
-        buf = io.BytesIO(csv.encode()); buf.name = f"bt_{tf}_v12.csv"
+        buf = io.BytesIO(csv.encode()); buf.name = f"bt_{tf}_v12_2.csv"
         bot.send_document(target, buf)
     except Exception: pass
 
-# ============ UI ============
+# ═══════════════════════════ UI ═══════════════════════════
 def fmt(x):
     if x >= 1000: return f"{x:,.2f}"
     if x >= 1: return f"{x:.4f}"
@@ -877,7 +875,7 @@ def smart_fmt(x):
     if "." not in s: s += ".0"
     return s
 
-def render_chart(res):
+def render_chart(res, n_tps=4):
     if not plt_ok: return None
     df = res["df"].tail(CANDLES_IN_CHART).reset_index(drop=True)
     if len(df) < 10: return None
@@ -895,7 +893,7 @@ def render_chart(res):
     levels = []
     if plan and side:
         levels = [(plan["entry"], "Entry", entry_c, "-."), (plan["sl"], "Stop", sl_c, "--")]
-        for i, tp in enumerate(plan["tps"][:3], 1):
+        for i, tp in enumerate(plan["tps"][:n_tps], 1):
             levels.append((tp[0], f"TP{i}", tp_c, "--"))
     x_end = len(df) - 1
     for p, name, col, ls in levels:
@@ -943,7 +941,7 @@ def format_signal_free(res):
     sym = res["sym"]; side = res["side"]; plan = res["plan"]
     tf_ar = {"1d":"يومي","4h":"4 ساعات"}.get(res["base_tf"], res["base_tf"])
     if not plan or not side:
-        return f"#{sym}/USDT\n\n⚡ Binance\n⏱ {tf_ar}\n\n💡 لا توجد صفقة الآن ⚪"
+        return f"#{sym}/USDT\n\n⚡ Binance\n⏱ {tf_ar}\n\n💡 لا توجد صفقة ⚪"
     side_txt = "شراء 🟢" if side == 1 else "بيع 🔴"
     return "\n".join([
         f"📊 #{sym}/USDT", "", "⚡ Binance", f"⏱ {tf_ar}", "",
@@ -951,8 +949,9 @@ def format_signal_free(res):
         f"💵 الدخول: {fmt(plan['entry'])}",
         f"🎯 الهدف 1: {fmt(plan['tps'][0][0])}",
         f"🎯 الهدف 2: {fmt(plan['tps'][1][0])}",
+        f"🎯 الهدف 3: {fmt(plan['tps'][2][0])}",
         f"🛑 الوقف: {fmt(plan['sl'])}",
-        "", f"👤 {BRAND}", "", "⚠️ ليس نصيحة مالية"])
+        "", "🔒 الهدف 4 في VIP", f"👤 {BRAND}", "⚠️ ليس نصيحة مالية"])
 
 def format_signal_vip(res):
     sym = res["sym"]; side = res["side"]; plan = res["plan"]
@@ -962,11 +961,11 @@ def format_signal_vip(res):
     lines = [f"💎 VIP #{sym}/USDT", "", "⚡ Binance", f"⏱ {tf_ar}", "",
              f"💡 {res['rec']}", "",
              f"💵 الدخول: {fmt(plan['entry'])}"]
-    for i, tp in enumerate(plan["tps"][:3], 1):
+    for i, tp in enumerate(plan["tps"][:4], 1):
         lines.append(f"🎯 الهدف {i}: {fmt(tp[0])}")
     lines.append(f"🛑 الوقف: {fmt(plan['sl'])}")
     lines += ["", f"📈 RSI {res['rsi']:.0f} | الجودة {res['score']:.0f}/100", "",
-              f"👤 {BRAND}", "", "⚠️ ليس نصيحة مالية"]
+              f"👤 {BRAND}", "⚠️ ليس نصيحة مالية"]
     return "\n".join(lines)
 
 def format_signal_admin(res):
@@ -977,7 +976,7 @@ def format_signal_admin(res):
     for i, tp in enumerate(plan["tps"][:3], 1):
         lines.append(f"🎯 TP{i}: {smart_fmt(tp[0])}")
     lines.append(f"🛑 SL: {smart_fmt(plan['sl'])}")
-    return base + "\n\n📋 للنسخ:\n" + "\n".join(lines)
+    return base + "\n\n📋 <b>للنسخ:</b>\n<pre>" + "\n".join(lines) + "</pre>"
 
 def keyboard(sym, tf, tier):
     kb = types.InlineKeyboardMarkup()
@@ -991,9 +990,12 @@ def keyboard(sym, tf, tier):
     return kb
 
 def send_signal(bot, chat_id, res, tier, protect=False, kb=None):
-    if tier == "admin": img = render_chart(res); text = format_signal_admin(res)
-    elif tier == "vip": img = render_chart(res); text = format_signal_vip(res)
-    else: img = render_chart(res); text = format_signal_free(res)
+    if tier == "admin":
+        img = render_chart(res, 4); text = format_signal_admin(res)
+    elif tier == "vip":
+        img = render_chart(res, 4); text = format_signal_vip(res)
+    else:
+        img = render_chart(res, 3); text = format_signal_free(res)
     if img is None:
         return bot.send_message(chat_id, text, reply_markup=kb, protect_content=protect)
     if len(text) <= 1024:
@@ -1100,14 +1102,14 @@ def job_scan(bot):
         if posted >= 5: break
         if not can_track(store, res["sym"], res["base_tf"], res["side"], res["plan"]["opened_ms"]): continue
         try:
-            img = render_chart(res); text = format_signal_vip(res)
+            img = render_chart(res, 4); text = format_signal_vip(res)
             if img and len(text) <= 1024:
                 bot.send_photo(VIP_CHANNEL_ID, img, caption=text, protect_content=PROTECT_CONTENT)
             else: bot.send_message(VIP_CHANNEL_ID, text, protect_content=PROTECT_CONTENT)
         except Exception: pass
         if _free_posted["n"] < 3 and CHANNEL_ID:
             try:
-                img = render_chart(res); text = format_signal_free(res)
+                img = render_chart(res, 3); text = format_signal_free(res)
                 if img and len(text) <= 1024:
                     bot.send_photo(CHANNEL_ID, img, caption=text)
                 else: bot.send_message(CHANNEL_ID, text)
@@ -1190,7 +1192,7 @@ def make_bot(token=None):
     def vip(m):
         p = {k: pr for k,_,pr in PLANS}
         bot.send_message(m.chat.id,
-            f"💎 VIP — Rym Crypto\n\n✅ 3 أهداف\n✅ شورتات\n✅ رادار الانفجارات\n✅ عملات القاع\n\n"
+            f"💎 VIP — Rym Crypto\n\n✅ 4 أهداف\n✅ شورتات\n✅ رادار الانفجارات\n✅ عملات القاع\n\n"
             f"💰 {p['1m']}$ / {p['3m']}$ / {p['1y']}$\n"
             f"💳 Binance Pay: {BINANCE_ID}\n📞 {CONTACT_LINK}\n🔗 {VIP_CHANNEL_LINK}",
             disable_web_page_preview=True)
@@ -1275,8 +1277,8 @@ def make_bot(token=None):
     def dash(m):
         c = counts(store)
         src = ", ".join(f"{k}:{v}" for k,v in source_status().items())
-        bot.reply_to(m, f"🖥 v12.0\n\n👥 {c['total']} | تجربة {c['trial']} | VIP {c['vip']}\n\n"
-                        f"🌐 {src}\n💾 {store.remote_msg}\n⚙️ Simple Signal | SL Dynamic | TPs 1.5/3/6R")
+        bot.reply_to(m, f"🖥 v12.2\n\n👥 {c['total']} | تجربة {c['trial']} | VIP {c['vip']}\n\n"
+                        f"🌐 {src}\n💾 {store.remote_msg}\n⚙️ RSI First | TPs 0.6/1.25/2/2.75R")
 
     @bot.message_handler(commands=["price"])
     @admin_only
@@ -1285,7 +1287,7 @@ def make_bot(token=None):
         sym = a[1].upper() if len(a) > 1 else "BTC"
         p, src = fetch_live_price(sym)
         if p: bot.send_message(m.chat.id, f"✅ {sym} = {fmt(p)} ({src})")
-        else: bot.send_message(m.chat.id, f"❌ تعذر جلب {sym}")
+        else: bot.send_message(m.chat.id, f"❌ تعذر {sym}")
 
     @bot.message_handler(commands=["backtest"])
     @admin_only
@@ -1320,7 +1322,7 @@ def make_bot(token=None):
         wait = bot.reply_to(m, "⏳...")
         try:
             rows = scan_signals(min_score=40, only_side=-1)
-            if not rows: bot.send_message(m.chat.id, "لا توجد شورتات")
+            if not rows: bot.send_message(m.chat.id, "لا توجد")
             else:
                 for res in rows[:5]:
                     send_signal(bot, m.chat.id, res, "admin", kb=keyboard(res["sym"], res["base_tf"], "admin"))
@@ -1368,7 +1370,7 @@ def main():
     try: bot.remove_webhook()
     except Exception: pass
     threading.Thread(target=scheduler, args=(bot,), daemon=True).start()
-    log.info("bot v12.0 started")
+    log.info("bot v12.2 started")
     bot.infinity_polling(skip_pending=True, timeout=30)
 
 if __name__ == "__main__":
