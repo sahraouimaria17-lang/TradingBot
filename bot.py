@@ -52,7 +52,7 @@ CONTACT_LINK = _e("CONTACT_LINK", "@rym_rima1")
 VIP_LINK = _e("VIP_LINK", "")
 PAYMENT_INFO = _e("PAYMENT_INFO", "Binance Pay: 905142395")
 PROTECT = _e("PROTECT_CONTENT", "1") == "1"
-MAINTENANCE = _e("MAINTENANCE", "1") == "1"   # ← وضع الصيانة
+MAINTENANCE = _e("MAINTENANCE", "1") == "1"
 
 BRAND = "ryma crypto"
 EXCHANGES = ["okx", "mexc", "binance", "bybit", "kucoin", "gateio", "bitget"]
@@ -72,29 +72,35 @@ CANDLE_TTL, PRICE_TTL = 240, 60
 MIN_BARS = 215
 CHART_BARS = 90
 SCAN_WORKERS = 4
-MAX_OPEN = 10
+MAX_OPEN = 8
 VIP_POSTS_PER_CYCLE = 5
 FREE_POSTS_PER_CYCLE = 2
 FREE_MAX_PER_DAY = 6
 
-# ═══════════════════════════ الأهداف v15 ═══════════════════════════
+# ═══════════════════════════ الأهداف v16 ═══════════════════════════
 TP_PCTS = [2.5, 5.0, 7.0, 10.0]
-TP_FRACS = [0.50, 0.25, 0.15, 0.10]   # 50/25/15/10
-SL_PCT = 3.7                           # الوقف 3.7%
+TP_FRACS = [0.50, 0.25, 0.15, 0.10]
+SL_PCT = 3.7
 BE_TRIGGER_R = 0.1
 TRAIL_ATR = 3.0
-TIME_STOP_BARS = 15
+TIME_STOP_BARS = 20
 MAX_HOLD = 60
 PENDING_BARS = 2
-MAX_ENTRY_DIST = 0.3                   # الدخول ما يبعد أكثر من 0.3% عن السعر
-VOL_MULT = 1.0                         # فلتر Volume: 1.0x
+MAX_ENTRY_DIST = 0.3
+VOL_MULT = 1.3
+
+ADX_MIN = 20
+ADX_MIN_SHORT = 25
+RSI_LONG = (45, 65)
+RSI_SHORT = (60, 78)
+BBD_MAX_EXT = 3.0
 
 FAKE_PUMP_RVOL = 3.0
 FAKE_PUMP_RSI = 78
 FAKE_PUMP_WICK = 0.4
 
 COND_KEYS = ["trend", "adx", "vol", "pullback", "rsi", "confirm",
-             "breakout", "gray_zone", "btc", "d1", "rs"]
+             "breakout", "btc", "d1", "rs", "ext"]
 GRADE = {2: "A", 1: "B", 0: "C"}
 
 logging.basicConfig(level=logging.INFO,
@@ -497,10 +503,11 @@ def add_indicators(df, atrp_win=100):
     df["bb_mid"], df["bb_up"], df["bb_lo"] = mid, mid + 2 * sd, mid - 2 * sd
     rng = (df["high"] - df["low"]).replace(0, np.nan)
     df["wick_up"] = (df["high"] - df[["close", "open"]].max(axis=1)) / rng
+    df["ext_atr"] = (df["close"] - df["ema20"]) / df["atr"]
     return df
 
 
-# ═══════════════════════════ الشروط v15 ═══════════════════════════
+# ═══════════════════════════ الشروط v16 ═══════════════════════════
 def daily_table(dfd, span=200):
     if dfd is None or len(dfd) < 30:
         return None
@@ -522,16 +529,13 @@ def build_conds(df, d, sym, tf, btc_tab, own_tab):
     c, o, h, l = df["close"], df["open"], df["high"], df["low"]
     cond = pd.DataFrame(index=df.index)
     cond["trend"] = (d * (c - df["ema200"]) > 0) & (d * (df["ema50"] - df["ema200"]) > 0)
-    cond["adx"] = (df["adx"] > 12) & (df["adx"] > df["adx"].shift(2))
+    adx_threshold = ADX_MIN if d == 1 else ADX_MIN_SHORT
+    cond["adx"] = (df["adx"] > adx_threshold) & (df["adx"] > df["adx"].shift(2))
     cond["vol"] = df["atrp"] >= 20
     touch = (l <= df["ema20"]) if d == 1 else (h >= df["ema20"])
     cond["pullback"] = touch.astype(float).rolling(5, min_periods=1).max() > 0
-    # v15: RSI 45/55
-    lo, hi = (45, 72) if d == 1 else (28, 55)
-    rsi_ok = df["rsi"].between(lo, hi)
-    if d == -1:
-        rsi_ok = rsi_ok & (df["rsi"] >= 32)
-    cond["rsi"] = rsi_ok
+    lo, hi = RSI_LONG if d == 1 else RSI_SHORT
+    cond["rsi"] = df["rsi"].between(lo, hi)
     a1, a2 = ((c > o), (c > c.shift())) if d == 1 else ((c < o), (c < c.shift()))
     cond["confirm"] = a1 | a2
     btc_ret = None
@@ -553,24 +557,21 @@ def build_conds(df, d, sym, tf, btc_tab, own_tab):
         lb = 180 if tf == "4h" else 30
         diff = (c / c.shift(lb) - 1).values - btc_ret
         cond["rs"] = (diff > 0) if d == 1 else (diff < 0)
-    # v15: فلتر Volume 1.0x + Breakout
     cond["breakout"] = ((c > h.shift(1)) if d == 1 else (c < l.shift(1))) & (df["rvol"] >= VOL_MULT)
-    glo, ghi = (45, 70) if d == 1 else (30, 55)
-    cond["gray_zone"] = cond["trend"] & df["rsi"].between(glo, ghi)
+    cond["ext"] = (d * df["ext_atr"]) <= BBD_MAX_EXT
     return cond[COND_KEYS].fillna(False).astype(bool)
 
 
-def grade_frame(cond):
+def grade_frame(cond, d):
     total = len(COND_KEYS)
     ok = cond.sum(axis=1).values
     brk = cond["breakout"].values
-    pb = cond[["trend", "adx", "vol", "pullback", "rsi", "confirm"]].all(axis=1).values
-    gray = (cond["gray_zone"] & cond["trend"]).values
-    core = (cond["btc"] & cond["d1"] & cond["trend"]).values
-    A = (ok == total) | brk
-    B = core | pb | gray | (ok >= total - 5)
+    pb = cond[["trend", "adx", "vol", "pullback", "rsi", "confirm", "ext"]].all(axis=1).values
+    core = (cond["btc"] & cond["d1"] & cond["trend"] & cond["ext"]).values
+    A = (ok == total) | (brk & pb & cond["btc"].values & cond["d1"].values)
+    B = core | pb | brk
     rank = np.where(A, 2, np.where(B, 1, 0))
-    setup = np.where(brk, "Breakout", np.where(pb, "Pullback", np.where(gray, "Gray", "Setup")))
+    setup = np.where(brk, "Breakout", np.where(pb, "Pullback", "Setup"))
     return rank, ok, setup
 
 
@@ -578,7 +579,7 @@ def evaluate(df, sym, tf, btc_tab, own_tab, degraded=False):
     parts = {}
     for d in (1, -1):
         cond = build_conds(df, d, sym, tf, btc_tab, own_tab)
-        rank, ok, setup = grade_frame(cond)
+        rank, ok, setup = grade_frame(cond, d)
         parts[d] = (rank, ok, setup)
     kl = parts[1][0] * 100 + parts[1][1]
     ks = parts[-1][0] * 100 + parts[-1][1]
@@ -592,16 +593,14 @@ def evaluate(df, sym, tf, btc_tab, own_tab, degraded=False):
     return pd.DataFrame({"side": side, "rank": rank, "ok": ok, "setup": setup}, index=df.index)
 
 
-# ═══════════════════════════ المستويات v15 ═══════════════════════════
+# ═══════════════════════════ المستويات ═══════════════════════════
 def make_levels(df, i, side, price=None):
-    """v15: الدخول قريب من السعر الحالي (max 0.3%)."""
     r = df.iloc[i]
     atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0.0
     if atr <= 0:
         return None
     last_close = float(r["close"])
     cur_price = float(price) if price else last_close
-    # الدخول قريب من السعر الحالي
     if side == 1:
         raw_entry = max(last_close, cur_price)
         max_entry = cur_price * (1 + MAX_ENTRY_DIST / 100)
@@ -1249,7 +1248,6 @@ _cooldown = {}
 
 async def gate(update):
     user = update.effective_user
-    # وضع الصيانة: امنع الكل ما عدا الأدمن
     if MAINTENANCE and user.id != ADMIN_ID:
         await update.message.reply_text(
             f"🔧 <b>البوت في صيانة</b>\n\n"
@@ -1636,7 +1634,7 @@ async def cmd_dashboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     down = [n for n, t in _down.items() if t > time.time()]
     maint = "🔧 صيانة" if MAINTENANCE else "✅ يعمل"
     await update.message.reply_text(
-        f"🎛 <b>Dashboard v15</b> — {maint}\n"
+        f"🎛 <b>Dashboard v16</b> — {maint}\n"
         f"المستخدمون: {nu} | VIP: {nv}\n"
         f"صفقات نشطة: {len(act)}\n"
         f"التخزين: {store.remote_msg}\n"
@@ -1748,7 +1746,7 @@ async def post_init(app):
         pass
     app.bot_data["tasks"] = [asyncio.create_task(autopost_loop(app)),
                              asyncio.create_task(tracker_loop(app))]
-    log.info("v15 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("v16 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 
 
 async def post_shutdown(app):
