@@ -45,7 +45,7 @@ def _chat(v):
 BOT_TOKEN = _e("BOT_TOKEN")
 CHANNEL_ID = _chat(_e("CHANNEL_ID"))
 VIP_CHANNEL_ID = _chat(_e("VIP_CHANNEL_ID"))
-ADMIN_ID = _int("ADMIN_ID", 0)
+ADMIN_ID = _int("ADMIN_ID", 7002618091)
 GIST_ID = _e("GIST_ID")
 GITHUB_TOKEN = _e("GITHUB_TOKEN")
 CONTACT_LINK = _e("CONTACT_LINK", "@rym_rima1")
