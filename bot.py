@@ -58,8 +58,17 @@ BRAND = "ryma crypto"
 EXCHANGES = ["okx", "mexc", "binance", "bybit", "kucoin", "gateio", "bitget"]
 MAJORS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK",
           "DOT", "LTC", "TRX"}
-COINS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT",
-         "LTC", "TRX", "ATOM", "NEAR", "UNI", "AAVE", "ARB", "OP", "INJ", "SUI"]
+
+# v17: قائمة 30 عملة
+COINS = [
+    # 10 أساسية
+    "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT",
+    # 10 Alpha / متوسطة
+    "NEAR", "SUI", "ARB", "OP", "INJ", "AAVE", "UNI", "LTC", "ATOM", "TRX",
+    # 10 Trend / Meme
+    "PEPE", "WIF", "BONK", "FLOKI", "SHIB", "TIA", "SEI", "APT", "FIL", "ORDI",
+]
+
 STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "DAI", "BUSD", "USDP", "USDD", "USDE",
            "PYUSD", "EUR", "AEUR"}
 PLANS = [("شهر", 30, 50), ("3 أشهر", 90, 100), ("سنة", 365, 300)]
@@ -77,8 +86,8 @@ VIP_POSTS_PER_CYCLE = 5
 FREE_POSTS_PER_CYCLE = 2
 FREE_MAX_PER_DAY = 6
 
-# ═══════════════════════════ الأهداف v16 ═══════════════════════════
-TP_PCTS = [2.5, 5.0, 7.0, 10.0]
+# v17: الأهداف (TP4 = 8%)
+TP_PCTS = [2.5, 5.0, 7.0, 8.0]
 TP_FRACS = [0.50, 0.25, 0.15, 0.10]
 SL_PCT = 3.7
 BE_TRIGGER_R = 0.1
@@ -507,7 +516,7 @@ def add_indicators(df, atrp_win=100):
     return df
 
 
-# ═══════════════════════════ الشروط v16 ═══════════════════════════
+# ═══════════════════════════ الشروط ═══════════════════════════
 def daily_table(dfd, span=200):
     if dfd is None or len(dfd) < 30:
         return None
@@ -1634,7 +1643,7 @@ async def cmd_dashboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     down = [n for n, t in _down.items() if t > time.time()]
     maint = "🔧 صيانة" if MAINTENANCE else "✅ يعمل"
     await update.message.reply_text(
-        f"🎛 <b>Dashboard v16</b> — {maint}\n"
+        f"🎛 <b>Dashboard v17</b> — {maint}\n"
         f"المستخدمون: {nu} | VIP: {nv}\n"
         f"صفقات نشطة: {len(act)}\n"
         f"التخزين: {store.remote_msg}\n"
@@ -1746,7 +1755,7 @@ async def post_init(app):
         pass
     app.bot_data["tasks"] = [asyncio.create_task(autopost_loop(app)),
                              asyncio.create_task(tracker_loop(app))]
-    log.info("v16 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("v17 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 
 
 async def post_shutdown(app):
