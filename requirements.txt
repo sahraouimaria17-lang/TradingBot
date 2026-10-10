@@ -1,4 +1,12 @@
-python-telegram-bot==21.10
-requests>=2.32.0
-pandas>=2.2.0
-matplotlib>=3.8.0
+pyTelegramBotAPI>=4.14
+pandas
+numpy
+matplotlib
+requests
+Pillow
+arabic-reshaper
+python-bidi
+ccxt
+pandas_ta
+python-telegram-bot>=20.0
+python-dotenv
