@@ -54,7 +54,6 @@ PAYMENT_INFO = _e("PAYMENT_INFO", "Binance Pay: 905142395")
 PROTECT = _e("PROTECT_CONTENT", "1") == "1"
 
 BRAND = "ryma crypto"
-# OKX و MEXC و Binance أساسيين
 EXCHANGES = ["okx", "mexc", "binance", "bybit", "kucoin", "gateio", "bitget"]
 MAJORS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK",
           "DOT", "LTC", "TRX"}
@@ -77,9 +76,10 @@ VIP_POSTS_PER_CYCLE = 5
 FREE_POSTS_PER_CYCLE = 2
 FREE_MAX_PER_DAY = 6
 
-TP_PCTS = [2.5, 4.5, 6.5, 10.0]
+# ═══════════════════════════ الأهداف الجديدة ═══════════════════════════
+TP_PCTS = [1.5, 3.0, 5.0, 8.0]   # أقرب
 TP_FRACS = [0.40, 0.30, 0.20, 0.10]
-SL_PCT = 4.0
+SL_PCT = 3.0                     # أضيق
 BE_TRIGGER_R = 0.1
 TRAIL_ATR = 3.0
 TIME_STOP_BARS = 10
@@ -397,7 +397,6 @@ def all_prices(sym):
 
 
 def whale_radar(sym):
-    """رادار الحيتان: يجلب آخر 500 صفقة ويحسب الكبيرة."""
     try:
         ex = get_ex("binance")
         with _ex_lock["binance"]:
@@ -583,8 +582,7 @@ def evaluate(df, sym, tf, btc_tab, own_tab, degraded=False):
     rank = np.where(side == 1, parts[1][0], parts[-1][0])
     ok = np.where(side == 1, parts[1][1], parts[-1][1])
     setup = np.where(side == 1, parts[1][2], parts[-1][2])
-    high_rsi = df["rsi"].values > 75
-    rank = np.where(high_rsi & (side == 1), 0, rank)
+    # v14: حُذف شرط منع الشراء بـ RSI > 75
     if degraded:
         rank = np.minimum(rank, 0)
     return pd.DataFrame({"side": side, "rank": rank, "ok": ok, "setup": setup}, index=df.index)
@@ -759,7 +757,7 @@ def scan_sync(symbols, workers=SCAN_WORKERS):
         return [r for r in ex.map(one, symbols) if r]
 
 
-# ═══════════════════════════ الشارت الأبيض ═══════════════════════════
+# ═══════════════════════════ الشارت ═══════════════════════════
 def fmt(x):
     x = float(x)
     if x >= 1000:
@@ -772,7 +770,6 @@ def fmt(x):
 
 
 def render_chart(res, n_tps=4, published=False):
-    """شارت أبيض مثل أبو تركي: خط سعر + BB مضللة بالأزرق."""
     df = res["df"].tail(CHART_BARS).reset_index(drop=True)
     lv, side, tf = res["lv"], res["side"], res["tf"]
     bg, fg = "#ffffff", "#111111"
@@ -782,18 +779,14 @@ def render_chart(res, n_tps=4, published=False):
     ax = fig.add_subplot(gs[0], facecolor=bg)
     axr = fig.add_subplot(gs[1], facecolor=bg, sharex=ax)
     x = np.arange(len(df))
-    # BB مضللة بالأزرق
     ax.fill_between(x, df["bb_lo"], df["bb_up"], color="#2196f3", alpha=0.15, label="Bollinger")
     ax.plot(x, df["bb_up"], color=blue, lw=1.0, ls="--", alpha=0.85)
     ax.plot(x, df["bb_mid"], color=blue, lw=0.8, ls="-", alpha=0.5)
     ax.plot(x, df["bb_lo"], color=blue, lw=1.0, ls="--", alpha=0.85)
-    # EMA
     ax.plot(x, df["ema20"], color="#f5c518", lw=1.3, label="EMA 20")
     ax.plot(x, df["ema50"], color="#1976d2", lw=1.3, label="EMA 50")
     ax.plot(x, df["ema200"], color="#7b1fa2", lw=1.3, label="EMA 200")
-    # خط السعر (وليس شموع)
     ax.plot(x, df["close"], color="#0d47a1", lw=2.0, label="Price")
-    # المستويات
     levels = [(lv["entry"], "ENTRY", "#0d47a1", "-."), (lv["sl"], "STOP", "#d32f2f", "--")]
     for j, tp in enumerate(lv["tps"][:n_tps], 1):
         levels.append((tp["px"], f"TP{j} ({tp['pct']}%)", "#2e7d32", "--"))
@@ -808,7 +801,6 @@ def render_chart(res, n_tps=4, published=False):
     pad = (hi - lo) * 0.05
     ax.set_ylim(lo - pad, hi + pad)
     ax.set_xlim(-1, len(df) + 17)
-    # RSI
     axr.plot(x, df["rsi"], color="#7b1fa2", lw=1.2)
     axr.axhline(70, color="#ef5350", lw=0.7, ls="--")
     axr.axhline(30, color="#26a69a", lw=0.7, ls="--")
@@ -861,7 +853,6 @@ def build_caption(res, tier="free"):
         for i, tp in enumerate(lv["tps"][:2], 1):
             lines.append(f"🎯 الهدف {i} ({tp['pct']}%): <code>{fmt(tp['px'])}</code>")
         lines.append("🔒 الهدفان 3 و 4 في VIP")
-    # رادار الحيتان + الحجم للمستخدم العادي والمميز
     wh, wl = whale_radar(sym)
     if wh is not None:
         lines.append(f"🐋 حيتان: {wh} صفقة كبيرة | أكبر: {fmt(wl)} USDT")
@@ -1609,7 +1600,7 @@ async def cmd_dashboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         nv = sum(1 for k in store.data["vip"] if is_vip(int(k)))
     down = [n for n, t in _down.items() if t > time.time()]
     await update.message.reply_text(
-        f"🎛 <b>Dashboard v13</b>\n"
+        f"🎛 <b>Dashboard v14</b>\n"
         f"المستخدمون: {nu} | VIP: {nv}\n"
         f"صفقات نشطة: {len(act)}\n"
         f"التخزين: {store.remote_msg}\n"
@@ -1721,7 +1712,7 @@ async def post_init(app):
         pass
     app.bot_data["tasks"] = [asyncio.create_task(autopost_loop(app)),
                              asyncio.create_task(tracker_loop(app))]
-    log.info("v13 started | storage=%s", store.remote_msg)
+    log.info("v14 started | storage=%s", store.remote_msg)
 
 
 async def post_shutdown(app):
@@ -1738,12 +1729,10 @@ def main():
         raise SystemExit("BOT_TOKEN غير مضبوط")
     store.start_flusher()
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
-    # أوامر المستخدم
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(CommandHandler("vip", cmd_vip))
-    # الأوامر الإدارية (مخفية عن المستخدم)
     app.add_handler(CommandHandler("a", cmd_analyze))
     app.add_handler(CommandHandler("analyze", cmd_analyze))
     app.add_handler(CommandHandler("post", cmd_post))
