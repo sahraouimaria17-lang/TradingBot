@@ -59,15 +59,18 @@ EXCHANGES = ["okx", "mexc", "binance", "bybit", "kucoin", "gateio", "bitget"]
 MAJORS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK",
           "DOT", "LTC", "TRX"}
 
-# v20: 24 عملة (بدون ARB, SOL? لا، SOL موجود بالكبار)
-COINS = [
-    # 10 أساسية
-    "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT",
-    # 8 رابحة في v17/v18
-    "NEAR", "SUI", "OP", "INJ", "UNI", "LTC", "ATOM", "TRX",
-    # 6 Meme / Trend جديدة
-    "BONK", "SHIB", "PEPE", "WIF", "TIA", "FLOKI",
+# ═══════════════════════════ v21: قائمتان ═══════════════════════════
+CORE_COINS = [
+    "BTC", "ETH", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LTC",
+    "NEAR", "SUI", "ATOM", "TRX", "BONK", "OP",
 ]
+
+MEME_COINS = [
+    "PEPE", "WIF", "FLOKI", "SHIB", "TIA", "SEI", "APT",
+    "SOL", "INJ", "DOT", "UNI",
+]
+
+COINS = CORE_COINS + MEME_COINS
 
 STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "DAI", "BUSD", "USDP", "USDD", "USDE",
            "PYUSD", "EUR", "AEUR"}
@@ -86,28 +89,34 @@ VIP_POSTS_PER_CYCLE = 5
 FREE_POSTS_PER_CYCLE = 2
 FREE_MAX_PER_DAY = 6
 
-# ═══════════════════════════ v20 - استراتيجية القمم/القيعان ═══════════════════════════
+# ═══════════════════════════ Core Strategy ═══════════════════════════
 PIVOT_WINDOW = 100
 PIVOT_LOOKBACK = 3
 MIN_PIVOT_DIST = 0.5
-SL_MAX_PCT = 4.0
-SL_MIN_PCT = 1.5
-TP_FRACS = [0.50, 0.25, 0.15, 0.10]
+CORE_SL_MAX = 4.0
+CORE_SL_MIN = 1.5
+CORE_TP_FRACS = [0.50, 0.25, 0.15, 0.10]
 BE_TRIGGER_R = 0.1
 TRAIL_ATR = 3.0
 TIME_STOP_BARS = 20
 MAX_HOLD = 60
-PENDING_BARS = 2
 MAX_ENTRY_DIST = 0.3
-
-VOL_MULT = 0.7
-RSI_LONG = (35, 70)
-RSI_SHORT = (50, 80)
+CORE_VOL_MULT = 0.7
+CORE_RSI_LONG = (35, 70)
+CORE_RSI_SHORT = (50, 80)
 EXT_MAX_ATR = 3.5
 
-FAKE_PUMP_RVOL = 3.0
-FAKE_PUMP_RSI = 78
-FAKE_PUMP_WICK = 0.4
+# ═══════════════════════════ Meme Strategy ═══════════════════════════
+MEME_TP_PCTS = [3.0, 6.0, 10.0, 15.0]
+MEME_TP_FRACS = [0.50, 0.25, 0.15, 0.10]
+MEME_SL_PCT = 5.0
+MEME_VOL_MULT = 1.5
+MEME_RSI_LONG = (30, 70)
+MEME_RSI_SHORT = (30, 70)
+MEME_BREAKOUT_BARS = 5  # فلتر v21: 5 شموع
+MEME_TRAIL_ATR = 2.0
+MEME_TIME_STOP = 8
+MEME_MAX_HOLD = 40
 
 GRADE = {2: "A", 1: "B", 0: "C"}
 
@@ -504,7 +513,7 @@ def add_indicators(df, atrp_win=100):
     return df
 
 
-# ═══════════════════════════ كشف القمم/القيعان ═══════════════════════════
+# ═══════════════════════════ كشف القمم/القيعان (Core) ═══════════════════════════
 def find_pivots(df, window=PIVOT_WINDOW, lookback=PIVOT_LOOKBACK):
     try:
         n = len(df)
@@ -564,7 +573,8 @@ def select_targets(pivots, price, side, min_dist_pct=MIN_PIVOT_DIST):
     return selected
 
 
-def compute_levels(df, i, side, price=None):
+# ═══════════════════════════ Core Strategy: Levels ═══════════════════════════
+def compute_core_levels(df, i, side, price=None):
     try:
         r = df.iloc[i]
         atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0.0
@@ -590,8 +600,8 @@ def compute_levels(df, i, side, price=None):
             swing = float(lookback_df["high"].max())
             sl_raw = swing + 0.1 * atr
         dist_raw = abs(entry - sl_raw)
-        dist_min = entry * SL_MIN_PCT / 100
-        dist_max = entry * SL_MAX_PCT / 100
+        dist_min = entry * CORE_SL_MIN / 100
+        dist_max = entry * CORE_SL_MAX / 100
         dist = min(max(dist_raw, dist_min), dist_max)
         sl = entry - side * dist
         risk = abs(entry - sl)
@@ -600,42 +610,83 @@ def compute_levels(df, i, side, price=None):
         tps = []
         for idx, px in enumerate(targets):
             pct = 100 * side * (px - entry) / entry
-            frac = TP_FRACS[idx] if idx < len(TP_FRACS) else 0.0
+            frac = CORE_TP_FRACS[idx] if idx < len(CORE_TP_FRACS) else 0.0
             tps.append(dict(px=float(px), pct=round(pct, 2), frac=frac, hit=False))
         if len(tps) < 4:
-            remaining = sum(TP_FRACS[len(tps):])
+            remaining = sum(CORE_TP_FRACS[len(tps):])
             if tps:
                 tps[-1]["frac"] += remaining
         return dict(entry=entry, sl=sl, risk=risk, tps=tps, atr=atr)
     except Exception as e:
-        log.warning(f"compute_levels failed: {e}")
+        log.warning(f"compute_core_levels failed: {e}")
+        return None
+
+
+# ═══════════════════════════ Meme Strategy: Levels ═══════════════════════════
+def compute_meme_levels(df, i, side, price=None):
+    try:
+        r = df.iloc[i]
+        atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0.0
+        if atr <= 0:
+            return None
+        entry = float(price) if price else float(r["close"])
+        sl = entry * (1 - side * MEME_SL_PCT / 100)
+        risk = abs(entry - sl)
+        if risk <= 0:
+            return None
+        tps = []
+        for pct, f in zip(MEME_TP_PCTS, MEME_TP_FRACS):
+            px = entry * (1 + side * pct / 100)
+            tps.append(dict(px=float(px), pct=pct, frac=f, hit=False))
+        return dict(entry=entry, sl=sl, risk=risk, tps=tps, atr=atr)
+    except Exception as e:
+        log.warning(f"compute_meme_levels failed: {e}")
         return None
 
 
 # ═══════════════════════════ شروط الدخول ═══════════════════════════
-def detect_conditions(df, i, side):
+def detect_core_conditions(df, i, side):
     if i < 30:
-        return False, "early"
+        return False
     r = df.iloc[i]
     if pd.isna(r.rsi) or pd.isna(r.ema20) or pd.isna(r.ema50) or pd.isna(r.rvol):
-        return False, "nan"
+        return False
     if side == 1:
-        if not (RSI_LONG[0] <= r.rsi <= RSI_LONG[1]):
-            return False, "rsi"
-    else:
-        if not (RSI_SHORT[0] <= r.rsi <= RSI_SHORT[1]):
-            return False, "rsi"
-    if side == 1:
+        if not (CORE_RSI_LONG[0] <= r.rsi <= CORE_RSI_LONG[1]):
+            return False
         if not (r.ema20 > r.ema50 * 0.99 and r.close > r.ema50 * 0.99):
-            return False, "ema"
+            return False
     else:
+        if not (CORE_RSI_SHORT[0] <= r.rsi <= CORE_RSI_SHORT[1]):
+            return False
         if not (r.ema20 < r.ema50 * 1.01 and r.close < r.ema50 * 1.01):
-            return False, "ema"
-    if r.rvol < VOL_MULT:
-        return False, "vol"
+            return False
+    if r.rvol < CORE_VOL_MULT:
+        return False
     if abs(r.ext_atr) > EXT_MAX_ATR:
-        return False, "ext"
-    return True, "ok"
+        return False
+    return True
+
+
+def detect_meme_conditions(df, i, side):
+    if i < MEME_BREAKOUT_BARS + 5:
+        return False
+    r = df.iloc[i]
+    if pd.isna(r.rsi) or pd.isna(r.rvol):
+        return False
+    if not (MEME_RSI_LONG[0] <= r.rsi <= MEME_RSI_LONG[1]):
+        return False
+    if r.rvol < MEME_VOL_MULT:
+        return False
+    recent_high = float(df["high"].iloc[i-MEME_BREAKOUT_BARS:i].max())
+    recent_low = float(df["low"].iloc[i-MEME_BREAKOUT_BARS:i].min())
+    if side == 1:
+        if float(r.close) <= recent_high:
+            return False
+    else:
+        if float(r.close) >= recent_low:
+            return False
+    return True
 
 
 def grade_setup(df, i, side):
@@ -662,6 +713,7 @@ def grade_setup(df, i, side):
     return "C"
 
 
+# ═══════════════════════════ التحليل الموحّد ═══════════════════════════
 def analyze(sym):
     try:
         tf = default_tf(sym)
@@ -669,29 +721,36 @@ def analyze(sym):
         degraded = bool(df.attrs.get("degraded"))
         df = add_indicators(df, 100)
         i = len(df) - 1
-        long_ok, _ = detect_conditions(df, i, 1)
-        short_ok, _ = detect_conditions(df, i, -1)
+        is_meme = sym in MEME_COINS
+        if is_meme:
+            long_ok = detect_meme_conditions(df, i, 1)
+            short_ok = detect_meme_conditions(df, i, -1)
+            strategy = "Meme"
+        else:
+            long_ok = detect_core_conditions(df, i, 1)
+            short_ok = detect_core_conditions(df, i, -1)
+            strategy = "Core"
         price, _ = live_price(sym)
         price = float(price or df["close"].iloc[-1])
         if long_ok and not short_ok:
             side = 1
-            grade = grade_setup(df, i, 1)
         elif short_ok and not long_ok:
             side = -1
-            grade = grade_setup(df, i, -1)
         elif long_ok and short_ok:
             side = 1 if df["rsi"].iloc[i] < 50 else -1
-            grade = grade_setup(df, i, side)
         else:
             side = 1
-            grade = "C"
-        lv = compute_levels(df, i, side, price)
+        grade = grade_setup(df, i, side)
+        if is_meme:
+            lv = compute_meme_levels(df, i, side, price)
+        else:
+            lv = compute_core_levels(df, i, side, price)
         if lv is None:
             raise NoData(sym)
         last = df.iloc[-1]
-        return dict(sym=sym, tf=tf, df=df, side=side,
+        return dict(sym=sym, tf=tf, df=df, side=side, strategy=strategy,
                     rank={"A": 2, "B": 1, "C": 0}.get(grade, 0),
-                    grade=grade, setup="Trend",
+                    grade=grade, setup=strategy,
                     ok=1 if grade in ("A", "B") else 0, total=4,
                     lv=lv, price=price, degraded=degraded,
                     fake_pump=False, bar_t=int(last["t"]),
@@ -853,7 +912,7 @@ def render_chart(res, n_tps=4, published=False):
     axr.set_xticks(range(0, len(df), step))
     axr.set_xticklabels([ts.iloc[i].strftime("%Y-%m-%d") for i in range(0, len(df), step)], fontsize=8)
     col = "#26a69a" if side == 1 else "#ef5350"
-    title = f"{res['sym']}/USDT  ·  {tf.upper()}  ·  {'LONG' if side == 1 else 'SHORT'}  ·  Grade {res['grade']}"
+    title = f"{res['sym']}/USDT  ·  {tf.upper()}  ·  {'LONG' if side == 1 else 'SHORT'}  ·  {res['strategy']}  ·  Grade {res['grade']}"
     ax.set_title(title, color=col, fontsize=13, fontweight="bold", loc="left")
     ax.legend(loc="upper left", fontsize=8, facecolor=bg, edgecolor="#cccccc", labelcolor=fg)
     axr.legend(loc="upper left", fontsize=7.5, facecolor=bg, edgecolor="#cccccc", labelcolor=fg)
@@ -872,10 +931,11 @@ def build_caption(res, tier="free"):
     tf_ar = {"1d": "يومي", "4h": "4 ساعات"}[res["tf"]]
     word = "شراء (LONG) 🟢" if side == 1 else "بيع (SHORT) 🔴"
     gem = {"A": "🟢", "B": "🟡", "C": "🔴"}[res["grade"]]
+    strat = {"Core": "القمم/القيعان", "Meme": "Meme Scalping"}.get(res["strategy"], res["strategy"])
     lines = [
         f"<b>#{sym}/USDT</b>",
         f"🎯 <b>التوصية: {word}</b>",
-        f"{gem} الجودة: <b>{res['grade']}</b> · ⏱ {tf_ar}",
+        f"{gem} الجودة: <b>{res['grade']}</b> · {strat} · ⏱ {tf_ar}",
         "",
         f"💵 السعر: <code>{fmt(res['price'])}</code>",
         f"🚪 الدخول: <code>{fmt(lv['entry'])}</code>",
@@ -914,6 +974,7 @@ def build_admin_extras(res):
     lines = [f"📊 <b>مؤشرات {res['sym']}/{res['tf']}</b>", ""]
     lines.append(f"• RSI: {res['rsi']:.1f}")
     lines.append(f"• ATR: {res['lv']['atr']:.4f}")
+    lines.append(f"• الاستراتيجية: {res['strategy']}")
     lines.append(f"• الجودة: {res['grade']}")
     for i, tp in enumerate(res['lv']['tps'], 1):
         lines.append(f"• هدف {i}: {tp['pct']}%")
@@ -1133,26 +1194,32 @@ def simulate(df, sym, tf, start=210):
     o, h, l, c = (df[k].values for k in ("open", "high", "low", "close"))
     atr, t = df["atr"].values, df["t"].values
     trades, i = [], start
+    is_meme = sym in MEME_COINS
     while i < n - 1:
-        long_ok, _ = detect_conditions(df, i, 1)
-        short_ok, _ = detect_conditions(df, i, -1)
+        if is_meme:
+            long_ok = detect_meme_conditions(df, i, 1)
+            short_ok = detect_meme_conditions(df, i, -1)
+        else:
+            long_ok = detect_core_conditions(df, i, 1)
+            short_ok = detect_core_conditions(df, i, -1)
         if long_ok and not short_ok:
             side = 1
-            grade = grade_setup(df, i, 1)
         elif short_ok and not long_ok:
             side = -1
-            grade = grade_setup(df, i, -1)
         elif long_ok and short_ok:
             side = 1 if df["rsi"].iloc[i] < 50 else -1
-            grade = grade_setup(df, i, side)
         else:
             i += 1
             continue
-        lv = compute_levels(df, i, side)
+        grade = grade_setup(df, i, side)
+        if is_meme:
+            lv = compute_meme_levels(df, i, side)
+        else:
+            lv = compute_core_levels(df, i, side)
         if lv is None:
             i += 1
             continue
-        p = new_trade(sym, tf, side, lv, int(t[i]), grade, "Trend")
+        p = new_trade(sym, tf, side, lv, int(t[i]), grade, "Core" if not is_meme else "Meme")
         j = i + 1
         while j < n:
             trade_step(p, o[j], h[j], l[j], c[j], atr[j])
@@ -1201,7 +1268,7 @@ def bt_report(per, tmin, tmax, label):
     tr = [x for x in allt if x["t"] < cut]
     te = [x for x in allt if x["t"] >= cut]
     mt, me = metrics(tr), metrics(te)
-    lines = [f"📊 <b>Backtest {label} (v20)</b> ({len(per)} عملة)", "",
+    lines = [f"📊 <b>Backtest {label} (v21)</b> ({len(per)} عملة)", "",
              f"TRAIN: n={mt['n']} | WR {mt['wr']}% | PF {mt['pf']} | {mt['total']:+}R | DD {mt['dd']}R",
              f"TEST : n={me['n']} | WR {me['wr']}% | PF {me['pf']} | {me['total']:+}R | DD {me['dd']}R",
              f"وصول TP1: {me['tp1']}%", ""]
@@ -1373,6 +1440,7 @@ async def cmd_vip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
              "✅ تنبيهات لحظية",
              "✅ تحليل تلقائي كل 4 ساعات",
              "✅ رادار الحيتان",
+             "✅ استراتيجيتان (Core + Meme)",
              "",
              "الأسعار:"]
     for name, days, price in PLANS:
@@ -1432,7 +1500,7 @@ async def cmd_bt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("رمز غير صالح")
         return
     wait = await update.message.reply_text(
-        f"⏳ Backtest v20 {arg} ({len(syms)} عملة، {years:g} سنة)...")
+        f"⏳ Backtest v21 {arg} ({len(syms)} عملة، {years:g} سنة)...")
     per, a, b = await asyncio.to_thread(backtest_many, syms, years)
     if not per:
         await wait.edit_text("❌ لا توجد بيانات")
@@ -1441,7 +1509,7 @@ async def cmd_bt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await wait.edit_text(text[:4000], parse_mode=ParseMode.HTML)
     if len(per) > 1:
         buf = io.BytesIO(csv.encode())
-        buf.name = f"bt_v20_{arg.lower()}.csv"
+        buf.name = f"bt_v21_{arg.lower()}.csv"
         await update.message.reply_document(buf)
 
 
@@ -1457,10 +1525,10 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not res:
         await wait.edit_text("لا توجد إشارات حالياً")
         return
-    lines = ["<b>🎯 أفضل الإعدادات (v20)</b>", ""]
+    lines = ["<b>🎯 أفضل الإعدادات (v21)</b>", ""]
     for r in res[:10]:
         s = "LONG 📈" if r["side"] == 1 else "SHORT 📉"
-        lines.append(f"{r['grade']} | #{r['sym']} | {r['tf']} | {s}")
+        lines.append(f"{r['grade']} | #{r['sym']} | {r['strategy']} | {s}")
     await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
@@ -1474,7 +1542,7 @@ async def cmd_short(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await wait.edit_text("لا توجد شورتات")
         return
     await wait.edit_text("🔴 شورتات:\n" + "\n".join(
-        f"{r['grade']} | #{r['sym']}" for r in res[:15]))
+        f"{r['grade']} | #{r['sym']} | {r['strategy']}" for r in res[:15]))
 
 
 @admin_only
@@ -1597,7 +1665,7 @@ async def cmd_dashboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     down = [n for n, t in _down.items() if t > time.time()]
     maint = "🔧 صيانة" if MAINTENANCE else "✅ يعمل"
     await update.message.reply_text(
-        f"🎛 <b>Dashboard v20</b> — {maint}\n"
+        f"🎛 <b>Dashboard v21</b> — {maint}\n"
         f"المستخدمون: {nu} | VIP: {nv}\n"
         f"صفقات نشطة: {len(act)}\n"
         f"التخزين: {store.remote_msg}\n"
@@ -1709,7 +1777,7 @@ async def post_init(app):
         pass
     app.bot_data["tasks"] = [asyncio.create_task(autopost_loop(app)),
                              asyncio.create_task(tracker_loop(app))]
-    log.info("v20 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("v21 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 
 
 async def post_shutdown(app):
