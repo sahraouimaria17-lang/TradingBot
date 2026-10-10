@@ -59,14 +59,11 @@ EXCHANGES = ["okx", "mexc", "binance", "bybit", "kucoin", "gateio", "bitget"]
 MAJORS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK",
           "DOT", "LTC", "TRX"}
 
-# v17: قائمة 30 عملة
+# v18: قائمة مُصفاة (19 عملة رابحة)
 COINS = [
-    # 10 أساسية
-    "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT",
-    # 10 Alpha / متوسطة
-    "NEAR", "SUI", "ARB", "OP", "INJ", "AAVE", "UNI", "LTC", "ATOM", "TRX",
-    # 10 Trend / Meme
-    "PEPE", "WIF", "BONK", "FLOKI", "SHIB", "TIA", "SEI", "APT", "FIL", "ORDI",
+    "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "DOT",
+    "NEAR", "SUI", "LTC", "BONK", "SHIB",
+    "ARB", "OP", "INJ", "UNI", "ATOM", "TRX",
 ]
 
 STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "DAI", "BUSD", "USDP", "USDD", "USDE",
@@ -86,30 +83,26 @@ VIP_POSTS_PER_CYCLE = 5
 FREE_POSTS_PER_CYCLE = 2
 FREE_MAX_PER_DAY = 6
 
-# v17: الأهداف (TP4 = 8%)
-TP_PCTS = [2.5, 5.0, 7.0, 8.0]
+# v18: إعدادات جديدة
+PIVOT_WINDOW = 100           # آخر 100 شمعة للبحث عن القمم/القيعان
+MIN_PIVOT_DIST = 0.5         # الحد الأدنى بين قمة وأخرى (%)
+SL_MAX_PCT = 4.0             # الوقف الأقصى 4%
+SL_MIN_PCT = 1.5             # الوقف الأدنى 1.5%
 TP_FRACS = [0.50, 0.25, 0.15, 0.10]
-SL_PCT = 3.7
 BE_TRIGGER_R = 0.1
 TRAIL_ATR = 3.0
 TIME_STOP_BARS = 20
 MAX_HOLD = 60
-PENDING_BARS = 2
-MAX_ENTRY_DIST = 0.3
-VOL_MULT = 1.3
 
-ADX_MIN = 20
-ADX_MIN_SHORT = 25
-RSI_LONG = (45, 65)
-RSI_SHORT = (60, 78)
-BBD_MAX_EXT = 3.0
+VOL_MULT = 1.0               # Volume >= 1.0x
+RSI_LONG = (40, 65)
+RSI_SHORT = (55, 75)
+EXT_MAX_ATR = 3.0
 
 FAKE_PUMP_RVOL = 3.0
 FAKE_PUMP_RSI = 78
 FAKE_PUMP_WICK = 0.4
 
-COND_KEYS = ["trend", "adx", "vol", "pullback", "rsi", "confirm",
-             "breakout", "btc", "d1", "rs", "ext"]
 GRADE = {2: "A", 1: "B", 0: "C"}
 
 logging.basicConfig(level=logging.INFO,
@@ -487,23 +480,12 @@ def rsi_calc(close, n=14):
     return out
 
 
-def adx_calc(df, n=14):
-    up, dn = df["high"].diff(), -df["low"].diff()
-    plus = pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=df.index)
-    minus = pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0), index=df.index)
-    a = wilder(true_range(df), n).replace(0, np.nan)
-    pdi, mdi = 100 * wilder(plus, n) / a, 100 * wilder(minus, n) / a
-    dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
-    return wilder(dx, n)
-
-
 def add_indicators(df, atrp_win=100):
     df = df.copy()
     c = df["close"]
     df["ema20"], df["ema50"], df["ema200"] = ema(c, 20), ema(c, 50), ema(c, 200)
     df["rsi"] = rsi_calc(c)
     df["atr"] = wilder(true_range(df), 14)
-    df["adx"] = adx_calc(df)
     df["rvol"] = df["volume"] / df["volume"].rolling(20).mean().replace(0, np.nan)
     atrp = df["atr"] / c
     df["atrp"] = atrp.rolling(atrp_win, min_periods=min(atrp_win, 30)).apply(
@@ -512,123 +494,251 @@ def add_indicators(df, atrp_win=100):
     df["bb_mid"], df["bb_up"], df["bb_lo"] = mid, mid + 2 * sd, mid - 2 * sd
     rng = (df["high"] - df["low"]).replace(0, np.nan)
     df["wick_up"] = (df["high"] - df[["close", "open"]].max(axis=1)) / rng
-    df["ext_atr"] = (df["close"] - df["ema20"]) / df["atr"]
+    df["ext_atr"] = (c - df["ema20"]) / df["atr"]
     return df
 
 
-# ═══════════════════════════ الشروط ═══════════════════════════
-def daily_table(dfd, span=200):
-    if dfd is None or len(dfd) < 30:
-        return None
-    c = dfd["close"]
-    e = ema(c, span)
-    return pd.DataFrame({
-        "avail": dfd["t"].astype("int64").values + TF_MS["1d"],
-        "dir": np.where(e.isna(), 0, np.where(c > e, 1, -1)),
-        "ret30": (c / c.shift(30) - 1).values,
-    }).sort_values("avail").reset_index(drop=True)
+# ═══════════════════════════ الكشف عن القمم/القيعان ═══════════════════════════
+def find_pivots(df, window=PIVOT_WINDOW):
+    """
+    يكتشف القمم والقيعان باستخدام Pivot Points (5 شموع يسار ويمين).
+    يرجع (highs, lows) كقائمة من الأسعار مرتبة من الأقرب للأبعد.
+    """
+    n = len(df)
+    if n < window + 10:
+        window = max(20, n - 10)
+    sub = df.tail(window).reset_index(drop=True)
+    # نستخدم نافذة 5 شموع لكل جانب
+    highs, lows = [], []
+    lookback = 5
+    for i in range(lookback, len(sub) - lookback):
+        h = sub["high"].iloc[i]
+        l = sub["low"].iloc[i]
+        # قمة: high[i] > high[i-5..i-1] و high[i] > high[i+1..i+5]
+        if all(h >= sub["high"].iloc[i - j] for j in range(1, lookback + 1)) and \
+           all(h >= sub["high"].iloc[i + j] for j in range(1, lookback + 1)):
+            highs.append(float(h))
+        if all(l <= sub["low"].iloc[i - j] for j in range(1, lookback + 1)) and \
+           all(l <= sub["low"].iloc[i + j] for j in range(1, lookback + 1)):
+            lows.append(float(l))
+    # نرتب من الأقرب للأبعد
+    highs.sort(reverse=True)
+    lows.sort(reverse=True)
+    return highs, lows
 
 
-def asof_daily(df, tab, tf):
-    left = pd.DataFrame({"key": df["t"].astype("int64").values + TF_MS[tf]})
-    return pd.merge_asof(left, tab, left_on="key", right_on="avail")
+def select_targets(pivots, price, side, min_dist_pct=MIN_PIVOT_DIST):
+    """
+    للشراء: نختار القمم اللي فوق السعر.
+    للبيع: نختار القيعان اللي تحت السعر.
+    نرتب من الأقرب للأبعد.
+    """
+    selected = []
+    for p in pivots:
+        if side == 1:
+            if p <= price * (1 + min_dist_pct / 100):
+                continue
+            if selected and p <= selected[-1] * (1 + min_dist_pct / 100):
+                continue
+            selected.append(p)
+        else:
+            if p >= price * (1 - min_dist_pct / 100):
+                continue
+            if selected and p >= selected[-1] * (1 - min_dist_pct / 100):
+                continue
+            selected.append(p)
+        if len(selected) >= 4:
+            break
+    return selected
 
 
-def build_conds(df, d, sym, tf, btc_tab, own_tab):
-    c, o, h, l = df["close"], df["open"], df["high"], df["low"]
-    cond = pd.DataFrame(index=df.index)
-    cond["trend"] = (d * (c - df["ema200"]) > 0) & (d * (df["ema50"] - df["ema200"]) > 0)
-    adx_threshold = ADX_MIN if d == 1 else ADX_MIN_SHORT
-    cond["adx"] = (df["adx"] > adx_threshold) & (df["adx"] > df["adx"].shift(2))
-    cond["vol"] = df["atrp"] >= 20
-    touch = (l <= df["ema20"]) if d == 1 else (h >= df["ema20"])
-    cond["pullback"] = touch.astype(float).rolling(5, min_periods=1).max() > 0
-    lo, hi = RSI_LONG if d == 1 else RSI_SHORT
-    cond["rsi"] = df["rsi"].between(lo, hi)
-    a1, a2 = ((c > o), (c > c.shift())) if d == 1 else ((c < o), (c < c.shift()))
-    cond["confirm"] = a1 | a2
-    btc_ret = None
-    if btc_tab is not None:
-        m = asof_daily(df, btc_tab, tf)
-        cond["btc"] = m["dir"].values == d
-        btc_ret = m["ret30"].values
-    else:
-        cond["btc"] = False
-    if own_tab is not None:
-        cond["d1"] = asof_daily(df, own_tab, tf)["dir"].values == d
-    else:
-        cond["d1"] = False
-    if sym == "BTC":
-        cond["rs"] = True
-    elif btc_ret is None:
-        cond["rs"] = False
-    else:
-        lb = 180 if tf == "4h" else 30
-        diff = (c / c.shift(lb) - 1).values - btc_ret
-        cond["rs"] = (diff > 0) if d == 1 else (diff < 0)
-    cond["breakout"] = ((c > h.shift(1)) if d == 1 else (c < l.shift(1))) & (df["rvol"] >= VOL_MULT)
-    cond["ext"] = (d * df["ext_atr"]) <= BBD_MAX_EXT
-    return cond[COND_KEYS].fillna(False).astype(bool)
-
-
-def grade_frame(cond, d):
-    total = len(COND_KEYS)
-    ok = cond.sum(axis=1).values
-    brk = cond["breakout"].values
-    pb = cond[["trend", "adx", "vol", "pullback", "rsi", "confirm", "ext"]].all(axis=1).values
-    core = (cond["btc"] & cond["d1"] & cond["trend"] & cond["ext"]).values
-    A = (ok == total) | (brk & pb & cond["btc"].values & cond["d1"].values)
-    B = core | pb | brk
-    rank = np.where(A, 2, np.where(B, 1, 0))
-    setup = np.where(brk, "Breakout", np.where(pb, "Pullback", "Setup"))
-    return rank, ok, setup
-
-
-def evaluate(df, sym, tf, btc_tab, own_tab, degraded=False):
-    parts = {}
-    for d in (1, -1):
-        cond = build_conds(df, d, sym, tf, btc_tab, own_tab)
-        rank, ok, setup = grade_frame(cond, d)
-        parts[d] = (rank, ok, setup)
-    kl = parts[1][0] * 100 + parts[1][1]
-    ks = parts[-1][0] * 100 + parts[-1][1]
-    tie = np.where((df["ema50"] >= df["ema200"]).values, 1, -1)
-    side = np.where(kl > ks, 1, np.where(ks > kl, -1, tie))
-    rank = np.where(side == 1, parts[1][0], parts[-1][0])
-    ok = np.where(side == 1, parts[1][1], parts[-1][1])
-    setup = np.where(side == 1, parts[1][2], parts[-1][2])
-    if degraded:
-        rank = np.minimum(rank, 0)
-    return pd.DataFrame({"side": side, "rank": rank, "ok": ok, "setup": setup}, index=df.index)
-
-
-# ═══════════════════════════ المستويات ═══════════════════════════
-def make_levels(df, i, side, price=None):
+# ═══════════════════════════ الاستراتيجية v18 ═══════════════════════════
+def compute_levels(df, i, side, price=None):
+    """
+    v18: الدخول = السعر الحالي.
+    الأهداف = القمم/القيعان.
+    الوقف = هيكلي (آخر قاع/قمة) مع حدود 1.5%-4%.
+    """
     r = df.iloc[i]
     atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0.0
     if atr <= 0:
         return None
-    last_close = float(r["close"])
-    cur_price = float(price) if price else last_close
+    entry = float(price) if price else float(r["close"])
+    # إيجاد القمم والقيعان
+    highs, lows = find_pivots(df, PIVOT_WINDOW)
     if side == 1:
-        raw_entry = max(last_close, cur_price)
-        max_entry = cur_price * (1 + MAX_ENTRY_DIST / 100)
-        entry = min(raw_entry, max_entry)
+        targets = select_targets(highs, entry, 1)
     else:
-        raw_entry = min(last_close, cur_price)
-        min_entry = cur_price * (1 - MAX_ENTRY_DIST / 100)
-        entry = max(raw_entry, min_entry)
-    sl = entry * (1 - side * SL_PCT / 100)
+        targets = select_targets(lows, entry, -1)
+    # نتحقق من وجود 4 أهداف على الأقل، وإلا نستخدم أقل
+    if len(targets) < 2:
+        return None
+    # استخدام أول 4 أهداف
+    targets = targets[:4]
+    # الوقف: آخر قاع/قمة هيكلي
+    lookback = df.tail(20)
+    if side == 1:
+        swing = float(lookback["low"].min())
+        sl_raw = swing - 0.1 * atr
+    else:
+        swing = float(lookback["high"].max())
+        sl_raw = swing + 0.1 * atr
+    # حدود الوقف
+    dist_raw = abs(entry - sl_raw)
+    dist_min = entry * SL_MIN_PCT / 100
+    dist_max = entry * SL_MAX_PCT / 100
+    dist = min(max(dist_raw, dist_min), dist_max)
+    sl = entry - side * dist
     risk = abs(entry - sl)
     if risk <= 0:
         return None
+    # بناء الأهداف
     tps = []
-    for pct, f in zip(TP_PCTS, TP_FRACS):
-        px = entry * (1 + side * pct / 100)
-        tps.append(dict(px=float(px), pct=pct, frac=f, hit=False))
+    for idx, px in enumerate(targets):
+        pct = 100 * side * (px - entry) / entry
+        frac = TP_FRACS[idx] if idx < len(TP_FRACS) else 0.0
+        tps.append(dict(px=float(px), pct=round(pct, 2), frac=frac, hit=False))
+    # إذا أقل من 4 أهداف، نوزع fractions الباقية على الأخير
+    if len(tps) < 4:
+        remaining = sum(TP_FRACS[len(tps):])
+        if tps:
+            tps[-1]["frac"] += remaining
     return dict(entry=entry, sl=sl, risk=risk, tps=tps, atr=atr)
 
 
+def detect_conditions(df, i, side):
+    """شروط الدخول: RSI + EMA + Volume + Momentum."""
+    if i < 30:
+        return False, "early"
+    r = df.iloc[i]
+    if pd.isna(r.rsi) or pd.isna(r.ema20) or pd.isna(r.ema50) or pd.isna(r.rvol):
+        return False, "nan"
+    # RSI
+    if side == 1:
+        if not (RSI_LONG[0] <= r.rsi <= RSI_LONG[1]):
+            return False, "rsi"
+    else:
+        if not (RSI_SHORT[0] <= r.rsi <= RSI_SHORT[1]):
+            return False, "rsi"
+    # EMA
+    if side == 1:
+        if not (r.ema20 > r.ema50 and r.close > r.ema50):
+            return False, "ema"
+    else:
+        if not (r.ema20 < r.ema50 and r.close < r.ema50):
+            return False, "ema"
+    # Volume
+    if r.rvol < VOL_MULT:
+        return False, "vol"
+    # Extension
+    if abs(r.ext_atr) > EXT_MAX_ATR:
+        return False, "ext"
+    # Momentum: الشمعة الأخيرة
+    if side == 1:
+        if r.close <= r.open:
+            return False, "momentum"
+    else:
+        if r.close >= r.open:
+            return False, "momentum"
+    return True, "ok"
+
+
+def grade_setup(df, i, side):
+    """A = كل الشروط قوية، B = شروط جيدة، C = ضعيف."""
+    r = df.iloc[i]
+    score = 0
+    # RSI position
+    if side == 1:
+        if 45 <= r.rsi <= 60:
+            score += 1
+    else:
+        if 60 <= r.rsi <= 70:
+            score += 1
+    # EMA distance
+    ema_dist = abs(r.close - r.ema20) / r.atr if r.atr > 0 else 0
+    if 0.5 <= ema_dist <= 2.0:
+        score += 1
+    # Volume
+    if r.rvol >= 1.5:
+        score += 1
+    # Momentum strength
+    body = abs(r.close - r.open) / r.atr if r.atr > 0 else 0
+    if body >= 0.5:
+        score += 1
+    if score >= 3:
+        return "A"
+    if score >= 2:
+        return "B"
+    return "C"
+
+
+def analyze(sym):
+    tf = default_tf(sym)
+    df = get_candles(sym, tf, 450)
+    degraded = bool(df.attrs.get("degraded"))
+    df = add_indicators(df, 100)
+    i = len(df) - 1
+    # فحص الشراء أولاً
+    long_ok, long_reason = detect_conditions(df, i, 1)
+    short_ok, short_reason = detect_conditions(df, i, -1)
+    # نحسب الاحتمالات
+    price, _ = live_price(sym)
+    price = float(price or df["close"].iloc[-1])
+    # قرار
+    if long_ok and not short_ok:
+        side = 1
+        grade = grade_setup(df, i, 1)
+    elif short_ok and not long_ok:
+        side = -1
+        grade = grade_setup(df, i, -1)
+    elif long_ok and short_ok:
+        # كلاهما متاح (نادر): نختار حسب RSI
+        side = 1 if df["rsi"].iloc[i] < 50 else -1
+        grade = grade_setup(df, i, side)
+    else:
+        # لا توجد صفقة
+        side = 1
+        grade = "C"
+    lv = compute_levels(df, i, side, price)
+    if lv is None:
+        raise NoData(sym)
+    last = df.iloc[-1]
+    return dict(sym=sym, tf=tf, df=df, side=side,
+                rank={"A": 2, "B": 1, "C": 0}.get(grade, 0),
+                grade=grade, setup="Trend",
+                ok=1 if grade in ("A", "B") else 0, total=4,
+                lv=lv, price=price, degraded=degraded,
+                fake_pump=False, bar_t=int(last["t"]),
+                rsi=float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0,
+                adx=0.0,
+                long_ok=long_ok, short_ok=short_ok,
+                long_reason=long_reason, short_reason=short_reason)
+
+
+def get_analysis(sym, force=False):
+    hit = _analysis_cache.get(sym)
+    if hit and not force and time.time() - hit[0] < 60:
+        return hit[1]
+    res = analyze(sym)
+    _analysis_cache[sym] = (time.time(), res)
+    return res
+
+
+_analysis_cache = {}
+
+
+def scan_sync(symbols, workers=SCAN_WORKERS):
+    def one(s):
+        try:
+            return get_analysis(s)
+        except Exception as e:
+            log.info("scan %s: %s", s, str(e)[:80])
+            return None
+    with ThreadPoolExecutor(workers) as ex:
+        return [r for r in ex.map(one, symbols) if r]
+
+
+# ═══════════════════════════ إدارة الصفقة ═══════════════════════════
 def new_trade(sym, tf, side, lv, bar_t, grade, setup):
     return dict(id=f"{sym}-{tf}-{bar_t}", coin=sym, tf=tf, side=side, grade=grade, setup=setup,
                 entry=lv["entry"], sl=lv["sl"], risk=lv["risk"],
@@ -663,21 +773,10 @@ def trade_step(p, o, h, l, c, atr):
     if p["state"] not in ("pending", "open"):
         return ev
     if p["state"] == "pending":
-        p["wait"] += 1
-        trig = (h >= p["entry"]) if s == 1 else (l <= p["entry"])
-        if not trig:
-            dead = (l <= p["sl"]) if s == 1 else (h >= p["sl"])
-            if dead or p["wait"] >= PENDING_BARS:
-                p["state"] = "expired"
-                ev.append(dict(kind="EXPIRED"))
-            return ev
-        fill = max(p["entry"], o) if s == 1 else min(p["entry"], o)
-        risk = abs(fill - p["sl"])
-        if risk <= 0:
-            p["state"] = "expired"
-            return [dict(kind="EXPIRED")]
-        p.update(state="open", fill=fill, risk=risk, ext=fill, opened=int(time.time() * 1000))
-        ev.append(dict(kind="ENTRY", px=fill))
+        # v18: الدخول فوري (بدون pending)
+        p.update(state="open", fill=p["entry"], ext=p["entry"],
+                 opened=int(time.time() * 1000))
+        ev.append(dict(kind="ENTRY", px=p["entry"]))
     p["bars"] += 1
     fill, risk = p["fill"], p["risk"]
     fav, adv = (h, l) if s == 1 else (l, h)
@@ -706,78 +805,9 @@ def trade_step(p, o, h, l, c, atr):
         p["trail_on"] = True
         if atr and atr > 0:
             p["sl"] = _tighten(s, p["sl"], p["ext"] - s * TRAIL_ATR * atr)
-    if p["bars"] >= TIME_STOP_BARS and not p["tps"][0]["hit"]:
-        return close_at(p, c, "TIME_STOP", ev)
     if p["bars"] >= MAX_HOLD:
         return close_at(p, c, "TIME", ev)
     return ev
-
-
-# ═══════════════════════════ التحليل ═══════════════════════════
-_analysis_cache = {}
-
-
-def detect_fake_pump(df, i):
-    if i < 20:
-        return False
-    r = df.iloc[i]
-    if pd.isna(r.rvol) or pd.isna(r.rsi) or pd.isna(r.wick_up):
-        return False
-    return bool(r.rvol > FAKE_PUMP_RVOL and r.rsi > FAKE_PUMP_RSI and r.wick_up > FAKE_PUMP_WICK)
-
-
-def analyze(sym):
-    tf = default_tf(sym)
-    df = get_candles(sym, tf, 450)
-    degraded = bool(df.attrs.get("degraded"))
-    try:
-        btc_d = df if (sym == "BTC" and tf == "1d") else get_candles("BTC", "1d", 320)
-    except Exception:
-        btc_d = None
-    try:
-        own_d = df if tf == "1d" else get_candles(sym, "1d", 320)
-    except Exception:
-        own_d = None
-    df = add_indicators(df, 100)
-    sig = evaluate(df, sym, tf, daily_table(btc_d), daily_table(own_d, 200), degraded)
-    i = len(df) - 1
-    side, rank = int(sig["side"].iloc[i]), int(sig["rank"].iloc[i])
-    fake = detect_fake_pump(df, i)
-    if fake and side == 1:
-        rank = 0
-    price, _ = live_price(sym)
-    price = float(price or df["close"].iloc[-1])
-    lv = make_levels(df, i, side, price)
-    if lv is None:
-        raise NoData(sym)
-    last = df.iloc[-1]
-    return dict(sym=sym, tf=tf, df=df, side=side, rank=rank, grade=GRADE[rank],
-                setup=str(sig["setup"].iloc[i]), ok=int(sig["ok"].iloc[i]),
-                total=len(COND_KEYS), lv=lv, price=price,
-                degraded=degraded, fake_pump=fake,
-                rsi=float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0,
-                adx=float(last["adx"]) if not pd.isna(last["adx"]) else 0.0,
-                bar_t=int(last["t"]))
-
-
-def get_analysis(sym, force=False):
-    hit = _analysis_cache.get(sym)
-    if hit and not force and time.time() - hit[0] < 60:
-        return hit[1]
-    res = analyze(sym)
-    _analysis_cache[sym] = (time.time(), res)
-    return res
-
-
-def scan_sync(symbols, workers=SCAN_WORKERS):
-    def one(s):
-        try:
-            return get_analysis(s)
-        except Exception as e:
-            log.info("scan %s: %s", s, str(e)[:80])
-            return None
-    with ThreadPoolExecutor(workers) as ex:
-        return [r for r in ex.map(one, symbols) if r]
 
 
 # ═══════════════════════════ الشارت ═══════════════════════════
@@ -841,7 +871,7 @@ def render_chart(res, n_tps=4, published=False):
     axr.set_xticks(range(0, len(df), step))
     axr.set_xticklabels([ts.iloc[i].strftime("%Y-%m-%d") for i in range(0, len(df), step)], fontsize=8)
     col = "#26a69a" if side == 1 else "#ef5350"
-    title = f"{res['sym']}/USDT  ·  {tf.upper()}  ·  {'LONG' if side == 1 else 'SHORT'}  ·  Grade {res['grade']}  ·  {res['setup']}"
+    title = f"{res['sym']}/USDT  ·  {tf.upper()}  ·  {'LONG' if side == 1 else 'SHORT'}  ·  Grade {res['grade']}"
     ax.set_title(title, color=col, fontsize=13, fontweight="bold", loc="left")
     ax.legend(loc="upper left", fontsize=8, facecolor=bg, edgecolor="#cccccc", labelcolor=fg)
     axr.legend(loc="upper left", fontsize=7.5, facecolor=bg, edgecolor="#cccccc", labelcolor=fg)
@@ -859,11 +889,11 @@ def build_caption(res, tier="free"):
     side, lv, sym = res["side"], res["lv"], res["sym"]
     tf_ar = {"1d": "يومي", "4h": "4 ساعات"}[res["tf"]]
     word = "شراء (LONG) 🟢" if side == 1 else "بيع (SHORT) 🔴"
-    gem = {"A": "🟢", "B": "🟡", "C": "🔴"}[res["grade"]]
+    gem = {"A": "🟢", "B": "🟡", "C": "🔴"}.get(res["grade"], "🔴")
     lines = [
         f"<b>#{sym}/USDT</b>",
         f"🎯 <b>التوصية: {word}</b>",
-        f"{gem} الجودة: <b>{res['grade']}</b> · {res['setup']} · ⏱ {tf_ar}",
+        f"{gem} الجودة: <b>{res['grade']}</b> · ⏱ {tf_ar}",
         "",
         f"💵 السعر: <code>{fmt(res['price'])}</code>",
         f"🚪 الدخول: <code>{fmt(lv['entry'])}</code>",
@@ -875,7 +905,8 @@ def build_caption(res, tier="free"):
     else:
         for i, tp in enumerate(lv["tps"][:2], 1):
             lines.append(f"🎯 الهدف {i} ({tp['pct']}%): <code>{fmt(tp['px'])}</code>")
-        lines.append("🔒 الهدفان 3 و 4 في VIP")
+        if len(lv["tps"]) > 2:
+            lines.append(f"🔒 أهداف إضافية في VIP")
     wh, wl = whale_radar(sym)
     if wh is not None:
         lines.append(f"🐋 حيتان: {wh} صفقة كبيرة | أكبر: {fmt(wl)} USDT")
@@ -900,15 +931,13 @@ def build_copy_post(res):
 def build_admin_extras(res):
     lines = [f"📊 <b>مؤشرات {res['sym']}/{res['tf']}</b>", ""]
     lines.append(f"• RSI: {res['rsi']:.1f}")
-    lines.append(f"• ADX: {res['adx']:.1f}")
     lines.append(f"• ATR: {res['lv']['atr']:.4f}")
-    lines.append(f"• الشروط: {res['ok']}/{res['total']}")
-    lines.append(f"• النوع: {res['setup']}")
     lines.append(f"• الجودة: {res['grade']}")
+    lines.append(f"• هدف 1: {res['lv']['tps'][0]['pct']}%")
+    if len(res['lv']['tps']) > 1:
+        lines.append(f"• هدف 2: {res['lv']['tps'][1]['pct']}%")
     if res["degraded"]:
         lines.append("⚠️ بيانات احتياطية")
-    if res["fake_pump"]:
-        lines.append("⚠️ ارتفاع مضلل محتمل")
     return "\n".join(lines)
 
 
@@ -1010,8 +1039,6 @@ def event_text(coin, tf, side, e, R):
         return f"{head}\n🔒 خروج على Breakeven" + (f" ({R:+.2f}R)" if R is not None else "")
     if k == "TRAIL":
         return f"{head}\n🔁 خروج بالـ Trailing" + (f" ({R:+.2f}R)" if R is not None else "")
-    if k == "TIME_STOP":
-        return f"{head}\n⏱ Time Stop" + (f" ({R:+.2f}R)" if R is not None else "")
     if k == "TIME":
         return f"{head}\n⏱ انتهت مدة الاحتفاظ" + (f" ({R:+.2f}R)" if R is not None else "")
     if k == "EXPIRED":
@@ -1122,22 +1149,36 @@ async def autopost_loop(app):
 
 
 # ═══════════════════════════ Backtest ═══════════════════════════
-def simulate(df, sig, sym, tf, start=210):
+def simulate(df, sym, tf, start=210):
+    """v18: نبحث عن شروط الدخول في كل شمعة."""
     n = len(df)
     o, h, l, c = (df[k].values for k in ("open", "high", "low", "close"))
     atr, t = df["atr"].values, df["t"].values
-    side_a, rank_a, setup_a = sig["side"].values, sig["rank"].values, sig["setup"].values
     trades, i = [], start
     while i < n - 1:
-        if rank_a[i] < 1:
+        # فحص الشراء
+        long_ok, _ = detect_conditions(df, i, 1)
+        short_ok, _ = detect_conditions(df, i, -1)
+        if long_ok and not short_ok:
+            side = 1
+            grade = grade_setup(df, i, 1)
+        elif short_ok and not long_ok:
+            side = -1
+            grade = grade_setup(df, i, -1)
+        elif long_ok and short_ok:
+            side = 1 if df["rsi"].iloc[i] < 50 else -1
+            grade = grade_setup(df, i, side)
+        else:
             i += 1
             continue
-        s = int(side_a[i])
-        lv = make_levels(df, i, s)
+        if grade not in ("A", "B"):
+            i += 1
+            continue
+        lv = compute_levels(df, i, side)
         if lv is None:
             i += 1
             continue
-        p = new_trade(sym, tf, s, lv, int(t[i]), GRADE[int(rank_a[i])], str(setup_a[i]))
+        p = new_trade(sym, tf, side, lv, int(t[i]), grade, "Trend")
         j = i + 1
         while j < n:
             trade_step(p, o[j], h[j], l[j], c[j], atr[j])
@@ -1149,7 +1190,7 @@ def simulate(df, sig, sym, tf, start=210):
             j = n - 1
         if p["state"] == "closed":
             trades.append(dict(coin=sym, t=int(t[min(j, n - 1)]), R=p["R"], exit=p["result"],
-                               setup=p["setup"], grade=p["grade"], side=s, bars=p["bars"],
+                               setup=p["setup"], grade=p["grade"], side=side, bars=p["bars"],
                                tps=sum(1 for x in p["tps"] if x["hit"])))
         i = j + 1
     return trades
@@ -1161,17 +1202,8 @@ def backtest_symbol(sym, years=3.0):
     n = len(df)
     if n < 250:
         return [], int(df["t"].iloc[0]), int(df["t"].iloc[-1])
-    try:
-        btc_d = get_candles("BTC", "1d", int(years * 365) + 300, ttl=900)
-    except Exception:
-        btc_d = None
-    try:
-        own_d = df if tf == "1d" else get_candles(sym, "1d", int(years * 365) + 300, ttl=900)
-    except Exception:
-        own_d = None
     df = add_indicators(df, 100)
-    sig = evaluate(df, sym, tf, daily_table(btc_d), daily_table(own_d, 200))
-    trades = simulate(df, sig, sym, tf, 210)
+    trades = simulate(df, sym, tf, 210)
     return trades, int(df["t"].iloc[210]), int(df["t"].iloc[-1])
 
 
@@ -1195,7 +1227,7 @@ def bt_report(per, tmin, tmax, label):
     tr = [x for x in allt if x["t"] < cut]
     te = [x for x in allt if x["t"] >= cut]
     mt, me = metrics(tr), metrics(te)
-    lines = [f"📊 <b>Backtest {label}</b> ({len(per)} عملة)", "",
+    lines = [f"📊 <b>Backtest {label} (v18)</b> ({len(per)} عملة)", "",
              f"TRAIN: n={mt['n']} | WR {mt['wr']}% | PF {mt['pf']} | {mt['total']:+}R | DD {mt['dd']}R",
              f"TEST : n={me['n']} | WR {me['wr']}% | PF {me['pf']} | {me['total']:+}R | DD {me['dd']}R",
              f"وصول TP1: {me['tp1']}%", ""]
@@ -1298,7 +1330,7 @@ async def handle_symbol(update: Update, raw: str, to_channel=False):
         await update.message.reply_photo(photo=img, caption=cap, parse_mode=ParseMode.HTML,
                                          protect_content=(st != "admin" and PROTECT),
                                          reply_markup=kb)
-        if res["side"] != 0 and res["grade"] in ("A", "B"):
+        if res["rank"] >= 1:
             try:
                 await asyncio.to_thread(track_signal, res)
             except Exception as e:
@@ -1426,7 +1458,7 @@ async def cmd_bt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("رمز غير صالح")
         return
     wait = await update.message.reply_text(
-        f"⏳ Backtest {arg} ({len(syms)} عملة، {years:g} سنة)...")
+        f"⏳ Backtest v18 {arg} ({len(syms)} عملة، {years:g} سنة)...")
     per, a, b = await asyncio.to_thread(backtest_many, syms, years)
     if not per:
         await wait.edit_text("❌ لا توجد بيانات")
@@ -1435,7 +1467,7 @@ async def cmd_bt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await wait.edit_text(text[:4000], parse_mode=ParseMode.HTML)
     if len(per) > 1:
         buf = io.BytesIO(csv.encode())
-        buf.name = f"bt_{arg.lower()}.csv"
+        buf.name = f"bt_v18_{arg.lower()}.csv"
         await update.message.reply_document(buf)
 
 
@@ -1451,10 +1483,10 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not res:
         await wait.edit_text("لا توجد إشارات حالياً")
         return
-    lines = ["<b>🎯 أفضل الإعدادات</b>", ""]
+    lines = ["<b>🎯 أفضل الإعدادات (v18)</b>", ""]
     for r in res[:10]:
         s = "LONG 📈" if r["side"] == 1 else "SHORT 📉"
-        lines.append(f"{r['grade']} | #{r['sym']} | {r['tf']} | {r['setup']} | {r['ok']}/{r['total']}")
+        lines.append(f"{r['grade']} | #{r['sym']} | {r['tf']} | {s}")
     await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
@@ -1463,12 +1495,12 @@ async def cmd_short(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     wait = await update.message.reply_text("⏳ فحص الشورتات...")
     res = await asyncio.to_thread(scan_sync, COINS)
     res = [r for r in res if r["side"] == -1 and r["rank"] >= 1]
-    res.sort(key=lambda r: (-r["rank"], -r["ok"]))
+    res.sort(key=lambda r: -r["rank"])
     if not res:
         await wait.edit_text("لا توجد شورتات")
         return
     await wait.edit_text("🔴 شورتات:\n" + "\n".join(
-        f"{r['grade']} | #{r['sym']} | {r['setup']} | {r['ok']}/{r['total']}" for r in res[:15]))
+        f"{r['grade']} | #{r['sym']}" for r in res[:15]))
 
 
 def _pump_one(s):
@@ -1495,32 +1527,6 @@ async def cmd_pump(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await wait.edit_text("💥 انفجارات:\n" + "\n".join(
         f"🚀 #{r['sym']} | {fmt(r['price'])} | x{r['rvol']:.1f} | +{r['chg']:.1f}%" for r in rows[:15]))
-
-
-def _bottom_one(s):
-    try:
-        d = get_candles(s, "1d", 120, min_bars=60)
-        r = rsi_calc(d["close"])
-        low90, c = d["low"].tail(90).min(), float(d["close"].iloc[-1])
-        near = (c / low90 - 1) * 100
-        if near <= 12 and r.iloc[-1] <= 40 and r.iloc[-1] > r.iloc[-2]:
-            return dict(sym=s, price=c, rsi=float(r.iloc[-1]), near=float(near))
-    except Exception:
-        pass
-    return None
-
-
-@admin_only
-async def cmd_bottom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    wait = await update.message.reply_text("⏳ فحص القيعان...")
-    with ThreadPoolExecutor(SCAN_WORKERS) as ex:
-        rows = [r for r in ex.map(_bottom_one, top_symbols(60)) if r]
-    rows.sort(key=lambda r: r["near"])
-    if not rows:
-        await wait.edit_text("لا توجد")
-        return
-    await wait.edit_text("🧲 قيعان:\n" + "\n".join(
-        f"🔻 #{r['sym']} | {fmt(r['price'])} | RSI {r['rsi']:.0f} | +{r['near']:.1f}%" for r in rows[:15]))
 
 
 @admin_only
@@ -1643,7 +1649,7 @@ async def cmd_dashboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     down = [n for n, t in _down.items() if t > time.time()]
     maint = "🔧 صيانة" if MAINTENANCE else "✅ يعمل"
     await update.message.reply_text(
-        f"🎛 <b>Dashboard v17</b> — {maint}\n"
+        f"🎛 <b>Dashboard v18</b> — {maint}\n"
         f"المستخدمون: {nu} | VIP: {nv}\n"
         f"صفقات نشطة: {len(act)}\n"
         f"التخزين: {store.remote_msg}\n"
@@ -1755,7 +1761,7 @@ async def post_init(app):
         pass
     app.bot_data["tasks"] = [asyncio.create_task(autopost_loop(app)),
                              asyncio.create_task(tracker_loop(app))]
-    log.info("v17 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("v18 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 
 
 async def post_shutdown(app):
@@ -1784,7 +1790,6 @@ def main():
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("short", cmd_short))
     app.add_handler(CommandHandler("pump", cmd_pump))
-    app.add_handler(CommandHandler("bottom", cmd_bottom))
     app.add_handler(CommandHandler("delist", cmd_delist))
     app.add_handler(CommandHandler("price", cmd_price))
     app.add_handler(CommandHandler("users", cmd_users))
