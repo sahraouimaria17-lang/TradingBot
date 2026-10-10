@@ -54,7 +54,6 @@ PAYMENT_INFO = _e("PAYMENT_INFO")
 PROTECT = _e("PROTECT_CONTENT", "1") == "1"
 
 BRAND = "ryma crypto"
-# OKX أولاً، بعدها Binance، ثم MEXC، ثم الباقي كاحتياطي
 EXCHANGES = ["okx", "binance", "mexc", "bybit", "kucoin", "gateio", "bitget"]
 MAJORS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK",
           "DOT", "LTC", "TRX"}
@@ -79,16 +78,15 @@ FREE_POSTS_PER_CYCLE = 2
 FREE_MAX_PER_DAY = 6
 
 # ═══════════════════════════ الأهداف ═══════════════════════════
-TP_PCTS = [2.5, 4.5, 6.5, 10.0]     # من الدخول
-TP_FRACS = [0.40, 0.30, 0.20, 0.10]  # نسب البيع
-SL_PCT = 4.0                          # وقف 4% ثابت
-BE_TRIGGER_R = 0.1                    # نقل BE بعد TP1
-TRAIL_ATR = 3.0                       # Trail بعد TP2
+TP_PCTS = [2.5, 4.5, 6.5, 10.0]
+TP_FRACS = [0.40, 0.30, 0.20, 0.10]
+SL_PCT = 4.0
+BE_TRIGGER_R = 0.1
+TRAIL_ATR = 3.0
 TIME_STOP_BARS = 10
 MAX_HOLD = 60
 PENDING_BARS = 2
 
-# كشف الارتفاعات المضللة
 FAKE_PUMP_RVOL = 3.0
 FAKE_PUMP_RSI = 78
 FAKE_PUMP_WICK = 0.4
@@ -108,7 +106,7 @@ def now_s():
     return int(time.time())
 
 
-# ═══════════════════════════ التخزين ═══════════════════════════
+# ═══════════════════════════ Store ═══════════════════════════
 KEYS = ["users", "vip", "signals", "history", "posted"]
 DEFAULTS = {"users": {}, "vip": {}, "signals": [], "history": [], "posted": {}}
 
@@ -479,7 +477,6 @@ def add_indicators(df, atrp_win=100):
         lambda x: (x[-1] >= x).mean() * 100, raw=True)
     mid, sd = c.rolling(20).mean(), c.rolling(20).std()
     df["bb_mid"], df["bb_up"], df["bb_lo"] = mid, mid + 2 * sd, mid - 2 * sd
-    # wick (للكشف Fake Pump)
     rng = (df["high"] - df["low"]).replace(0, np.nan)
     df["wick_up"] = (df["high"] - df[["close", "open"]].max(axis=1)) / rng
     return df
@@ -558,7 +555,6 @@ def grade_frame(cond):
 
 
 def evaluate(df, sym, tf, btc_tab, own_tab, degraded=False):
-    ext = ((df["close"] - df["ema20"]) / df["atr"]).values
     parts = {}
     for d in (1, -1):
         cond = build_conds(df, d, sym, tf, btc_tab, own_tab)
@@ -571,7 +567,6 @@ def evaluate(df, sym, tf, btc_tab, own_tab, degraded=False):
     rank = np.where(side == 1, parts[1][0], parts[-1][0])
     ok = np.where(side == 1, parts[1][1], parts[-1][1])
     setup = np.where(side == 1, parts[1][2], parts[-1][2])
-    # منع RSI الشراء العالي جداً
     high_rsi = df["rsi"].values > 75
     rank = np.where(high_rsi & (side == 1), 0, rank)
     if degraded:
@@ -580,8 +575,7 @@ def evaluate(df, sym, tf, btc_tab, own_tab, degraded=False):
 
 
 # ═══════════════════════════ المستويات ═══════════════════════════
-def make_levels(df, i, side, price=None):
-    """الوقف 4% ثابت، الأهداف 2.5/4.5/6.5/10% من الدخول."""
+def make_levels(df, i, side):
     r = df.iloc[i]
     atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0.0
     if atr <= 0:
@@ -652,11 +646,9 @@ def trade_step(p, o, h, l, c, atr):
     fav, adv = (h, l) if s == 1 else (l, h)
     p["mfe"] = max(p["mfe"], s * (fav - fill) / risk)
     p["mae"] = max(p["mae"], s * (fill - adv) / risk)
-    # 1) الوقف
     if (s == 1 and l <= p["sl"]) or (s == -1 and h >= p["sl"]):
         kind = "TRAIL" if p["trail_on"] else ("BE" if p["be"] else "SL")
         return close_at(p, p["sl"], kind, ev)
-    # 2) الأهداف
     for j, tp in enumerate(p["tps"]):
         if tp["hit"]:
             continue
@@ -668,18 +660,15 @@ def trade_step(p, o, h, l, c, atr):
         ev.append(dict(kind="TP", j=j + 1, px=tp["px"], pct=tp["pct"]))
     if p["remaining"] <= 1e-9:
         return _finish(p, ev, "TP")
-    # 3) BE بعد TP1
     if p["tps"][0]["hit"] and not p["be"]:
         p["sl"] = _tighten(s, p["sl"], fill - s * BE_TRIGGER_R * risk)
         p["be"] = True
         ev.append(dict(kind="BE_MOVED", px=p["sl"]))
-    # 4) Trail بعد TP2
     p["ext"] = max(p["ext"], h) if s == 1 else min(p["ext"], l)
     if sum(t["hit"] for t in p["tps"]) >= 2:
         p["trail_on"] = True
         if atr and atr > 0:
             p["sl"] = _tighten(s, p["sl"], p["ext"] - s * TRAIL_ATR * atr)
-    # 5) Time stop
     if p["bars"] >= TIME_STOP_BARS and not p["tps"][0]["hit"]:
         return close_at(p, c, "TIME_STOP", ev)
     if p["bars"] >= MAX_HOLD:
@@ -704,7 +693,6 @@ def analyze(sym):
     tf = default_tf(sym)
     df = get_candles(sym, tf, 450)
     degraded = bool(df.attrs.get("degraded"))
-    source = df.attrs.get("source", "?")
     try:
         btc_d = df if (sym == "BTC" and tf == "1d") else get_candles("BTC", "1d", 320)
     except Exception:
@@ -728,7 +716,7 @@ def analyze(sym):
     last = df.iloc[-1]
     return dict(sym=sym, tf=tf, df=df, side=side, rank=rank, grade=GRADE[rank],
                 setup=str(sig["setup"].iloc[i]), ok=int(sig["ok"].iloc[i]),
-                total=len(COND_KEYS), lv=lv, price=price, source=source,
+                total=len(COND_KEYS), lv=lv, price=price,
                 degraded=degraded, fake_pump=fake,
                 rsi=float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0,
                 adx=float(last["adx"]) if not pd.isna(last["adx"]) else 0.0,
@@ -768,9 +756,10 @@ def fmt(x):
 
 
 def render_chart(res, n_tps=4, published=False):
+    """شارت أبيض مثل أبو تركي: BB أزرق + EMA نظيفة."""
     df = res["df"].tail(CHART_BARS).reset_index(drop=True)
     lv, side, tf = res["lv"], res["side"], res["tf"]
-    bg, fg, grid = "#ffffff", "#111111", "#e0e0e0"
+    bg, fg, grid = "#ffffff", "#111111", "#e8e8e8"
     up_c, dn_c = "#26a69a", "#ef5350"
     fig = plt.figure(figsize=(11, 7.5), facecolor=bg)
     gs = fig.add_gridspec(2, 1, height_ratios=[4.2, 1], hspace=0.06)
@@ -779,16 +768,20 @@ def render_chart(res, n_tps=4, published=False):
     x = np.arange(len(df))
     up = (df["close"] >= df["open"]).values
     cols = [up_c if u else dn_c for u in up]
+    # شموع
     ax.vlines(x, df["low"], df["high"], colors=cols, linewidth=1)
     body_lo = np.minimum(df["open"], df["close"])
     body_h = np.maximum((df["close"] - df["open"]).abs(), (df["high"] - df["low"]) * 0.003)
     ax.bar(x, body_h, bottom=body_lo, width=0.6, color=cols)
+    # EMA
     ax.plot(x, df["ema20"], color="#f5c518", lw=1.3, label="EMA 20")
     ax.plot(x, df["ema50"], color="#1976d2", lw=1.3, label="EMA 50")
     ax.plot(x, df["ema200"], color="#7b1fa2", lw=1.3, label="EMA 200")
-    ax.plot(x, df["bb_up"], color="#546e7a", lw=0.7, ls="--")
-    ax.plot(x, df["bb_lo"], color="#546e7a", lw=0.7, ls="--")
-    ax.fill_between(x, df["bb_lo"], df["bb_up"], color="#90a4ae", alpha=0.08, label="Bollinger")
+    # Bollinger Bands - خطوط زرقاء واضحة (بدون fill)
+    ax.plot(x, df["bb_up"], color="#2196f3", lw=1.0, ls="--", alpha=0.9, label="BB Upper")
+    ax.plot(x, df["bb_mid"], color="#2196f3", lw=0.8, ls="-", alpha=0.5)
+    ax.plot(x, df["bb_lo"], color="#2196f3", lw=1.0, ls="--", alpha=0.9, label="BB Lower")
+    # المستويات
     levels = [(lv["entry"], "ENTRY", "#0d47a1", "-."), (lv["sl"], "STOP", "#d32f2f", "--")]
     for j, tp in enumerate(lv["tps"][:n_tps], 1):
         levels.append((tp["px"], f"TP{j} ({tp['pct']}%)", "#2e7d32", "--"))
@@ -803,10 +796,11 @@ def render_chart(res, n_tps=4, published=False):
     pad = (hi - lo) * 0.05
     ax.set_ylim(lo - pad, hi + pad)
     ax.set_xlim(-1, len(df) + 17)
+    # RSI
     axr.plot(x, df["rsi"], color="#7b1fa2", lw=1.2)
     axr.axhline(70, color=dn_c, lw=0.7, ls="--")
     axr.axhline(30, color=up_c, lw=0.7, ls="--")
-    axr.fill_between(x, 30, 70, color="#f8bbd0", alpha=0.15)
+    axr.fill_between(x, 30, 70, color="#f8bbd0", alpha=0.12)
     axr.set_ylim(10, 90)
     for a_ in (ax, axr):
         a_.tick_params(colors=fg, labelsize=8)
@@ -817,9 +811,8 @@ def render_chart(res, n_tps=4, published=False):
     plt.setp(ax.get_xticklabels(), visible=False)
     step = max(len(df) // 6, 1)
     ts = pd.to_datetime(df["t"], unit="ms")
-    f_ = "%Y-%m-%d"
     axr.set_xticks(range(0, len(df), step))
-    axr.set_xticklabels([ts.iloc[i].strftime(f_) for i in range(0, len(df), step)], fontsize=8)
+    axr.set_xticklabels([ts.iloc[i].strftime("%Y-%m-%d") for i in range(0, len(df), step)], fontsize=8)
     col = up_c if side == 1 else dn_c
     title = f"{res['sym']}/USDT  ·  {tf.upper()}  ·  {'LONG' if side == 1 else 'SHORT'}  ·  Grade {res['grade']}  ·  {res['setup']}"
     ax.set_title(title, color=col, fontsize=13, fontweight="bold", loc="left")
@@ -849,16 +842,15 @@ def build_caption(res, tier="free"):
         f"🚪 الدخول: <code>{fmt(lv['entry'])}</code>",
         f"🛑 الوقف: <code>{fmt(lv['sl'])}</code>",
     ]
+    # VIP + Admin: 4 أهداف | مستخدم عادي: هدفين
     if tier in ("vip", "admin"):
         for i, tp in enumerate(lv["tps"], 1):
             lines.append(f"🎯 الهدف {i} ({tp['pct']}%): <code>{fmt(tp['px'])}</code>")
     else:
-        for i, tp in enumerate(lv["tps"][:3], 1):
+        for i, tp in enumerate(lv["tps"][:2], 1):
             lines.append(f"🎯 الهدف {i} ({tp['pct']}%): <code>{fmt(tp['px'])}</code>")
-        lines.append("🔒 الهدف 4 في VIP")
+        lines.append("🔒 الهدفان 3 و 4 في VIP")
     lines += [
-        "",
-        f"📈 RSI {res['rsi']:.0f} | ADX {res['adx']:.0f} | الشروط {res['ok']}/{res['total']}",
         "━━━━━━━━━━━━━━━",
         f"👤 <b>{BRAND}</b>",
         "⚠️ ليس نصيحة مالية",
@@ -867,13 +859,10 @@ def build_caption(res, tier="free"):
 
 
 def build_copy_post(res):
-    """منشور قابل للنسخ للأدمن - 3 أهداف فقط."""
+    """منشور قابل للنسخ للأدمن فقط - 3 أهداف + نص."""
     side, lv, sym = res["side"], res["lv"], res["sym"]
-    word = "شراء" if side == 1 else "بيع"
-    lines = [
-        f"#{sym}/USDT",
-        f"➡️ Entry: {fmt(lv['entry'])}",
-    ]
+    lines = [f"#{sym}/USDT"]
+    lines.append(f"➡️ Entry: {fmt(lv['entry'])}")
     for i, tp in enumerate(lv["tps"][:3], 1):
         lines.append(f"🎯 TP{i}: {fmt(tp['px'])}")
     lines.append(f"🛑 SL: {fmt(lv['sl'])}")
@@ -881,7 +870,7 @@ def build_copy_post(res):
 
 
 def build_admin_extras(res):
-    """زر المؤشرات للأدمن."""
+    """زر المؤشرات للأدمن فقط."""
     lines = [f"📊 <b>مؤشرات {res['sym']}/{res['tf']}</b>", ""]
     lines.append(f"• RSI: {res['rsi']:.1f}")
     lines.append(f"• ADX: {res['adx']:.1f}")
@@ -1039,10 +1028,11 @@ async def publish(bot, res, vip=True, free=False, admin_copy=False):
                                  parse_mode=ParseMode.HTML, protect_content=PROTECT)
             sent.append("VIP")
         if free and CHANNEL_ID:
-            img = await asyncio.to_thread(render_chart, res, 3, True)
+            img = await asyncio.to_thread(render_chart, res, 2, True)
             await bot.send_photo(CHANNEL_ID, img, caption=build_caption(res, "free"),
                                  parse_mode=ParseMode.HTML, protect_content=PROTECT)
             sent.append("FREE")
+        # منشور النسخ للأدمن فقط
         if admin_copy and ADMIN_ID:
             try:
                 await bot.send_message(ADMIN_ID, build_copy_post(res),
@@ -1074,7 +1064,7 @@ async def run_autopost(bot):
         if vip_n >= VIP_POSTS_PER_CYCLE:
             break
         free = free_n < FREE_POSTS_PER_CYCLE and _free_day["n"] < FREE_MAX_PER_DAY
-        sent = await publish(bot, r, vip=True, free=free)
+        sent = await publish(bot, r, vip=True, free=free, admin_copy=True)
         if sent and not any(s.startswith("err") for s in sent):
             track_signal(r)
             with store.lock:
@@ -1087,7 +1077,7 @@ async def run_autopost(bot):
                 free_n += 1
                 _free_day["n"] += 1
             await asyncio.sleep(2)
-    log.info("autopost: candidates=%d vip=%d free=%d", len(cands), vip_n, free_n)
+    log.info("autopost: cands=%d vip=%d free=%d", len(cands), vip_n, free_n)
 
 
 async def autopost_loop(app):
@@ -1178,9 +1168,8 @@ def bt_report(per, tmin, tmax, label):
     cut = tmin + 0.65 * (tmax - tmin)
     tr = [x for x in allt if x["t"] < cut]
     te = [x for x in allt if x["t"] >= cut]
-    mt = metrics(tr)
-    me = metrics(te)
-    lines = [f"📊 <b>Backtest {label}</b> ({len(per)} عملة، 3 سنوات)", "",
+    mt, me = metrics(tr), metrics(te)
+    lines = [f"📊 <b>Backtest {label}</b> ({len(per)} عملة)", "",
              f"TRAIN: n={mt['n']} | WR {mt['wr']}% | PF {mt['pf']} | {mt['total']:+}R | DD {mt['dd']}R",
              f"TEST : n={me['n']} | WR {me['wr']}% | PF {me['pf']} | {me['total']:+}R | DD {me['dd']}R",
              f"وصول TP1: {me['tp1']}%", ""]
@@ -1193,7 +1182,6 @@ def bt_report(per, tmin, tmax, label):
     else:
         v = "🔴 ضعيف"
     lines.append(f"الحكم: {v}")
-    lines.append("الرسوم والانزلاق محسوبة.")
     csv = "coin,tr_n,tr_wr,tr_pf,tr_total,te_n,te_wr,te_pf,te_total,te_tp1\n"
     for coin, trs in per.items():
         a = metrics([x for x in trs if x["t"] < cut])
@@ -1586,7 +1574,7 @@ async def cmd_dashboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         nv = sum(1 for k in store.data["vip"] if is_vip(int(k)))
     down = [n for n, t in _down.items() if t > time.time()]
     await update.message.reply_text(
-        f"🎛 <b>Dashboard v11</b>\n"
+        f"🎛 <b>Dashboard v12</b>\n"
         f"المستخدمون: {nu} | VIP: {nv}\n"
         f"صفقات نشطة: {len(act)}\n"
         f"التخزين: {store.remote_msg}\n"
@@ -1695,7 +1683,7 @@ async def post_init(app):
         pass
     app.bot_data["tasks"] = [asyncio.create_task(autopost_loop(app)),
                              asyncio.create_task(tracker_loop(app))]
-    log.info("v11 started | storage=%s", store.remote_msg)
+    log.info("v12 started | storage=%s", store.remote_msg)
 
 
 async def post_shutdown(app):
