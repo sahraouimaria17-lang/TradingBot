@@ -52,6 +52,7 @@ CONTACT_LINK = _e("CONTACT_LINK", "@rym_rima1")
 VIP_LINK = _e("VIP_LINK", "")
 PAYMENT_INFO = _e("PAYMENT_INFO", "Binance Pay: 905142395")
 PROTECT = _e("PROTECT_CONTENT", "1") == "1"
+MAINTENANCE = _e("MAINTENANCE", "1") == "1"   # ← وضع الصيانة
 
 BRAND = "ryma crypto"
 EXCHANGES = ["okx", "mexc", "binance", "bybit", "kucoin", "gateio", "bitget"]
@@ -76,15 +77,17 @@ VIP_POSTS_PER_CYCLE = 5
 FREE_POSTS_PER_CYCLE = 2
 FREE_MAX_PER_DAY = 6
 
-# ═══════════════════════════ الأهداف الجديدة ═══════════════════════════
-TP_PCTS = [1.5, 3.0, 5.0, 8.0]   # أقرب
-TP_FRACS = [0.40, 0.30, 0.20, 0.10]
-SL_PCT = 3.0                     # أضيق
+# ═══════════════════════════ الأهداف v15 ═══════════════════════════
+TP_PCTS = [2.5, 5.0, 7.0, 10.0]
+TP_FRACS = [0.50, 0.25, 0.15, 0.10]   # 50/25/15/10
+SL_PCT = 3.7                           # الوقف 3.7%
 BE_TRIGGER_R = 0.1
 TRAIL_ATR = 3.0
-TIME_STOP_BARS = 10
+TIME_STOP_BARS = 15
 MAX_HOLD = 60
 PENDING_BARS = 2
+MAX_ENTRY_DIST = 0.3                   # الدخول ما يبعد أكثر من 0.3% عن السعر
+VOL_MULT = 1.0                         # فلتر Volume: 1.0x
 
 FAKE_PUMP_RVOL = 3.0
 FAKE_PUMP_RSI = 78
@@ -497,7 +500,7 @@ def add_indicators(df, atrp_win=100):
     return df
 
 
-# ═══════════════════════════ الشروط ═══════════════════════════
+# ═══════════════════════════ الشروط v15 ═══════════════════════════
 def daily_table(dfd, span=200):
     if dfd is None or len(dfd) < 30:
         return None
@@ -523,7 +526,8 @@ def build_conds(df, d, sym, tf, btc_tab, own_tab):
     cond["vol"] = df["atrp"] >= 20
     touch = (l <= df["ema20"]) if d == 1 else (h >= df["ema20"])
     cond["pullback"] = touch.astype(float).rolling(5, min_periods=1).max() > 0
-    lo, hi = (35, 72) if d == 1 else (28, 65)
+    # v15: RSI 45/55
+    lo, hi = (45, 72) if d == 1 else (28, 55)
     rsi_ok = df["rsi"].between(lo, hi)
     if d == -1:
         rsi_ok = rsi_ok & (df["rsi"] >= 32)
@@ -549,7 +553,8 @@ def build_conds(df, d, sym, tf, btc_tab, own_tab):
         lb = 180 if tf == "4h" else 30
         diff = (c / c.shift(lb) - 1).values - btc_ret
         cond["rs"] = (diff > 0) if d == 1 else (diff < 0)
-    cond["breakout"] = ((c > h.shift(1)) if d == 1 else (c < l.shift(1))) & (df["rvol"] > 1.5)
+    # v15: فلتر Volume 1.0x + Breakout
+    cond["breakout"] = ((c > h.shift(1)) if d == 1 else (c < l.shift(1))) & (df["rvol"] >= VOL_MULT)
     glo, ghi = (45, 70) if d == 1 else (30, 55)
     cond["gray_zone"] = cond["trend"] & df["rsi"].between(glo, ghi)
     return cond[COND_KEYS].fillna(False).astype(bool)
@@ -582,19 +587,29 @@ def evaluate(df, sym, tf, btc_tab, own_tab, degraded=False):
     rank = np.where(side == 1, parts[1][0], parts[-1][0])
     ok = np.where(side == 1, parts[1][1], parts[-1][1])
     setup = np.where(side == 1, parts[1][2], parts[-1][2])
-    # v14: حُذف شرط منع الشراء بـ RSI > 75
     if degraded:
         rank = np.minimum(rank, 0)
     return pd.DataFrame({"side": side, "rank": rank, "ok": ok, "setup": setup}, index=df.index)
 
 
-# ═══════════════════════════ المستويات ═══════════════════════════
-def make_levels(df, i, side):
+# ═══════════════════════════ المستويات v15 ═══════════════════════════
+def make_levels(df, i, side, price=None):
+    """v15: الدخول قريب من السعر الحالي (max 0.3%)."""
     r = df.iloc[i]
     atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0.0
     if atr <= 0:
         return None
-    entry = float(r["high"]) + 0.02 * atr if side == 1 else float(r["low"]) - 0.02 * atr
+    last_close = float(r["close"])
+    cur_price = float(price) if price else last_close
+    # الدخول قريب من السعر الحالي
+    if side == 1:
+        raw_entry = max(last_close, cur_price)
+        max_entry = cur_price * (1 + MAX_ENTRY_DIST / 100)
+        entry = min(raw_entry, max_entry)
+    else:
+        raw_entry = min(last_close, cur_price)
+        min_entry = cur_price * (1 - MAX_ENTRY_DIST / 100)
+        entry = max(raw_entry, min_entry)
     sl = entry * (1 - side * SL_PCT / 100)
     risk = abs(entry - sl)
     if risk <= 0:
@@ -722,11 +737,11 @@ def analyze(sym):
     fake = detect_fake_pump(df, i)
     if fake and side == 1:
         rank = 0
-    lv = make_levels(df, i, side)
-    if lv is None:
-        raise NoData(sym)
     price, _ = live_price(sym)
     price = float(price or df["close"].iloc[-1])
+    lv = make_levels(df, i, side, price)
+    if lv is None:
+        raise NoData(sym)
     last = df.iloc[-1]
     return dict(sym=sym, tf=tf, df=df, side=side, rank=rank, grade=GRADE[rank],
                 setup=str(sig["setup"].iloc[i]), ok=int(sig["ok"].iloc[i]),
@@ -1234,6 +1249,15 @@ _cooldown = {}
 
 async def gate(update):
     user = update.effective_user
+    # وضع الصيانة: امنع الكل ما عدا الأدمن
+    if MAINTENANCE and user.id != ADMIN_ID:
+        await update.message.reply_text(
+            f"🔧 <b>البوت في صيانة</b>\n\n"
+            f"نعمل حالياً على تحسين دقة الإشارات.\n"
+            f"سنعود قريباً بإذن الله.\n\n"
+            f"📞 للاستفسار: {CONTACT_LINK}",
+            parse_mode=ParseMode.HTML)
+        return "maintenance", False
     rec = touch_user(user)
     st, day = user_status(user.id, rec)
     if st == "blocked":
@@ -1264,8 +1288,6 @@ async def handle_symbol(update: Update, raw: str, to_channel=False):
         kb = keyboard(sym, res["tf"], tier)
         img = await asyncio.to_thread(render_chart, res, 4)
         cap = build_caption(res, tier)
-        if st == "warning":
-            cap = cap[:950] + "\n⚠️ انتهت التجربة - /vip"
         await update.message.reply_photo(photo=img, caption=cap, parse_mode=ParseMode.HTML,
                                          protect_content=(st != "admin" and PROTECT),
                                          reply_markup=kb)
@@ -1290,6 +1312,13 @@ async def handle_symbol(update: Update, raw: str, to_channel=False):
 
 # ═══════════════════════════ أوامر البوت ═══════════════════════════
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if MAINTENANCE and update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text(
+            f"🔧 <b>البوت في صيانة</b>\n\n"
+            f"نعمل على تحسين دقة الإشارات.\n"
+            f"سنعود قريباً.\n\n📞 {CONTACT_LINK}",
+            parse_mode=ParseMode.HTML)
+        return
     touch_user(update.effective_user)
     await update.message.reply_text(
         f"👋 أهلاً بك في <b>{BRAND}</b>\n\n"
@@ -1301,6 +1330,9 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if MAINTENANCE and update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text(f"🔧 البوت في صيانة. {CONTACT_LINK}")
+        return
     await update.message.reply_text(
         f"ℹ️ <b>مساعدة {BRAND}</b>\n\n"
         "• أرسل رمز عملة (مثل BTC) للحصول على التحليل.\n"
@@ -1315,6 +1347,9 @@ async def cmd_myid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_vip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if MAINTENANCE and update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text(f"🔧 البوت في صيانة. {CONTACT_LINK}")
+        return
     u = update.effective_user
     rec = touch_user(u)
     st, day = user_status(u.id, rec)
@@ -1322,7 +1357,7 @@ async def cmd_vip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
              "المميزات:",
              "✅ 4 أهداف كاملة لكل توصية",
              "✅ إشارات VIP حصرية",
-             "✅ تنبيهات لحظية عند تحقق الأهداف",
+             "✅ تنبيهات لحظية",
              "✅ تحليل تلقائي كل 4 ساعات",
              "✅ رادار الحيتان",
              "",
@@ -1599,8 +1634,9 @@ async def cmd_dashboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         nu = len(store.data["users"])
         nv = sum(1 for k in store.data["vip"] if is_vip(int(k)))
     down = [n for n, t in _down.items() if t > time.time()]
+    maint = "🔧 صيانة" if MAINTENANCE else "✅ يعمل"
     await update.message.reply_text(
-        f"🎛 <b>Dashboard v14</b>\n"
+        f"🎛 <b>Dashboard v15</b> — {maint}\n"
         f"المستخدمون: {nu} | VIP: {nv}\n"
         f"صفقات نشطة: {len(act)}\n"
         f"التخزين: {store.remote_msg}\n"
@@ -1712,7 +1748,7 @@ async def post_init(app):
         pass
     app.bot_data["tasks"] = [asyncio.create_task(autopost_loop(app)),
                              asyncio.create_task(tracker_loop(app))]
-    log.info("v14 started | storage=%s", store.remote_msg)
+    log.info("v15 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 
 
 async def post_shutdown(app):
