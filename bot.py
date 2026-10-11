@@ -465,14 +465,10 @@ def detect_trend(df, i):
 def mtf_score(sym, side):
     try:
         tfs = []
-        if sym in MAJORS:
-            tfs = ["1d", "4h"]
-        elif sym in MEME_COINS:
-            tfs = ["4h", "1d"]
-        else:
-            tfs = ["4h", "1h", "1d"]
-        confirms = 0
-        total = 0
+        if sym in MAJORS: tfs = ["1d", "4h"]
+        elif sym in MEME_COINS: tfs = ["4h", "1d"]
+        else: tfs = ["4h", "1h", "1d"]
+        confirms = 0; total = 0
         for tf in tfs:
             try:
                 df = get_candles(sym, tf, 250, ttl=300, min_bars=100)
@@ -481,11 +477,9 @@ def mtf_score(sym, side):
                 if pd.isna(last["ema50"]) or pd.isna(last["ema200"]): continue
                 total += 1
                 if side == 1:
-                    if last["close"] > last["ema50"] and last["close"] > last["ema200"]:
-                        confirms += 1
+                    if last["close"] > last["ema50"] and last["close"] > last["ema200"]: confirms += 1
                 else:
-                    if last["close"] < last["ema50"] and last["close"] < last["ema200"]:
-                        confirms += 1
+                    if last["close"] < last["ema50"] and last["close"] < last["ema200"]: confirms += 1
             except Exception: continue
         if total == 0: return 0, 0
         return confirms, total
@@ -494,8 +488,7 @@ def mtf_score(sym, side):
 def v23_score(df, i, side):
     try:
         if i < 30: return 0, {"vwap": False, "supertrend": False, "macd": False, "bb": False}
-        sub = df.iloc[:i+1].copy()
-        close = sub["close"]
+        sub = df.iloc[:i+1].copy(); close = sub["close"]
         tp = (sub["high"] + sub["low"] + sub["close"]) / 3
         vwap = (tp * sub["volume"]).cumsum() / sub["volume"].cumsum()
         vwap_ma = vwap.rolling(V23_VWAP_PERIOD).mean()
@@ -517,8 +510,7 @@ def v23_score(df, i, side):
             else: macd_ok = macd_now < macd_sig and rsi_now > 25
         else: macd_ok = False
         if "bb_up" in sub.columns and not pd.isna(sub["bb_up"].iloc[-1]):
-            bb_up = float(sub["bb_up"].iloc[-1])
-            bb_lo = float(sub["bb_lo"].iloc[-1])
+            bb_up = float(sub["bb_up"].iloc[-1]); bb_lo = float(sub["bb_lo"].iloc[-1])
             bb_mid = float(sub["bb_mid"].iloc[-1])
             bb_width = (bb_up - bb_lo) / bb_mid if bb_mid > 0 else 0
             widths = ((sub["bb_up"] - sub["bb_lo"]) / sub["bb_mid"]).rolling(V23_BB_PERIOD).mean()
@@ -714,6 +706,7 @@ def scan_sync(symbols, workers=SCAN_WORKERS):
         except Exception: return None
     with ThreadPoolExecutor(workers) as ex:
         return [r for r in ex.map(one, symbols) if r]
+      
 def new_trade(sym, tf, side, lv, bar_t, grade, setup, size_pct=0.05):
     return dict(id=f"{sym}-{tf}-{bar_t}", coin=sym, tf=tf, side=side, grade=grade, setup=setup,
                 entry=lv["entry"], sl=lv["sl"], risk=lv["risk"], size_pct=size_pct,
@@ -784,7 +777,7 @@ def render_chart(res, tier="free", published=False):
     ax = fig.add_subplot(gs[0], facecolor=bg)
     axr = fig.add_subplot(gs[1], facecolor=bg, sharex=ax)
     x = np.arange(len(df))
-    ax.fill_between(x, df["bb_lo"], df["bb_up"], color=navy, alpha=0.20, label="نطاق التقلب")
+    ax.fill_between(x, df["bb_lo"], df["bb_up"], color=navy, alpha=0.20, label="Bollinger")
     ax.plot(x, df["bb_up"], color=navy, lw=1.2, ls="--", alpha=0.95)
     ax.plot(x, df["bb_mid"], color=navy, lw=0.9, ls="-", alpha=0.60)
     ax.plot(x, df["bb_lo"], color=navy, lw=1.2, ls="--", alpha=0.95)
@@ -826,8 +819,7 @@ def render_chart(res, tier="free", published=False):
     ax.legend(loc="upper left", fontsize=8, facecolor=bg, edgecolor="#cccccc", labelcolor=fg)
     axr.legend(loc="upper left", fontsize=7.5, facecolor=bg, edgecolor="#cccccc", labelcolor=fg)
     fig.text(0.5, 0.5, "Ryma Crypto", fontsize=58, color="#0d2b52",
-             alpha=0.08, ha="center", va="center", fontweight="bold",
-             rotation=25)
+             alpha=0.08, ha="center", va="center", fontweight="bold", rotation=25)
     fig.text(0.985, 0.012, "Ryma Crypto", fontsize=10, color="#c9a227",
              ha="right", va="bottom", fontweight="bold")
     buf = io.BytesIO()
@@ -838,36 +830,22 @@ def render_chart(res, tier="free", published=False):
 def caption_core(res, tier="free"):
     side, lv, sym = res["side"], res["lv"], res["sym"]
     side_word = "🟢 شراء (LONG)" if side == 1 else "🔴 بيع (SHORT)"
-    lines = [
-        f"📌 #{sym}/USDT",
-        "",
-        f"🎯 التوصية: {side_word}",
-        "",
-        f"💵 الدخول: {fmt(lv['entry'])}",
-        f"🛑 وقف الخسارة: {fmt(lv['sl'])}",
-        "",
-    ]
+    lines = [f"📌 #{sym}/USDT", "", f"🎯 التوصية: {side_word}", "",
+             f"💵 الدخول: {fmt(lv['entry'])}",
+             f"🛑 وقف الخسارة: {fmt(lv['sl'])}", ""]
     n_tps = 4 if tier in ("admin","vip") else 2
     for i,tp in enumerate(lv["tps"][:n_tps], 1):
         lines.append(f"🎯 الهدف {i}: {fmt(tp['px'])}")
-    lines += [
-        "",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        "",
-        "⚠️ تنبيهات مهمة:",
-        "• ليست كل صفقاتنا ناجحة — قد نصيب وقد نخطئ.",
-        "• إدارة المخاطر هي سر النجاح.",
-        "• التزم بحجم الصفقة المناسب لكل صفقة.",
-        "• هذه ليست نصيحة مالية — اعمل بحثك الخاص.",
-        "",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        "",
-        "💎 للحصول على التحليل الفني الكامل وأهداف إضافية:",
-    ]
+    lines += ["", "━━━━━━━━━━━━━━━━━━━━━━", "",
+              "⚠️ تنبيهات مهمة:",
+              "• ليست كل صفقاتنا ناجحة — قد نصيب وقد نخطئ.",
+              "• إدارة المخاطر هي سر النجاح.",
+              "• التزم بحجم الصفقة المناسب لكل صفقة.",
+              "• هذه ليست نصيحة مالية — اعمل بحثك الخاص.",
+              "", "━━━━━━━━━━━━━━━━━━━━━━", "",
+              "💎 للحصول على التحليل الفني الكامل وأهداف إضافية:"]
     return "\n".join(lines)
-
-def caption_free(res):
-    return caption_core(res, "free")
+def caption_free(res): return caption_core(res, "free")
 def caption_vip(res):
     base = caption_core(res, "vip")
     return base + f"\n\n🏆 الدرجة: {res['grade']} | تأكيد: {res.get('v23_score',0)}/4"
@@ -879,9 +857,7 @@ def keyboard_free(sym, tf):
         [InlineKeyboardButton("🔄 تحديث التحليل", callback_data=f"tf:{sym}:{tf}")],
     ])
 def keyboard_vip(sym, tf):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 تحديث التحليل", callback_data=f"tf:{sym}:{tf}")],
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 تحديث التحليل", callback_data=f"tf:{sym}:{tf}")]])
 def keyboard_admin(sym, tf):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 المؤشرات الكاملة", callback_data=f"ind:{sym}:{tf}"),
@@ -932,13 +908,13 @@ def build_vip_page():
 def build_admin_extras(res):
     trend_ar = {"strong_up":"صاعد قوي 📈","up":"صاعد","strong_down":"هابط قوي 📉",
                 "down":"هابط","range":"عرضي ↔️","unknown":"—"}.get(res.get("trend",""), "—")
-    lines = [f"📊 المؤشرات - {res['sym']}/{res['tf']}", ""]
-    lines.append(f"📈 RSI: {res['rsi']:.1f}")
-    lines.append(f"📊 ATR: {res['lv']['atr']:.4f}")
-    lines.append(f"📉 MACD: {res['macd']:.4f}")
-    lines.append(f"🎯 الاستراتيجية: {res['strategy']}")
-    lines.append(f"🏆 الدرجة: {res['grade']}")
-    lines.append(f"📊 الاتجاه: {trend_ar}")
+    lines = [f"📊 المؤشرات - {res['sym']}/{res['tf']}", "",
+             f"📈 RSI: {res['rsi']:.1f}",
+             f"📊 ATR: {res['lv']['atr']:.4f}",
+             f"📉 MACD: {res['macd']:.4f}",
+             f"🎯 الاستراتيجية: {res['strategy']}",
+             f"🏆 الدرجة: {res['grade']}",
+             f"📊 الاتجاه: {trend_ar}"]
     if res.get("candle"): lines.append(f"🕯 الشمعة: {res['candle']}")
     lines.append(f"✅ تأكيد v23: {res.get('v23_score',0)}/4")
     lines.append(f"✅ تأكيد MTF: {res.get('mtf_conf',0)}/{res.get('mtf_total',0)}")
@@ -1263,11 +1239,7 @@ async def cmd_help(update, ctx):
     if MAINTENANCE and update.effective_user.id != ADMIN_ID:
         await update.message.reply_text(f"🔧 البوت في صيانة.\n📞 {CONTACT_LINK}"); return
     touch_user(update.effective_user, "/help")
-    await update.message.reply_text(
-        "ℹ️ مساعدة Ryma Crypto\n\n"
-        "📝 أرسل رمز عملة للتحليل (مثل: BTC)\n"
-        "🆔 /myid - رقم Telegram الخاص بك\n"
-        "💎 /vip - معلومات الاشتراك")
+    await update.message.reply_text("ℹ️ مساعدة Ryma Crypto\n\n📝 أرسل رمز عملة للتحليل (مثل: BTC)\n🆔 /myid - رقم Telegram\n💎 /vip - معلومات الاشتراك")
 async def cmd_myid(update, ctx):
     touch_user(update.effective_user, "/myid")
     await update.message.reply_text(f"🆔 رقمك: {update.effective_user.id}")
@@ -1307,6 +1279,20 @@ async def cmd_bt(update, ctx):
     if len(per) > 1:
         buf = io.BytesIO(csv.encode()); buf.name = f"bt_{arg.lower()}.csv"
         await update.message.reply_document(buf)
+@admin_only
+async def cmd_bt50(update, ctx):
+    touch_user(update.effective_user, "/bt50")
+    try: years = float(ctx.args[0]) if ctx.args else 3.0
+    except ValueError: years = 3.0
+    wait = await update.message.reply_text("⏳ جارٍ جلب أفضل 50 عملة...")
+    syms = await asyncio.to_thread(top_symbols, 50)
+    await wait.edit_text(f"⏳ Backtest {len(syms)} عملة ({years:g} سنة)... قد يستغرق 15-25 دقيقة.")
+    per, a, b = await asyncio.to_thread(backtest_many, syms, years)
+    if not per: await wait.edit_text("❌ لا توجد بيانات"); return
+    text, csv = bt_report(per, a, b, "TOP50")
+    await wait.edit_text(text[:4000])
+    buf = io.BytesIO(csv.encode()); buf.name = "bt_top50.csv"
+    await update.message.reply_document(buf)
 @admin_only
 async def cmd_scan(update, ctx):
     touch_user(update.effective_user, "/scan")
@@ -1395,8 +1381,7 @@ async def cmd_stats(update, ctx):
     R = np.array([x["R"] for x in h])
     g,l = R[R>0].sum(), -R[R<=0].sum()
     pf = round(float(g/l),2) if l>0 else 999
-    await update.message.reply_text(
-        f"📈 آخر 7 أيام\n\nصفقات: {len(R)} | WR: {100*(R>0).mean():.1f}%\nPF: {pf} | المجموع: {R.sum():+.1f}R")
+    await update.message.reply_text(f"📈 آخر 7 أيام\n\nصفقات: {len(R)} | WR: {100*(R>0).mean():.1f}%\nPF: {pf} | المجموع: {R.sum():+.1f}R")
 @admin_only
 async def cmd_history(update, ctx):
     touch_user(update.effective_user, "/history")
@@ -1523,13 +1508,12 @@ async def cb_handler(update, ctx):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("📞 تواصل معنا مباشرة", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
         ])
-        try:
-            await q.message.reply_text(build_vip_page(), reply_markup=kb)
+        try: await q.message.reply_text(build_vip_page(), reply_markup=kb)
         except Exception as e: await q.message.reply_text(f"⚠️ {str(e)[:200]}")
         return
     if q.data.startswith("ind:"):
         if q.from_user.id != ADMIN_ID: return
-        parts = q.data.split(":"); sym = parts[1]
+        sym = q.data.split(":")[1]
         try:
             res = await asyncio.to_thread(get_analysis, sym)
             await q.message.reply_text(build_admin_extras(res))
@@ -1588,8 +1572,8 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
     handlers = [
         ("start",cmd_start),("help",cmd_help),("myid",cmd_myid),("vip",cmd_vip),
-        ("post",cmd_post),("bt",cmd_bt),("backtest",cmd_bt),("scan",cmd_scan),
-        ("short",cmd_short),("delist",cmd_delist),("price",cmd_price),
+        ("post",cmd_post),("bt",cmd_bt),("backtest",cmd_bt),("bt50",cmd_bt50),
+        ("scan",cmd_scan),("short",cmd_short),("delist",cmd_delist),("price",cmd_price),
         ("users",cmd_users),("testchannels",cmd_testchannels),("stats",cmd_stats),
         ("history",cmd_history),("dashboard",cmd_dashboard),
         ("addvip",cmd_addvip),("removevip",cmd_removevip),("viplist",cmd_viplist),
