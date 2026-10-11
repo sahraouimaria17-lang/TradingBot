@@ -571,7 +571,8 @@ def v23_score(df, i, side):
             rsi_now = float(sub["rsi"].iloc[-1]) if not pd.isna(sub["rsi"].iloc[-1]) else 50
             if side == 1: macd_ok = macd_now > macd_sig and rsi_now < 75
             else: macd_ok = macd_now < macd_sig and rsi_now > 25
-        else: macd_ok = False        if "bb_up" in sub.columns and not pd.isna(sub["bb_up"].iloc[-1]):
+        else: macd_ok = False
+if "bb_up" in sub.columns and not pd.isna(sub["bb_up"].iloc[-1]):
             bb_up = float(sub["bb_up"].iloc[-1]); bb_lo = float(sub["bb_lo"].iloc[-1])
             bb_mid = float(sub["bb_mid"].iloc[-1])
             bb_width = (bb_up - bb_lo) / bb_mid if bb_mid > 0 else 0
