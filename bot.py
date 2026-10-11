@@ -1382,16 +1382,6 @@ def trade_step(p, o, h, l, c, atr):
             p["sl"] = _tighten(s, p["sl"], p["ext"] - s*TRAIL_ATR*atr)
     if p["bars"] >= MAX_HOLD: return close_at(p, c, "TIME", ev)
     return ev
-```
-
----
-
-📦 الجزء 2 من 2
-
-هذا الجزء يكمل الملف. الصقه مباشرة بعد الجزء الأول في نفس الملف bot.py.
-
-```python
-
 def fmt(x):
     x = float(x)
     if x >= 1000: return f"{x:,.2f}"
