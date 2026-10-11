@@ -690,17 +690,6 @@ def trade_step(p, o, h, l, c, atr):
             p["sl"] = _tighten(s, p["sl"], p["ext"] - s*TRAIL_ATR*atr)
     if p["bars"] >= MAX_HOLD: return close_at(p, c, "TIME", ev)
     return ev
-    حسناً، أبدأ الآن. 🚀
-
-ملاحظة واحدة فقط قبل: الكود كامل، لكن بسبب طوله، سأضطر لإرساله على رسالتين فقط (كل واحدة ~90KB). هذا أقصى ما يسمح به النظام. أعتذر مقدماً.
-
-الملف اسمه: bot.py
-
----
-
-📦 الجزء 1 من 2
-
-```python
 import os, io, re, json, time, html, asyncio, logging, threading, functools
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor
