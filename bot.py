@@ -714,12 +714,6 @@ def scan_sync(symbols, workers=SCAN_WORKERS):
         except Exception: return None
     with ThreadPoolExecutor(workers) as ex:
         return [r for r in ex.map(one, symbols) if r]
-      📦 الجزء 2 من 2
-
-⚠️ الصق هذا مباشرة بعد الجزء 1 في نفس الملف — بدون سطر فارغ بينهم.
-
-```python
-
 def new_trade(sym, tf, side, lv, bar_t, grade, setup, size_pct=0.05):
     return dict(id=f"{sym}-{tf}-{bar_t}", coin=sym, tf=tf, side=side, grade=grade, setup=setup,
                 entry=lv["entry"], sl=lv["sl"], risk=lv["risk"], size_pct=size_pct,
