@@ -34,16 +34,19 @@ BRAND = "Ryma Crypto"
 EXCHANGES = ["okx", "mexc", "binance", "bybit", "kucoin", "gateio", "bitget"]
 MAJORS = {"BTC","ETH","BNB","SOL","XRP","ADA","DOGE","AVAX","LINK","DOT","LTC","TRX"}
 
+# 30 عملة مختارة (Core + Meme)
 CORE_COINS = ["BTC","ETH","BNB","XRP","ADA","DOGE","AVAX","LTC",
-              "NEAR","SUI","ATOM","TRX","BONK","OP"]
-MEME_COINS = ["TIA","FLOKI","SOL","DOT","INJ"]
-COINS = CORE_COINS + MEME_COINS
+              "NEAR","SUI","ATOM","TRX","APT","SOL","DOT",
+              "LINK","UNI","ARB","OP","INJ"]
+MEME_COINS = ["TIA","FLOKI","BONK","WLD","PEPE","SHIB","MEME","WIF","JUP","RAY"]
+COINS = CORE_COINS + MEME_COINS  # 30 عملة
 
 LINKED_GROUPS = [
     {"BTC","ETH","BNB"},
-    {"SOL","AVAX","NEAR","SUI"},
-    {"DOGE","FLOKI","BONK"},
-    {"TIA","INJ","DOT","ATOM"},
+    {"SOL","AVAX","NEAR","SUI","APT"},
+    {"DOGE","FLOKI","BONK","WIF","SHIB"},
+    {"TIA","INJ","DOT","ATOM","LINK"},
+    {"PEPE","MEME","WLD","JUP","RAY","ARB","UNI","OP"},
 ]
 
 STABLES = {"USDT","USDC","FDUSD","TUSD","DAI","BUSD","USDP","USDD","USDE","PYUSD","EUR","AEUR"}
@@ -299,12 +302,17 @@ def whale_radar(sym):
         ex = get_ex("binance")
         with _ex_lock["binance"]: trades = ex.fetch_trades(f"{sym}/USDT", limit=500)
         large, largest = 0, 0.0
+        buy_vol, sell_vol = 0.0, 0.0
         for t in trades:
             notional = float(t.get("price",0)) * float(t.get("amount",0))
             largest = max(largest, notional)
-            if notional >= 50000: large += 1
-        return large, largest
-    except Exception: return None, None
+            if notional >= 50000:
+                large += 1
+                side = t.get("side", "")
+                if side == "buy": buy_vol += notional
+                elif side == "sell": sell_vol += notional
+        return large, largest, buy_vol, sell_vol
+    except Exception: return None, None, 0, 0
 def liquidity_radar(sym):
     try:
         ex = get_ex("binance")
@@ -327,6 +335,20 @@ def explosion_radar(sym):
         price_change = (float(df["close"].iloc[-1]) / float(df["close"].iloc[-5]) - 1) * 100
         return dict(vol_ratio=round(ratio,2), price_change=round(price_change,2))
     except Exception: return None
+def pump_radar(sym):
+    try:
+        df = get_candles(sym, "1h", 100, ttl=180, min_bars=30)
+        if df.empty or len(df) < 30: return None
+        change_1h = (float(df["close"].iloc[-1]) / float(df["close"].iloc[-2]) - 1) * 100
+        change_4h = (float(df["close"].iloc[-1]) / float(df["close"].iloc[-5]) - 1) * 100
+        last_vol = float(df["volume"].iloc[-1])
+        avg_vol = float(df["volume"].iloc[-20:-1].mean())
+        if avg_vol <= 0: return None
+        vol_ratio = last_vol / avg_vol
+        if change_1h > 3 and vol_ratio > 2:
+            return dict(change_1h=round(change_1h,2), change_4h=round(change_4h,2), vol_ratio=round(vol_ratio,2))
+        return None
+    except Exception: return None
 def bottom_radar(sym):
     try:
         df = get_candles(sym, "4h", 200, ttl=300, min_bars=100)
@@ -336,7 +358,7 @@ def bottom_radar(sym):
         if pd.isna(last["rsi"]) or pd.isna(last["ema200"]): return None
         price = float(last["close"]); ema200 = float(last["ema200"])
         diff_pct = (price / ema200 - 1) * 100
-        if diff_pct < -30 and last["rsi"] < 35:
+        if diff_pct < -25 and last["rsi"] < 40:
             return dict(diff=round(diff_pct,1), rsi=round(float(last["rsi"]),1))
         return None
     except Exception: return None
@@ -347,8 +369,24 @@ def short_radar(sym):
         df = add_indicators(df, 100)
         last = df.iloc[-1]
         if pd.isna(last["rsi"]) or pd.isna(last["ema50"]) or pd.isna(last["ema200"]): return None
-        if last["rsi"] > 72 and last["close"] < last["ema50"] and last["ema50"] < last["ema200"]:
-            return dict(rsi=round(float(last["rsi"]),1))
+        if last["rsi"] > 70 and last["close"] < last["ema50"] and last["ema50"] < last["ema200"]:
+            return dict(rsi=round(float(last["rsi"]),1),
+                       price=round(float(last["close"]),6))
+        return None
+    except Exception: return None
+def alpha_radar(sym):
+    """اكتشف عملات Alpha: نمو قوي + حجم + اتجاه صاعد"""
+    try:
+        df = get_candles(sym, "1d", 100, ttl=600, min_bars=50)
+        if df.empty or len(df) < 50: return None
+        df = add_indicators(df, 100)
+        last = df.iloc[-1]
+        if pd.isna(last["rsi"]) or pd.isna(last["ema20"]) or pd.isna(last["ema50"]): return None
+        change_7d = (float(df["close"].iloc[-1]) / float(df["close"].iloc[-7]) - 1) * 100
+        change_30d = (float(df["close"].iloc[-1]) / float(df["close"].iloc[-30]) - 1) * 100
+        if last["ema20"] > last["ema50"] and 30 < last["rsi"] < 75 and change_7d > 5:
+            return dict(change_7d=round(change_7d,2), change_30d=round(change_30d,2),
+                       rsi=round(float(last["rsi"]),1))
         return None
     except Exception: return None
 _top_cache = [0, []]
@@ -770,17 +808,17 @@ def render_chart(res, tier="free", published=False):
     lv, side, tf = res["lv"], res["side"], res["tf"]
     n_tps = 4 if tier in ("admin","vip") else 2
     bg, fg = "#ffffff", "#111111"
-    navy = "#0d2b52"
+    navy = "#1a3a6c"
     blue = "#1565c0"
     fig = plt.figure(figsize=(11,7.5), facecolor=bg)
     gs = fig.add_gridspec(2,1, height_ratios=[4.2,1], hspace=0.06)
     ax = fig.add_subplot(gs[0], facecolor=bg)
     axr = fig.add_subplot(gs[1], facecolor=bg, sharex=ax)
     x = np.arange(len(df))
-    ax.fill_between(x, df["bb_lo"], df["bb_up"], color=navy, alpha=0.20, label="Bollinger")
-    ax.plot(x, df["bb_up"], color=navy, lw=1.2, ls="--", alpha=0.95)
-    ax.plot(x, df["bb_mid"], color=navy, lw=0.9, ls="-", alpha=0.60)
-    ax.plot(x, df["bb_lo"], color=navy, lw=1.2, ls="--", alpha=0.95)
+    ax.fill_between(x, df["bb_lo"], df["bb_up"], color=navy, alpha=0.25, label="Bollinger Band")
+    ax.plot(x, df["bb_up"], color=navy, lw=1.4, ls="--", alpha=0.95)
+    ax.plot(x, df["bb_mid"], color=navy, lw=1.0, ls="-", alpha=0.65)
+    ax.plot(x, df["bb_lo"], color=navy, lw=1.4, ls="--", alpha=0.95)
     if tier in ("admin","vip"):
         ax.plot(x, df["ema20"], color="#f5c518", lw=1.3, label="EMA 20")
         ax.plot(x, df["ema50"], color="#1976d2", lw=1.3, label="EMA 50")
@@ -818,8 +856,8 @@ def render_chart(res, tier="free", published=False):
     ax.set_title(title, color=col, fontsize=13, fontweight="bold", loc="left")
     ax.legend(loc="upper left", fontsize=8, facecolor=bg, edgecolor="#cccccc", labelcolor=fg)
     axr.legend(loc="upper left", fontsize=7.5, facecolor=bg, edgecolor="#cccccc", labelcolor=fg)
-    fig.text(0.5, 0.5, "Ryma Crypto", fontsize=58, color="#0d2b52",
-             alpha=0.08, ha="center", va="center", fontweight="bold", rotation=25)
+    fig.text(0.5, 0.5, "Ryma Crypto", fontsize=58, color=navy,
+             alpha=0.10, ha="center", va="center", fontweight="bold", rotation=25)
     fig.text(0.985, 0.012, "Ryma Crypto", fontsize=10, color="#c9a227",
              ha="right", va="bottom", fontweight="bold")
     buf = io.BytesIO()
@@ -862,7 +900,8 @@ def keyboard_admin(sym, tf):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 المؤشرات الكاملة", callback_data=f"ind:{sym}:{tf}"),
          InlineKeyboardButton("💧 رادار السيولة", callback_data=f"liq:{sym}")],
-        [InlineKeyboardButton("🧪 Backtest", callback_data=f"btcb:{sym}")],
+        [InlineKeyboardButton("🐋 رادار الحيتان", callback_data=f"whale:{sym}"),
+         InlineKeyboardButton("🧪 Backtest", callback_data=f"btcb:{sym}")],
         [InlineKeyboardButton("🔄 تحديث التحليل", callback_data=f"tf:{sym}:{tf}")],
     ])
 def keyboard(sym, tf, tier):
@@ -890,7 +929,8 @@ def build_vip_page():
         "✅ 🐋 رادار الحيتان\n"
         "✅ 💧 رادار السيولة\n"
         "✅ 📉 رادار القيعان\n"
-        "✅ 🔻 رادار الفرص الشورت\n\n"
+        "✅ 🔻 رادار الفرص الشورت\n"
+        "✅ ⭐ رادار عملات Alpha\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "💎✨ كيف تنضم لقناة VIP؟ ✨💎\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1313,8 +1353,13 @@ async def cmd_short(update, ctx):
     wait = await update.message.reply_text("⏳ جارٍ الفحص...")
     res = await asyncio.to_thread(scan_sync, COINS)
     res = [r for r in res if r["side"]==-1 and r["rank"]>=0]
-    if not res: await wait.edit_text("لا توجد فرص شورت"); return
-    await wait.edit_text("🔻 فرص شورت:\n" + "\n".join(f"{r['grade']} | #{r['sym']} | v23:{r.get('v23_score',0)}" for r in res[:15]))
+    if not res:
+        await wait.edit_text("لا توجد فرص شورت حالياً")
+        return
+    lines = ["🔻 فرص الشورت", ""]
+    for r in res[:15]:
+        lines.append(f"{r['grade']} | #{r['sym']} | v23:{r.get('v23_score',0)}")
+    await wait.edit_text("\n".join(lines))
 @admin_only
 async def cmd_delist(update, ctx):
     touch_user(update.effective_user, "/delist")
@@ -1331,9 +1376,13 @@ async def cmd_delist(update, ctx):
             for w in re.findall(r'\b[A-Z0-9]{2,10}\b', a.get("title","")):
                 if w in skip or w.isdigit() or len(w)<2: continue
                 coins.add(w)
-        if not coins: await wait.edit_text("لا توجد عملات ملغاة"); return
-        await wait.edit_text("⚠️ عملات ملغاة:\n\n" + "\n".join("• " + c for c in sorted(coins)))
-    except Exception as e: await wait.edit_text(f"⚠️ {str(e)[:150]}")
+        if not coins:
+            await wait.edit_text("لا توجد عملات ملغاة")
+            return
+        msg = "⚠️ عملات ملغاة\n\n" + "\n".join(f"• {c}" for c in sorted(coins))
+        await wait.edit_text(msg)
+    except Exception as e:
+        await wait.edit_text(f"⚠️ خطأ: {str(e)[:150]}")
 @admin_only
 async def cmd_price(update, ctx):
     touch_user(update.effective_user, "/price")
@@ -1429,16 +1478,26 @@ async def cmd_viplist(update, ctx):
 async def cmd_whales(update, ctx):
     touch_user(update.effective_user, "/whales")
     wait = await update.message.reply_text("⏳ جارٍ فحص الحيتان...")
-    syms = await asyncio.to_thread(top_symbols, 20)
+    syms = await asyncio.to_thread(top_symbols, 30)
     rows = []
-    for s in syms[:15]:
-        w, largest = await asyncio.to_thread(whale_radar, s)
-        if w and w >= 5: rows.append((s, w, largest))
-    if not rows: await wait.edit_text("لا توجد حركة حيتان"); return
-    rows.sort(key=lambda x: -x[1])
+    for s in syms[:20]:
+        w, largest, buy_v, sell_v = await asyncio.to_thread(whale_radar, s)
+        if w and w >= 3:
+            rows.append((s, w, largest, buy_v, sell_v))
+    if not rows:
+        await wait.edit_text("لا توجد حركة حيتان حالياً")
+        return
+    rows.sort(key=lambda x: -x[2])
     lines = ["🐋 رادار الحيتان", ""]
-    for s, w, largest in rows[:10]:
+    for s, w, largest, bv, sv in rows[:10]:
+        total = bv + sv
+        if total > 0:
+            buy_pct = (bv / total) * 100
+            direction = "🟢 شراء" if buy_pct > 55 else ("🔴 بيع" if buy_pct < 45 else "⚖️ متوازن")
+        else:
+            direction = "⚖️"
         lines.append(f"• #{s}: {w} صفقة كبيرة | أقصى ${largest:,.0f}")
+        lines.append(f"   {direction} ({buy_pct:.0f}% شراء)")
     await wait.edit_text("\n".join(lines))
 @admin_only
 async def cmd_liquidity(update, ctx):
@@ -1459,16 +1518,35 @@ async def cmd_liquidity(update, ctx):
 async def cmd_explosions(update, ctx):
     touch_user(update.effective_user, "/explosions")
     wait = await update.message.reply_text("⏳ رادار الانفجارات...")
-    syms = await asyncio.to_thread(top_symbols, 30)
+    syms = await asyncio.to_thread(top_symbols, 40)
     rows = []
-    for s in syms[:20]:
+    for s in syms[:30]:
         r = await asyncio.to_thread(explosion_radar, s)
-        if r and r["vol_ratio"] >= 2.5: rows.append((s, r))
-    if not rows: await wait.edit_text("لا توجد انفجارات"); return
+        if r and r["vol_ratio"] >= 2.0: rows.append((s, r))
+    if not rows:
+        await wait.edit_text("لا توجد انفجارات حالياً")
+        return
     rows.sort(key=lambda x: -x[1]["vol_ratio"])
     lines = ["💥 رادار الانفجارات", ""]
     for s, r in rows[:10]:
         lines.append(f"• #{s}: حجم x{r['vol_ratio']} | سعر {r['price_change']:+.2f}%")
+    await wait.edit_text("\n".join(lines))
+@admin_only
+async def cmd_pump(update, ctx):
+    touch_user(update.effective_user, "/pump")
+    wait = await update.message.reply_text("⏳ جارٍ البحث عن عملات في صعود قوي...")
+    syms = await asyncio.to_thread(top_symbols, 40)
+    rows = []
+    for s in syms[:30]:
+        r = await asyncio.to_thread(pump_radar, s)
+        if r: rows.append((s, r))
+    if not rows:
+        await wait.edit_text("لا توجد عملات في صعود قوي حالياً")
+        return
+    rows.sort(key=lambda x: -x[1]["change_1h"])
+    lines = ["🚀 عملات في صعود قوي", ""]
+    for s, r in rows[:10]:
+        lines.append(f"• #{s}: 1س {r['change_1h']:+.2f}% | 4س {r['change_4h']:+.2f}% | حجم x{r['vol_ratio']}")
     await wait.edit_text("\n".join(lines))
 @admin_only
 async def cmd_bottoms(update, ctx):
@@ -1476,10 +1554,12 @@ async def cmd_bottoms(update, ctx):
     wait = await update.message.reply_text("⏳ رادار القيعان...")
     syms = await asyncio.to_thread(top_symbols, 40)
     rows = []
-    for s in syms[:25]:
+    for s in syms[:30]:
         r = await asyncio.to_thread(bottom_radar, s)
         if r: rows.append((s, r))
-    if not rows: await wait.edit_text("لا توجد قيعان"); return
+    if not rows:
+        await wait.edit_text("لا توجد قيعان حالياً")
+        return
     rows.sort(key=lambda x: x[1]["diff"])
     lines = ["📉 رادار القيعان", ""]
     for s, r in rows[:10]:
@@ -1488,16 +1568,35 @@ async def cmd_bottoms(update, ctx):
 @admin_only
 async def cmd_shorts_radar(update, ctx):
     touch_user(update.effective_user, "/shortsradar")
-    wait = await update.message.reply_text("⏳ رادار الشورت...")
+    wait = await update.message.reply_text("⏳ رادار الفرص الشورت...")
     syms = await asyncio.to_thread(top_symbols, 40)
     rows = []
-    for s in syms[:25]:
+    for s in syms[:30]:
         r = await asyncio.to_thread(short_radar, s)
         if r: rows.append((s, r))
-    if not rows: await wait.edit_text("لا توجد فرص"); return
+    if not rows:
+        await wait.edit_text("لا توجد فرص شورت حالياً")
+        return
     lines = ["🔻 رادار الفرص الشورت", ""]
     for s, r in rows[:10]:
-        lines.append(f"• #{s}: RSI {r['rsi']} | اتجاه ضعيف")
+        lines.append(f"• #{s}: RSI {r['rsi']} | سعر {fmt(r['price'])}")
+    await wait.edit_text("\n".join(lines))
+@admin_only
+async def cmd_alpha(update, ctx):
+    touch_user(update.effective_user, "/alpha")
+    wait = await update.message.reply_text("⏳ رادار عملات Alpha...")
+    syms = await asyncio.to_thread(top_symbols, 50)
+    rows = []
+    for s in syms[:35]:
+        r = await asyncio.to_thread(alpha_radar, s)
+        if r: rows.append((s, r))
+    if not rows:
+        await wait.edit_text("لا توجد عملات Alpha حالياً")
+        return
+    rows.sort(key=lambda x: -x[1]["change_7d"])
+    lines = ["⭐ رادار عملات Alpha", ""]
+    for s, r in rows[:10]:
+        lines.append(f"• #{s}: 7ي {r['change_7d']:+.2f}% | 30ي {r['change_30d']:+.2f}% | RSI {r['rsi']}")
     await wait.edit_text("\n".join(lines))
 
 async def cb_handler(update, ctx):
@@ -1523,16 +1622,36 @@ async def cb_handler(update, ctx):
         if q.from_user.id != ADMIN_ID: return
         sym = q.data.split(":")[1]
         liq = await asyncio.to_thread(liquidity_radar, sym)
-        if not liq: await q.message.reply_text("لا توجد بيانات"); return
+        if not liq:
+            await q.message.reply_text("لا توجد بيانات")
+            return
         await q.message.reply_text(
             f"💧 سيولة {sym}\n🟢 Bids: ${liq['bids']:,.0f}\n🔴 Asks: ${liq['asks']:,.0f}\n📊 {liq['ratio']*100:.1f}%")
+        return
+    if q.data.startswith("whale:"):
+        if q.from_user.id != ADMIN_ID: return
+        sym = q.data.split(":")[1]
+        w, largest, bv, sv = await asyncio.to_thread(whale_radar, sym)
+        if w is None:
+            await q.message.reply_text("لا توجد بيانات")
+            return
+        total = bv + sv
+        buy_pct = (bv / total * 100) if total > 0 else 0
+        direction = "🟢 شراء" if buy_pct > 55 else ("🔴 بيع" if buy_pct < 45 else "⚖️ متوازن")
+        await q.message.reply_text(
+            f"🐋 رادار الحيتان {sym}\n\n"
+            f"📊 {w} صفقة كبيرة\n"
+            f"💰 أقصى صفقة: ${largest:,.0f}\n"
+            f"{direction} ({buy_pct:.0f}% شراء)")
         return
     if q.data.startswith("btcb:"):
         if q.from_user.id != ADMIN_ID: return
         sym = q.data.split(":")[1]
         try:
             per, a, b = await asyncio.to_thread(backtest_many, [sym], 3.0)
-            if not per: await q.message.reply_text("لا توجد بيانات"); return
+            if not per:
+                await q.message.reply_text("لا توجد بيانات")
+                return
             text, _ = bt_report(per, a, b, sym)
             await q.message.reply_text(text[:4000])
         except Exception as e: await q.message.reply_text(f"⚠️ {str(e)[:200]}")
@@ -1578,8 +1697,8 @@ def main():
         ("history",cmd_history),("dashboard",cmd_dashboard),
         ("addvip",cmd_addvip),("removevip",cmd_removevip),("viplist",cmd_viplist),
         ("whales",cmd_whales),("liquidity",cmd_liquidity),
-        ("explosions",cmd_explosions),("bottoms",cmd_bottoms),
-        ("shortsradar",cmd_shorts_radar),
+        ("explosions",cmd_explosions),("pump",cmd_pump),("bottoms",cmd_bottoms),
+        ("shortsradar",cmd_shorts_radar),("alpha",cmd_alpha),
     ]
     for name, fn in handlers:
         app.add_handler(CommandHandler(name, fn))
