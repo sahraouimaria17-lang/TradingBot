@@ -36,9 +36,11 @@ MAJORS = {"BTC","ETH","BNB","SOL","XRP","ADA","DOGE","AVAX","LINK","DOT","LTC","
 
 CORE_COINS = ["BTC","ETH","BNB","XRP","ADA","DOGE","AVAX","LTC",
               "NEAR","SUI","ATOM","TRX","APT","SOL","DOT",
-              "LINK","UNI","ARB","OP","INJ"]
-MEME_COINS = ["TIA","FLOKI","BONK","WLD","PEPE","SHIB","WIF","JUP","RAY","MEME"]
+              "LINK","ARB","OP"]
+MEME_COINS = ["TIA","FLOKI"]
 COINS = CORE_COINS + MEME_COINS
+
+WEAK_COINS = {"UNI","INJ","BONK","WIF","SHIB","JUP","RAY","MEME","WLD","PEPE"}
 
 LINKED_GROUPS = [
     {"BTC","ETH","BNB"},
@@ -298,30 +300,41 @@ def all_prices(sym):
         return {n:p for n,p in pool.map(one, EXCHANGES) if p}
 def whale_radar(sym):
     try:
-        ex = get_ex("binance")
-        with _ex_lock["binance"]: trades = ex.fetch_trades(f"{sym}/USDT", limit=500)
-        large, largest = 0, 0.0
-        buy_vol, sell_vol = 0.0, 0.0
-        for t in trades:
-            notional = float(t.get("price",0)) * float(t.get("amount",0))
-            largest = max(largest, notional)
-            if notional >= 50000:
-                large += 1
-                side = t.get("side", "")
-                if side == "buy": buy_vol += notional
-                elif side == "sell": sell_vol += notional
-        return large, largest, buy_vol, sell_vol
+        for ex_name in ["binance", "mexc", "okx", "bybit"]:
+            try:
+                ex = get_ex(ex_name)
+                with _ex_lock[ex_name]:
+                    trades = ex.fetch_trades(f"{sym}/USDT", limit=500)
+                if not trades: continue
+                large, largest = 0, 0.0
+                buy_vol, sell_vol = 0.0, 0.0
+                for t in trades:
+                    notional = float(t.get("price",0)) * float(t.get("amount",0))
+                    largest = max(largest, notional)
+                    if notional >= 20000:
+                        large += 1
+                        side = t.get("side", "")
+                        if side == "buy": buy_vol += notional
+                        elif side == "sell": sell_vol += notional
+                if largest > 0:
+                    return large, largest, buy_vol, sell_vol
+            except Exception: continue
+        return None, None, 0, 0
     except Exception: return None, None, 0, 0
 def liquidity_radar(sym):
     try:
-        ex = get_ex("binance")
-        with _ex_lock["binance"]: ob = ex.fetch_order_book(f"{sym}/USDT", limit=50)
-        bids = sum(b[0]*b[1] for b in ob.get("bids",[]))
-        asks = sum(a[0]*a[1] for a in ob.get("asks",[]))
-        total = bids + asks
-        if total <= 0: return None
-        ratio = bids / total
-        return dict(bids=bids, asks=asks, ratio=ratio)
+        for ex_name in ["binance", "mexc", "okx", "bybit"]:
+            try:
+                ex = get_ex(ex_name)
+                with _ex_lock[ex_name]:
+                    ob = ex.fetch_order_book(f"{sym}/USDT", limit=50)
+                bids = sum(b[0]*b[1] for b in ob.get("bids",[]))
+                asks = sum(a[0]*a[1] for a in ob.get("asks",[]))
+                total = bids + asks
+                if total > 0:
+                    return dict(bids=bids, asks=asks, ratio=bids/total, source=ex_name)
+            except Exception: continue
+        return None
     except Exception: return None
 def explosion_radar(sym):
     try:
@@ -367,7 +380,7 @@ def short_radar(sym):
         if df.empty or len(df) < 100: return None
         df = add_indicators(df, 100)
         last = df.iloc[-1]
-        if pd.isna(last["rsi"]) or pd.isna(last["ema50"]) or pd.isna(last["ema200"]): return None
+        if pd.isna(last["rsi"]) or pd.isna(last["ema50"]): return None
         if last["rsi"] > 65 and last["close"] < last["ema50"]:
             return dict(rsi=round(float(last["rsi"]),1),
                        price=round(float(last["close"]),6))
@@ -811,14 +824,14 @@ def render_chart(res, tier="free", published=False):
     lv, side, tf = res["lv"], res["side"], res["tf"]
     n_tps = 4 if tier in ("admin","vip") else 2
     bg, fg = "#ffffff", "#111111"
-    navy = "#0d1b3e"
+    navy = "#1e3a8a"
     blue = "#1565c0"
     fig = plt.figure(figsize=(11,7.5), facecolor=bg)
     gs = fig.add_gridspec(2,1, height_ratios=[4.2,1], hspace=0.06)
     ax = fig.add_subplot(gs[0], facecolor=bg)
     axr = fig.add_subplot(gs[1], facecolor=bg, sharex=ax)
     x = np.arange(len(df))
-    ax.fill_between(x, df["bb_lo"], df["bb_up"], color=navy, alpha=0.30, label="Bollinger Band")
+    ax.fill_between(x, df["bb_lo"], df["bb_up"], color=navy, alpha=0.25, label="Bollinger Band")
     ax.plot(x, df["bb_up"], color=navy, lw=1.5, ls="--", alpha=0.95)
     ax.plot(x, df["bb_mid"], color=navy, lw=1.1, ls="-", alpha=0.70)
     ax.plot(x, df["bb_lo"], color=navy, lw=1.5, ls="--", alpha=0.95)
@@ -988,6 +1001,7 @@ def _linked_block(sym):
     return False
 def can_track(res):
     if res["rank"] < 0: return False
+    if res["sym"] in WEAK_COINS: return False
     act = active_signals()
     if len(act) >= MAX_OPEN: return False
     if any(p["coin"]==res["sym"] for p in act): return False
@@ -1091,7 +1105,7 @@ _free_day = {"d":"","n":0}
 async def run_autopost(bot):
     syms = await asyncio.to_thread(top_symbols, 60)
     results = await asyncio.to_thread(scan_sync, syms)
-    cands = [r for r in results if r["rank"] >= 0]
+    cands = [r for r in results if r["rank"] >= 0 and r["sym"] not in WEAK_COINS]
     cands.sort(key=lambda r: (-r["rank"], -r.get("v23_score",0), -r.get("mtf_conf",0)))
     today = dt.datetime.utcnow().strftime("%Y%m%d")
     if _free_day["d"] != today: _free_day.update(d=today, n=0)
@@ -1342,7 +1356,7 @@ async def cmd_scan(update, ctx):
     wait = await update.message.reply_text("⏳ جارٍ فحص السوق...")
     syms = await asyncio.to_thread(top_symbols, 60)
     res = await asyncio.to_thread(scan_sync, syms[:30])
-    res = [r for r in res if r["rank"] >= 0]
+    res = [r for r in res if r["rank"] >= 0 and r["sym"] not in WEAK_COINS]
     res.sort(key=lambda r: (-r["rank"], -r.get("v23_score",0), -r.get("mtf_conf",0)))
     if not res: await wait.edit_text("لا توجد إشارات"); return
     lines = ["🎯 أفضل الإعدادات", ""]
@@ -1355,7 +1369,7 @@ async def cmd_short(update, ctx):
     touch_user(update.effective_user, "/short")
     wait = await update.message.reply_text("⏳ جارٍ الفحص...")
     res = await asyncio.to_thread(scan_sync, COINS)
-    res = [r for r in res if r["side"]==-1 and r["rank"]>=0]
+    res = [r for r in res if r["side"]==-1 and r["rank"]>=0 and r["sym"] not in WEAK_COINS]
     if not res:
         await wait.edit_text("لا توجد فرص شورت حالياً")
         return
@@ -1446,14 +1460,19 @@ async def cmd_dashboard(update, ctx):
     touch_user(update.effective_user, "/dashboard")
     act = active_signals()
     with store.lock:
-        nu = len(store.data["users"]); nv = sum(1 for k in store.data["vip"] if is_vip(int(k)))
+        nu = len(store.data["users"])
+        nv = sum(1 for k in store.data["vip"] if is_vip(int(k)))
     maint = "🔧 صيانة" if MAINTENANCE else "✅ يعمل"
-    await update.message.reply_text(
+    ch_free = "✅" if CHANNEL_ID else "—"
+    ch_vip = "✅" if VIP_CHANNEL_ID else "—"
+    msg = (
         f"🎛 لوحة التحكم — {maint}\n\n"
         f"👥 المستخدمون: {nu} | 💎 VIP: {nv}\n"
         f"📊 صفقات نشطة: {len(act)}\n"
         f"💾 التخزين: {store.remote_msg}\n"
-        f"📢 القنوات: FREE {'✅' if CHANNEL_ID else '—'} | VIP {'✅' if VIP_CHANNEL_ID else '—'}")
+        f"📢 القنوات: FREE {ch_free} | VIP {ch_vip}"
+    )
+    await update.message.reply_text(msg)
 @admin_only
 async def cmd_addvip(update, ctx):
     touch_user(update.effective_user, "/addvip")
@@ -1485,10 +1504,10 @@ async def cmd_whales(update, ctx):
     rows = []
     for s in syms[:20]:
         w, largest, buy_v, sell_v = await asyncio.to_thread(whale_radar, s)
-        if w and w >= 3:
+        if w and w >= 1:
             rows.append((s, w, largest, buy_v, sell_v))
     if not rows:
-        await wait.edit_text("لا توجد حركة حيتان حالياً")
+        await wait.edit_text("🐋 لا توجد حركة حيتان ملحوظة حالياً\n(السوق هادئ — جرّب لاحقاً)")
         return
     rows.sort(key=lambda x: -x[2])
     lines = ["🐋 رادار الحيتان", ""]
@@ -1509,7 +1528,9 @@ async def cmd_liquidity(update, ctx):
     sym = clean_symbol(ctx.args[0])
     wait = await update.message.reply_text(f"⏳ تحليل السيولة {sym}...")
     liq = await asyncio.to_thread(liquidity_radar, sym)
-    if not liq: await wait.edit_text("لا توجد بيانات"); return
+    if not liq:
+        await wait.edit_text(f"💧 لا توجد بيانات سيولة لـ {sym}\n(جرّب عملة أخرى)")
+        return
     bias = "🟢 ضغط شراء" if liq["ratio"] > 0.55 else ("🔴 ضغط بيع" if liq["ratio"] < 0.45 else "⚖️ متوازن")
     await wait.edit_text(
         f"💧 رادار السيولة {sym}/USDT\n\n"
