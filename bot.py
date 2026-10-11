@@ -40,7 +40,7 @@ CORE_COINS = ["BTC","ETH","BNB","XRP","ADA","DOGE","AVAX","LTC",
 MEME_COINS = ["TIA","FLOKI"]
 COINS = CORE_COINS + MEME_COINS
 
-WEAK_COINS = {"UNI","INJ","BONK","WIF","SHIB","JUP","RAY","MEME","WLD","PEPE"}
+WEAK_COINS = {"UNI","INJ","BONK","WIF","SHIB","JUP","RAY","MEME","WLD","PEPE","ZEC"}
 
 LINKED_GROUPS = [
     {"BTC","ETH","BNB"},
@@ -68,6 +68,10 @@ VIP_POSTS_PER_CYCLE = 5
 FREE_POSTS_PER_CYCLE = 2
 FREE_MAX_PER_DAY = 6
 
+# فلاتر الوقت
+SKIP_HOURS_UTC = set([22, 23, 0, 1, 2])
+SKIP_WEEKDAY = 6  # الأحد
+
 PIVOT_WINDOW = 100
 PIVOT_LOOKBACK = 3
 MIN_PIVOT_DIST = 0.5
@@ -77,15 +81,16 @@ CORE_TP_FRACS = [0.50, 0.25, 0.15, 0.10]
 BE_TRIGGER_R = 0.1
 TRAIL_ATR = 3.0
 MAX_HOLD = 60
-CORE_VOL_MULT = 0.7
+CORE_VOL_MULT = 1.2
 CORE_RSI_LONG = (35, 70)
 CORE_RSI_SHORT = (35, 75)
 EXT_MAX_ATR = 3.5
+REQUIRE_MTF_CONFIRM = True
 
 MEME_TP_PCTS = [3.0, 6.0, 10.0, 15.0]
 MEME_TP_FRACS = [0.50, 0.25, 0.15, 0.10]
 MEME_SL_PCT = 6.5
-MEME_VOL_MULT = 1.5
+MEME_VOL_MULT = 2.0
 MEME_RSI_LOW = 25
 MEME_RSI_HIGH = 75
 MEME_BREAKOUT_BARS = 5
@@ -118,6 +123,15 @@ log = logging.getLogger("ryma")
 START_TS = time.time()
 DAY = 86400
 def now_s(): return int(time.time())
+
+def in_skip_time(ts_ms):
+    try:
+        dt_obj = dt.datetime.utcfromtimestamp(ts_ms / 1000)
+        if dt_obj.hour in SKIP_HOURS_UTC: return True
+        if dt_obj.weekday() == SKIP_WEEKDAY: return True
+        return False
+    except Exception:
+        return False
 
 KEYS = ["users","vip","signals","history","posted"]
 DEFAULTS = {"users":{},"vip":{},"signals":[],"history":[],"posted":{}}
@@ -557,8 +571,7 @@ def v23_score(df, i, side):
             rsi_now = float(sub["rsi"].iloc[-1]) if not pd.isna(sub["rsi"].iloc[-1]) else 50
             if side == 1: macd_ok = macd_now > macd_sig and rsi_now < 75
             else: macd_ok = macd_now < macd_sig and rsi_now > 25
-        else: macd_ok = False
-        if "bb_up" in sub.columns and not pd.isna(sub["bb_up"].iloc[-1]):
+        else: macd_ok = False        if "bb_up" in sub.columns and not pd.isna(sub["bb_up"].iloc[-1]):
             bb_up = float(sub["bb_up"].iloc[-1]); bb_lo = float(sub["bb_lo"].iloc[-1])
             bb_mid = float(sub["bb_mid"].iloc[-1])
             bb_width = (bb_up - bb_lo) / bb_mid if bb_mid > 0 else 0
@@ -725,6 +738,11 @@ def analyze(sym):
         elif _rsi_now > 65: side = -1
         elif trend in ("strong_down", "down"): side = -1
         else: side = 1
+    mtf_conf, mtf_total = mtf_score(sym, side)
+    if REQUIRE_MTF_CONFIRM and mtf_total > 0 and mtf_conf == 0:
+        raise NoData(sym)
+    if in_skip_time(int(df["t"].iloc[-1])):
+        raise NoData(sym)
     grade = grade_setup(df, i, side)
     lv = compute_meme_levels(df, i, side, price) if is_meme else compute_core_levels(df, i, side, price)
     if lv is None: raise NoData(sym)
@@ -733,7 +751,6 @@ def analyze(sym):
     fibs = fib_levels(df)
     last = df.iloc[-1]
     v23_sc, v23_details = v23_score(df, i, side)
-    mtf_conf, mtf_total = mtf_score(sym, side)
     return dict(sym=sym, tf=tf, df=df, side=side, strategy=strategy,
                 rank={"A":2,"B":1,"C":0}.get(grade, 0),
                 grade=grade, setup=strategy,
@@ -990,7 +1007,8 @@ def build_copy_post(res):
 
 def active_signals():
     with store.lock:
-        return [p for p in store.data["signals"] if p["state"] in ("pending","open")]
+        return [p for p in store.data["signals"]
+                if p.get("state", "open") in ("pending","open")]
 def _linked_block(sym):
     act = active_signals()
     for grp in LINKED_GROUPS:
@@ -1029,7 +1047,7 @@ def _archive(p):
         del store.data["history"][:-1500]
         cutoff = time.time()*1000 - 3*DAY*1000
         store.data["signals"] = [q for q in store.data["signals"]
-                                 if q["state"] in ("pending","open") or (q.get("closed") or q["created"]) > cutoff]
+                                 if q.get("state","open") in ("pending","open") or (q.get("closed") or q.get("created",0)) > cutoff]
         store.save("signals","history")
 def check_signals_sync():
     notes = []
@@ -1155,6 +1173,7 @@ def simulate(df, sym, tf, start=210):
         elif short_ok and not long_ok: side = -1
         elif long_ok and short_ok: side = 1 if df["rsi"].iloc[i] < 50 else -1
         else: i += 1; continue
+        if in_skip_time(int(t[i])): i += 1; continue
         grade = grade_setup(df, i, side)
         lv = compute_meme_levels(df, i, side) if is_meme else compute_core_levels(df, i, side)
         if lv is None: i += 1; continue
@@ -1201,7 +1220,7 @@ def bt_report(per, tmin, tmax, label):
              f"📈 TRAIN: n={mt['n']} | WR {mt['wr']}% | PF {mt['pf']} | {mt['total']:+}R",
              f"📊 TEST : n={me['n']} | WR {me['wr']}% | PF {me['pf']} | {me['total']:+}R",
              f"🎯 وصول TP1: {me['tp1']}%", ""]
-    v = "🔴 ضعيف" if me["pf"]<1.1 else ("🟡 مقبول" if me["pf"]<1.5 else "✅ جيد")
+    v = "🔴 ضعيف" if me["pf"]<1.1 else ("🟡 مقبول" if me["pf"]<1.5 else ("✅ جيد" if me["pf"]<1.8 else "🏆 ممتاز"))
     lines.append(f"الحكم: {v}")
     csv = "coin,tr_n,tr_wr,tr_pf,tr_total,te_n,te_wr,te_pf,te_total,te_tp1\n"
     for coin,trs in per.items():
@@ -1277,7 +1296,7 @@ async def handle_symbol(update, raw, to_channel=False):
             try: await asyncio.to_thread(track_signal, res)
             except Exception: pass
     except PairNotFound: await update.message.reply_text(f"❌ لم أجد العملة: {sym}")
-    except NoData: await update.message.reply_text("⚠️ البيانات غير متوفرة")
+    except NoData: await update.message.reply_text("⚠️ البيانات غير متوفرة أو خارج وقت التداول")
     except Exception: log.exception("handle"); await update.message.reply_text("⚠️ حدث خطأ")
     finally:
         try: await wait.delete()
@@ -1458,7 +1477,10 @@ async def cmd_history(update, ctx):
 @admin_only
 async def cmd_dashboard(update, ctx):
     touch_user(update.effective_user, "/dashboard")
-    act = active_signals()
+    try:
+        act = active_signals()
+    except Exception:
+        act = []
     with store.lock:
         nu = len(store.data["users"])
         nv = sum(1 for k in store.data["vip"] if is_vip(int(k)))
@@ -1704,7 +1726,7 @@ async def post_init(app):
     except Exception: pass
     app.bot_data["tasks"] = [asyncio.create_task(autopost_loop(app)),
                              asyncio.create_task(tracker_loop(app))]
-    log.info("ryma v23b started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("ryma v23c started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
