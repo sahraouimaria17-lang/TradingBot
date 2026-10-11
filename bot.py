@@ -34,12 +34,11 @@ BRAND = "Ryma Crypto"
 EXCHANGES = ["okx", "mexc", "binance", "bybit", "kucoin", "gateio", "bitget"]
 MAJORS = {"BTC","ETH","BNB","SOL","XRP","ADA","DOGE","AVAX","LINK","DOT","LTC","TRX"}
 
-# 30 عملة مختارة (Core + Meme)
 CORE_COINS = ["BTC","ETH","BNB","XRP","ADA","DOGE","AVAX","LTC",
               "NEAR","SUI","ATOM","TRX","APT","SOL","DOT",
               "LINK","UNI","ARB","OP","INJ"]
-MEME_COINS = ["TIA","FLOKI","BONK","WLD","PEPE","SHIB","MEME","WIF","JUP","RAY"]
-COINS = CORE_COINS + MEME_COINS  # 30 عملة
+MEME_COINS = ["TIA","FLOKI","BONK","WLD","PEPE","SHIB","WIF","JUP","RAY","MEME"]
+COINS = CORE_COINS + MEME_COINS
 
 LINKED_GROUPS = [
     {"BTC","ETH","BNB"},
@@ -78,7 +77,7 @@ TRAIL_ATR = 3.0
 MAX_HOLD = 60
 CORE_VOL_MULT = 0.7
 CORE_RSI_LONG = (35, 70)
-CORE_RSI_SHORT = (50, 80)
+CORE_RSI_SHORT = (35, 75)
 EXT_MAX_ATR = 3.5
 
 MEME_TP_PCTS = [3.0, 6.0, 10.0, 15.0]
@@ -369,13 +368,12 @@ def short_radar(sym):
         df = add_indicators(df, 100)
         last = df.iloc[-1]
         if pd.isna(last["rsi"]) or pd.isna(last["ema50"]) or pd.isna(last["ema200"]): return None
-        if last["rsi"] > 70 and last["close"] < last["ema50"] and last["ema50"] < last["ema200"]:
+        if last["rsi"] > 65 and last["close"] < last["ema50"]:
             return dict(rsi=round(float(last["rsi"]),1),
                        price=round(float(last["close"]),6))
         return None
     except Exception: return None
 def alpha_radar(sym):
-    """اكتشف عملات Alpha: نمو قوي + حجم + اتجاه صاعد"""
     try:
         df = get_candles(sym, "1d", 100, ttl=600, min_bars=50)
         if df.empty or len(df) < 50: return None
@@ -656,7 +654,7 @@ def detect_core_conditions(df, i, side):
         if not (r.ema20 > r.ema50*0.99 and r.close > r.ema50*0.99): return False
     else:
         if not (CORE_RSI_SHORT[0] <= r.rsi <= CORE_RSI_SHORT[1]): return False
-        if not (r.ema20 < r.ema50*1.01 and r.close < r.ema50*1.01): return False
+        if not (r.ema20 < r.ema50 and r.close < r.ema50): return False
     if r.rvol < CORE_VOL_MULT: return False
     if abs(r.ext_atr) > EXT_MAX_ATR: return False
     return True
@@ -704,15 +702,20 @@ def analyze(sym):
         strategy = "Core"
     price, _ = live_price(sym)
     price = float(price or df["close"].iloc[-1])
+    trend = detect_trend(df, i)
     if long_ok and not short_ok: side = 1
     elif short_ok and not long_ok: side = -1
     elif long_ok and short_ok: side = 1 if df["rsi"].iloc[i] < 50 else -1
-    else: side = 1
+    else:
+        _rsi_now = float(df["rsi"].iloc[i]) if not pd.isna(df["rsi"].iloc[i]) else 50
+        if _rsi_now < 35: side = 1
+        elif _rsi_now > 65: side = -1
+        elif trend in ("strong_down", "down"): side = -1
+        else: side = 1
     grade = grade_setup(df, i, side)
     lv = compute_meme_levels(df, i, side, price) if is_meme else compute_core_levels(df, i, side, price)
     if lv is None: raise NoData(sym)
     candle = detect_candle_pattern(df, i)
-    trend = detect_trend(df, i)
     sr_high, sr_low = find_sr_levels(df)
     fibs = fib_levels(df)
     last = df.iloc[-1]
@@ -808,17 +811,17 @@ def render_chart(res, tier="free", published=False):
     lv, side, tf = res["lv"], res["side"], res["tf"]
     n_tps = 4 if tier in ("admin","vip") else 2
     bg, fg = "#ffffff", "#111111"
-    navy = "#1a3a6c"
+    navy = "#0d1b3e"
     blue = "#1565c0"
     fig = plt.figure(figsize=(11,7.5), facecolor=bg)
     gs = fig.add_gridspec(2,1, height_ratios=[4.2,1], hspace=0.06)
     ax = fig.add_subplot(gs[0], facecolor=bg)
     axr = fig.add_subplot(gs[1], facecolor=bg, sharex=ax)
     x = np.arange(len(df))
-    ax.fill_between(x, df["bb_lo"], df["bb_up"], color=navy, alpha=0.25, label="Bollinger Band")
-    ax.plot(x, df["bb_up"], color=navy, lw=1.4, ls="--", alpha=0.95)
-    ax.plot(x, df["bb_mid"], color=navy, lw=1.0, ls="-", alpha=0.65)
-    ax.plot(x, df["bb_lo"], color=navy, lw=1.4, ls="--", alpha=0.95)
+    ax.fill_between(x, df["bb_lo"], df["bb_up"], color=navy, alpha=0.30, label="Bollinger Band")
+    ax.plot(x, df["bb_up"], color=navy, lw=1.5, ls="--", alpha=0.95)
+    ax.plot(x, df["bb_mid"], color=navy, lw=1.1, ls="-", alpha=0.70)
+    ax.plot(x, df["bb_lo"], color=navy, lw=1.5, ls="--", alpha=0.95)
     if tier in ("admin","vip"):
         ax.plot(x, df["ema20"], color="#f5c518", lw=1.3, label="EMA 20")
         ax.plot(x, df["ema50"], color="#1976d2", lw=1.3, label="EMA 50")
@@ -857,7 +860,7 @@ def render_chart(res, tier="free", published=False):
     ax.legend(loc="upper left", fontsize=8, facecolor=bg, edgecolor="#cccccc", labelcolor=fg)
     axr.legend(loc="upper left", fontsize=7.5, facecolor=bg, edgecolor="#cccccc", labelcolor=fg)
     fig.text(0.5, 0.5, "Ryma Crypto", fontsize=58, color=navy,
-             alpha=0.10, ha="center", va="center", fontweight="bold", rotation=25)
+             alpha=0.12, ha="center", va="center", fontweight="bold", rotation=25)
     fig.text(0.985, 0.012, "Ryma Crypto", fontsize=10, color="#c9a227",
              ha="right", va="bottom", fontweight="bold")
     buf = io.BytesIO()
