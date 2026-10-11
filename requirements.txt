@@ -1,4 +1,5 @@
-python-binance==1.0.19
+ wheel
+python-binance
 pandas==2.1.4
 numpy==1.26.2
 ta==0.11.0
