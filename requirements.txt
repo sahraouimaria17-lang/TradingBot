@@ -1,5 +1,12 @@
- wheel
-python-binance
-pandas==2.1.4
-numpy==1.26.2
-ta==0.11.0
+pyTelegramBotAPI>=4.14
+pandas
+numpy
+matplotlib
+requests
+Pillow
+arabic-reshaper
+python-bidi
+ccxt
+pandas_ta
+python-telegram-bot>=20.0
+python-dotenv
