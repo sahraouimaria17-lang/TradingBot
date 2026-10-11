@@ -68,10 +68,6 @@ VIP_POSTS_PER_CYCLE = 5
 FREE_POSTS_PER_CYCLE = 2
 FREE_MAX_PER_DAY = 6
 
-# فلاتر الوقت
-SKIP_HOURS_UTC = set([22, 23, 0, 1, 2])
-SKIP_WEEKDAY = 6  # الأحد
-
 PIVOT_WINDOW = 100
 PIVOT_LOOKBACK = 3
 MIN_PIVOT_DIST = 0.5
@@ -85,7 +81,6 @@ CORE_VOL_MULT = 1.2
 CORE_RSI_LONG = (35, 70)
 CORE_RSI_SHORT = (35, 75)
 EXT_MAX_ATR = 3.5
-REQUIRE_MTF_CONFIRM = True
 
 MEME_TP_PCTS = [3.0, 6.0, 10.0, 15.0]
 MEME_TP_FRACS = [0.50, 0.25, 0.15, 0.10]
@@ -123,15 +118,6 @@ log = logging.getLogger("ryma")
 START_TS = time.time()
 DAY = 86400
 def now_s(): return int(time.time())
-
-def in_skip_time(ts_ms):
-    try:
-        dt_obj = dt.datetime.utcfromtimestamp(ts_ms / 1000)
-        if dt_obj.hour in SKIP_HOURS_UTC: return True
-        if dt_obj.weekday() == SKIP_WEEKDAY: return True
-        return False
-    except Exception:
-        return False
 
 KEYS = ["users","vip","signals","history","posted"]
 DEFAULTS = {"users":{},"vip":{},"signals":[],"history":[],"posted":{}}
@@ -571,7 +557,8 @@ def v23_score(df, i, side):
             rsi_now = float(sub["rsi"].iloc[-1]) if not pd.isna(sub["rsi"].iloc[-1]) else 50
             if side == 1: macd_ok = macd_now > macd_sig and rsi_now < 75
             else: macd_ok = macd_now < macd_sig and rsi_now > 25
-        else: macd_ok = False
+        else:
+            macd_ok = False
         if "bb_up" in sub.columns and not pd.isna(sub["bb_up"].iloc[-1]):
             bb_up = float(sub["bb_up"].iloc[-1]); bb_lo = float(sub["bb_lo"].iloc[-1])
             bb_mid = float(sub["bb_mid"].iloc[-1])
@@ -581,7 +568,8 @@ def v23_score(df, i, side):
             squeeze = bb_width < width_ma * V23_BB_SQZ if width_ma > 0 else False
             if side == 1: bb_ok = float(close.iloc[-1]) > bb_mid and squeeze
             else: bb_ok = float(close.iloc[-1]) < bb_mid and squeeze
-        else: bb_ok = False
+        else:
+            bb_ok = False
         details = {"vwap": vwap_ok, "supertrend": st_ok, "macd": macd_ok, "bb": bb_ok}
         return sum([vwap_ok, st_ok, macd_ok, bb_ok]), details
     except Exception as e:
@@ -740,10 +728,6 @@ def analyze(sym):
         elif trend in ("strong_down", "down"): side = -1
         else: side = 1
     mtf_conf, mtf_total = mtf_score(sym, side)
-    if REQUIRE_MTF_CONFIRM and mtf_total > 0 and mtf_conf == 0:
-        raise NoData(sym)
-    if in_skip_time(int(df["t"].iloc[-1])):
-        raise NoData(sym)
     grade = grade_setup(df, i, side)
     lv = compute_meme_levels(df, i, side, price) if is_meme else compute_core_levels(df, i, side, price)
     if lv is None: raise NoData(sym)
@@ -1174,7 +1158,6 @@ def simulate(df, sym, tf, start=210):
         elif short_ok and not long_ok: side = -1
         elif long_ok and short_ok: side = 1 if df["rsi"].iloc[i] < 50 else -1
         else: i += 1; continue
-        if in_skip_time(int(t[i])): i += 1; continue
         grade = grade_setup(df, i, side)
         lv = compute_meme_levels(df, i, side) if is_meme else compute_core_levels(df, i, side)
         if lv is None: i += 1; continue
@@ -1297,7 +1280,7 @@ async def handle_symbol(update, raw, to_channel=False):
             try: await asyncio.to_thread(track_signal, res)
             except Exception: pass
     except PairNotFound: await update.message.reply_text(f"❌ لم أجد العملة: {sym}")
-    except NoData: await update.message.reply_text("⚠️ البيانات غير متوفرة أو خارج وقت التداول")
+    except NoData: await update.message.reply_text("⚠️ البيانات غير متوفرة")
     except Exception: log.exception("handle"); await update.message.reply_text("⚠️ حدث خطأ")
     finally:
         try: await wait.delete()
