@@ -1051,7 +1051,7 @@ def build_copy_post(res):
         "",
         f"💵 Entry: {fmt(lv['entry'])}",
     ]
-    for i, tp in enumerate(lv["tps"][:2], 1):
+    for i, tp in enumerate(lv["tps"][:3], 1):
         lines.append(f"🎯 TP{i}: {fmt(tp['px'])}")
     lines.append(f"🛑 SL: {fmt(lv['sl'])}")
     lines.append("")
