@@ -810,6 +810,35 @@ def grade_setup(df, i, side):
     if score >= 2: return "B"
     return "C"
 
+def decide_side(df, i, trend, bias_d, long_ok, short_ok):
+    """
+    اتجاه الصفقة يتبع الاتجاه السائد، ولا يُعكس بسبب RSI المنخفض.
+    1) اتجاه الفريم المعروض (EMA20/50/200) + الاتجاه اليومي.
+    2) عند التعارض: الفريم المعروض هو الحَكَم (هو ما يراه المستخدم في الشارت).
+    3) عند الحياد: شروط الدخول، ثم السعر مقابل EMA50 وميل EMA20.
+    """
+    tf_dir = 1 if trend in ("strong_up", "up") else (-1 if trend in ("strong_down", "down") else 0)
+    if tf_dir and bias_d in (0, tf_dir):
+        return tf_dir
+    if tf_dir:
+        return tf_dir
+    if bias_d:
+        return bias_d
+    if long_ok != short_ok:
+        return 1 if long_ok else -1
+    r = df.iloc[i]
+    try:
+        c, e50 = float(r["close"]), float(r["ema50"])
+        slope = float(r["ema20"]) - float(df["ema20"].iloc[max(0, i - 5)])
+        if not (pd.isna(c) or pd.isna(e50)):
+            if c < e50 and slope < 0: return -1
+            if c > e50 and slope > 0: return 1
+            return -1 if c < e50 else 1
+    except Exception:
+        pass
+    return 1
+
+
 _analysis_cache = {}
 def analyze(sym):
     tf = default_tf(sym)
@@ -838,19 +867,8 @@ def analyze(sym):
         pass
     bias_d = daily_bias(df_d) if df_d is not None else 0
     _rsi_now = float(df["rsi"].iloc[i]) if not pd.isna(df["rsi"].iloc[i]) else 50
-    # ═══ القرار النهائي ═══
-    if bias_d == -1:
-        side = -1
-    elif bias_d == 1:
-        side = 1
-    elif long_ok and not short_ok:
-        side = 1
-    elif short_ok and not long_ok:
-        side = -1
-    elif long_ok and short_ok:
-        side = 1 if _rsi_now < 50 else -1
-    else:
-        side = 1 if _rsi_now < 50 else -1
+    # ═══ القرار النهائي: الاتجاه فقط (لا نعكس الاتجاه بسبب RSI) ═══
+    side = decide_side(df, i, trend, bias_d, long_ok, short_ok)
     grade = grade_setup(df, i, side)
     lv = compute_meme_levels(df, i, side, price) if is_meme else compute_core_levels(df, i, side, price)
     if lv is None: raise NoData(sym)
@@ -862,7 +880,7 @@ def analyze(sym):
                 rank={"A":2,"B":1,"C":0}.get(grade, 0),
                 grade=grade, setup=strategy,
                 ok=1 if grade in ("A","B") else 0, total=4,
-                lv=lv, price=price, degraded=degraded,
+                lv=lv, price=price, degraded=degraded, source=df.attrs.get("source", "?"),
                 bar_t=int(last["t"]),
                 rsi=float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0,
                 macd=float(last["macd"]) if not pd.isna(last["macd"]) else 0.0,
@@ -1002,37 +1020,35 @@ def render_chart(res, tier="free", published=False):
     return buf
 
 def caption_core(res, tier="free"):
+    """تقرير التحليل الفني بنفس تنسيق النموذج المطلوب (الاسم والشعار: Ryma Crypto)."""
     side, lv, sym = res["side"], res["lv"], res["sym"]
-    side_word = "🟢 شراء (LONG)" if side == 1 else "🔴 بيع (SHORT)"
-    now_ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    tf_txt = {"1d": "اليومي (Daily)", "4h": "4 ساعات (4 Hours)",
+              "1h": "ساعة (1 Hour)", "15m": "15 دقيقة"}.get(res["tf"], res["tf"])
+    rec = "🟢 شراء (Bullish)" if side == 1 else "🔴 بيع (Bearish)"
+    src_name = str(res.get("source", "?")).capitalize()
     lines = [
-        f"📌 #{sym}/USDT",
+        f"📊 تقرير التحليل الفني المباشر لعملة #{sym}",
         "",
-        f"🎯 التوصية: {side_word}",
-        "",
-        f"💵 الدخول: {fmt(lv['entry'])}",
-        f"🛑 وقف الخسارة: {fmt(lv['sl'])}",
-        "",
+        f"⚡ منصة التداول: {src_name}",
+        f"⏱ فريم التحليل: {tf_txt}",
+        f"💡 التوصية المتوقعة: {rec}",
+        f"💵 السعر الحالي / الدخول: {fmt(lv['entry'])}",
     ]
-    n_tps = 4 if tier in ("admin","vip") else 2
-    for i,tp in enumerate(lv["tps"][:n_tps], 1):
-        lines.append(f"🎯 الهدف {i}: {fmt(tp['px'])}")
+    n_tps = 4 if tier in ("admin", "vip") else 2
+    names = ["الأول", "الثاني", "الثالث", "الرابع"]
+    for i, tp in enumerate(lv["tps"][:n_tps]):
+        lines.append(f"🎯 الهدف {names[i]}: {fmt(tp['px'])}")
+    lines.append(f"🛑 إيقاف الخسارة (Stop Loss): {fmt(lv['sl'])}")
     if tier == "free" and len(lv["tps"]) > 2:
-        lines.append("")
         lines.append("💎 للأهداف الإضافية → VIP")
+    if res.get("degraded"):
+        lines.append("⚠️ بيانات محدودة - الثقة أقل")
     lines += [
         "",
-        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"📈 مصدر الشارت: {src_name} Live Data",
         "",
-        "⚠️ تنبيهات مهمة:",
-        "• ليست كل صفقاتنا ناجحة — قد نصيب وقد نخطئ.",
-        "• إدارة المخاطر هي سر النجاح.",
-        "• التزم بحجم الصفقة المناسب لكل صفقة.",
-        "• هذه ليست نصيحة مالية — اعمل بحثك الخاص.",
+        "⚠️ ليست نصيحة مالية - التزم بإدارة المخاطر.",
         "",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        "",
-        f"📅 {now_ts}",
         f"👤 {BRAND}",
     ]
     return "\n".join(lines)
