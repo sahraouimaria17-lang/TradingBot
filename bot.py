@@ -624,12 +624,7 @@ def detect_trend(df, i):
     if r["ema20"] < r["ema50"] and r["close"] < r["ema200"]: return "down"
     return "range"
 
-# ═══════════ DAILY BIAS (جديد) ═══════════
 def daily_bias(df_d):
-    """
-    اتجاه 1d بنظام النقاط (score) — أكثر مرونة من detect_trend
-    Returns: -1 (هابط) / 0 (محايد) / +1 (صاعد)
-    """
     try:
         if df_d is None or len(df_d) < 200: return 0
         last = df_d.iloc[-1]
@@ -638,28 +633,22 @@ def daily_bias(df_d):
         e50 = float(last["ema50"]) if not pd.isna(last["ema50"]) else c
         e200 = float(last["ema200"]) if not pd.isna(last["ema200"]) else c
         rsi_v = float(last["rsi"]) if not pd.isna(last["rsi"]) else 50
-        
         score = 0
-        # السعر مقابل المتوسطات
         if c < e50: score -= 1
         if c < e200: score -= 1
         if c > e50: score += 1
         if c > e200: score += 1
-        # ترتيب المتوسطات
         if e20 < e50: score -= 1
         if e50 < e200: score -= 1
         if e20 > e50: score += 1
         if e50 > e200: score += 1
-        # RSI
         if rsi_v < 45: score -= 1
         if rsi_v > 55: score += 1
-        # آخر 7 أيام
         try:
             change_7d = (c / float(df_d["close"].iloc[-8]) - 1) * 100
             if change_7d < -5: score -= 1
             if change_7d > 5: score += 1
         except Exception: pass
-        
         if score <= -2: return -1
         if score >= 2: return 1
         return 0
@@ -811,11 +800,6 @@ def grade_setup(df, i, side):
     return "C"
 
 def decide_side(df, i, trend, bias_d, long_ok, short_ok):
-    """
-    الاتجاه يتبع موقع السعر من المتوسطات في الفريم المعروض (كما يراه المستخدم في الشارت):
-    السعر مقابل EMA20/EMA50/EMA200 + ترتيب EMA20/EMA50 + MACD. لا نعكس الاتجاه بسبب RSI،
-    ولا يغلب الاتجاه اليومي على فريم معروض واضح الهبوط/الصعود.
-    """
     r = df.iloc[i]
     try:
         c = float(r["close"])
@@ -825,7 +809,7 @@ def decide_side(df, i, trend, bias_d, long_ok, short_ok):
                  + sgn(float(r["macd_hist"])))
         if score <= -3: return -1
         if score >= 3: return 1
-        if score in (-2, 2):                      # ميل واضح: يكفي ألا يعارضه اليومي بقوة
+        if score in (-2, 2):
             d = 1 if score > 0 else -1
             if bias_d != -d: return d
             return d if abs(c - float(r["ema200"])) > 0 and sgn(c - float(r["ema200"])) == d else bias_d
@@ -861,7 +845,6 @@ def analyze(sym):
     price, _ = live_price(sym)
     price = float(price or df["close"].iloc[-1])
     trend = detect_trend(df, i)
-    # ═══ 1d bias ═══
     df_d = None
     try:
         df_d = get_candles(sym, "1d", 250, ttl=300, min_bars=100)
@@ -870,7 +853,6 @@ def analyze(sym):
         pass
     bias_d = daily_bias(df_d) if df_d is not None else 0
     _rsi_now = float(df["rsi"].iloc[i]) if not pd.isna(df["rsi"].iloc[i]) else 50
-    # ═══ القرار النهائي: الاتجاه فقط (لا نعكس الاتجاه بسبب RSI) ═══
     side = decide_side(df, i, trend, bias_d, long_ok, short_ok)
     grade = grade_setup(df, i, side)
     lv = compute_meme_levels(df, i, side, price) if is_meme else compute_core_levels(df, i, side, price)
@@ -901,7 +883,7 @@ def scan_sync(symbols, workers=SCAN_WORKERS):
         except Exception: return None
     with ThreadPoolExecutor(workers) as ex:
         return [r for r in ex.map(one, symbols) if r]
-      
+
 def new_trade(sym, tf, side, lv, bar_t, grade, setup, size_pct=0.05):
     return dict(id=f"{sym}-{tf}-{bar_t}", coin=sym, tf=tf, side=side, grade=grade, setup=setup,
                 entry=lv["entry"], sl=lv["sl"], risk=lv["risk"], size_pct=size_pct,
@@ -1023,7 +1005,6 @@ def render_chart(res, tier="free", published=False):
     return buf
 
 def caption_core(res, tier="free"):
-    """تقرير التحليل الفني بنفس تنسيق النموذج المطلوب (الاسم والشعار: Ryma Crypto)."""
     side, lv, sym = res["side"], res["lv"], res["sym"]
     tf_txt = {"1d": "اليومي (Daily)", "4h": "4 ساعات (4 Hours)",
               "1h": "ساعة (1 Hour)", "15m": "15 دقيقة"}.get(res["tf"], res["tf"])
@@ -1032,7 +1013,7 @@ def caption_core(res, tier="free"):
     lines = [
         f"📊 تقرير التحليل الفني المباشر لعملة #{sym}",
         "",
-        f"⚡ منصة التداول: {src_name}",
+        f"⚡ منصة التداول: {src_name} (متزامن 100%)",
         f"⏱ فريم التحليل: {tf_txt}",
         f"💡 التوصية المتوقعة: {rec}",
         f"💵 السعر الحالي / الدخول: {fmt(lv['entry'])}",
@@ -1050,13 +1031,32 @@ def caption_core(res, tier="free"):
         "",
         f"📈 مصدر الشارت: {src_name} Live Data",
         "",
-        "⚠️ ليست نصيحة مالية - التزم بإدارة المخاطر.",
+        "⚠️ ليست نصيحة مالية — اعمل بحثك الخاص.",
+        "🛡 إدارة المخاطر هي سر النجاح.",
         "",
         f"👤 {BRAND}",
+        f"📢 قناة التوصيات: {CONTACT_LINK}",
     ]
     return "\n".join(lines)
 def caption_free(res): return caption_core(res, "free")
 def caption_vip(res): return caption_core(res, "vip")
+
+def build_copy_post(res):
+    """نص مضغوط قابل للنسخ والنشر في أي مكان"""
+    side, lv, sym = res["side"], res["lv"], res["sym"]
+    side_icon = "🟢" if side == 1 else "🔴"
+    side_word = "LONG" if side == 1 else "SHORT"
+    lines = [
+        f"#{sym}/USDT  {side_icon} {side_word}",
+        "",
+        f"💵 Entry: {fmt(lv['entry'])}",
+    ]
+    for i, tp in enumerate(lv["tps"][:2], 1):
+        lines.append(f"🎯 TP{i}: {fmt(tp['px'])}")
+    lines.append(f"🛑 SL: {fmt(lv['sl'])}")
+    lines.append("")
+    lines.append(f"👤 {BRAND}  |  {CONTACT_LINK}")
+    return "\n".join(lines)
 
 def keyboard_free(sym, tf):
     return InlineKeyboardMarkup([
@@ -1135,15 +1135,6 @@ def build_admin_extras(res):
     for i,tp in enumerate(res['lv']['tps'], 1):
         lines.append(f"🎯 هدف {i}: {tp['pct']}%")
     return "\n".join(lines)
-def build_copy_post(res):
-    side, lv, sym = res["side"], res["lv"], res["sym"]
-    side_word = "🟢 شراء" if side==1 else "🔴 بيع"
-    lines = [f"📌 #{sym}/USDT | {side_word}", ""]
-    lines.append(f"💵 الدخول: {fmt(lv['entry'])}")
-    for i,tp in enumerate(lv["tps"][:3], 1):
-        lines.append(f"🎯 هدف {i}: {fmt(tp['px'])}")
-    lines.append(f"🛑 وقف: {fmt(lv['sl'])}")
-    return "<pre>" + "\n".join(lines) + "</pre>"
 
 def active_signals():
     with store.lock:
@@ -1238,20 +1229,27 @@ async def tracker_loop(app):
 
 async def publish(bot, res, vip=True, free=False, admin_copy=False):
     sent = []
+    copy_text = build_copy_post(res)
     try:
         if vip and VIP_CHANNEL_ID:
             img = await asyncio.to_thread(render_chart, res, "vip", True)
             await bot.send_photo(VIP_CHANNEL_ID, img, caption=caption_vip(res),
                                  parse_mode=ParseMode.HTML, protect_content=PROTECT)
+            try:
+                await bot.send_message(VIP_CHANNEL_ID, copy_text, protect_content=PROTECT)
+            except Exception: pass
             sent.append("VIP")
         if free and CHANNEL_ID:
             img = await asyncio.to_thread(render_chart, res, "free", True)
             await bot.send_photo(CHANNEL_ID, img, caption=caption_free(res),
                                  parse_mode=ParseMode.HTML, protect_content=PROTECT,
                                  reply_markup=keyboard_free(res["sym"], res["tf"]))
+            try:
+                await bot.send_message(CHANNEL_ID, copy_text, protect_content=PROTECT)
+            except Exception: pass
             sent.append("FREE")
         if admin_copy and ADMIN_ID:
-            try: await bot.send_message(ADMIN_ID, build_copy_post(res), parse_mode=ParseMode.HTML)
+            try: await bot.send_message(ADMIN_ID, copy_text)
             except Exception: pass
     except Exception as e: sent.append(f"err:{str(e)[:40]}")
     return sent
@@ -1460,6 +1458,9 @@ async def handle_symbol(update, raw, to_channel=False):
                                           parse_mode=ParseMode.HTML,
                                           protect_content=(st!="admin" and PROTECT),
                                           reply_markup=kb)
+        try:
+            await update.message.reply_text(build_copy_post(res))
+        except Exception: pass
         if res["rank"] >= 0 and can_track(res):
             try: await asyncio.to_thread(track_signal, res)
             except Exception: pass
@@ -1628,7 +1629,6 @@ async def cmd_price(update, ctx):
     await update.message.reply_text("\n".join(lines))
 @admin_only
 async def cmd_why(update, ctx):
-    """تشخيص: يعرض سبب اتجاه التوصية (أرقام الفريم والمتوسطات)."""
     touch_user(update.effective_user, "/why")
     if not ctx.args: await update.message.reply_text("مثال: /why RARE"); return
     sym = clean_symbol(ctx.args[0])
@@ -1966,6 +1966,9 @@ async def cb_handler(update, ctx):
             img = await asyncio.to_thread(render_chart, res, tier)
             cap = caption_vip(res) if tier in ("admin","vip") else caption_free(res)
             await ctx.bot.send_photo(q.message.chat.id, photo=img, caption=cap, reply_markup=kb)
+            try:
+                await q.message.reply_text(build_copy_post(res))
+            except Exception: pass
         except Exception as e: await q.message.reply_text(f"⚠️ {str(e)[:200]}")
 async def on_error(update, ctx): log.error("err: %s", ctx.error, exc_info=ctx.error)
 async def on_text(update, ctx):
@@ -1982,7 +1985,7 @@ async def post_init(app):
         asyncio.create_task(tracker_loop(app)),
         asyncio.create_task(predict_loop(app)),
     ]
-    log.info("ryma v36 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("ryma v38 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
