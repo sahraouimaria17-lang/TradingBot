@@ -1,3 +1,4 @@
+
 import os, io, re, json, time, asyncio, logging, threading, functools
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor
@@ -788,16 +789,30 @@ def analyze(sym):
     price, _ = live_price(sym)
     price = float(price or df["close"].iloc[-1])
     trend = detect_trend(df, i)
+    # ═══ تحقق من 1d (الفريم الكبير) — الأولوية ═══
+    trend_d = "unknown"
+    try:
+        df_d = get_candles(sym, "1d", 250, ttl=300, min_bars=100)
+        df_d = add_indicators(df_d, 100)
+        trend_d = detect_trend(df_d, len(df_d)-1)
+    except Exception:
+        pass
     if long_ok and not short_ok: side = 1
     elif short_ok and not long_ok: side = -1
     elif long_ok and short_ok: side = 1 if df["rsi"].iloc[i] < 50 else -1
     else:
         _rsi_now = float(df["rsi"].iloc[i]) if not pd.isna(df["rsi"].iloc[i]) else 50
-        if _rsi_now < 35: side = 1
-        elif _rsi_now > 65: side = -1
+        # الأولوية: RSI المتطرف > 1d trend > 4h trend > MTF
+        if _rsi_now < 30: side = 1
+        elif _rsi_now > 70: side = -1
+        elif trend_d in ("strong_down", "down"): side = -1
+        elif trend_d in ("strong_up", "up"): side = 1
         elif trend in ("strong_down", "down"): side = -1
-        else: side = 1
-    # ⚠️ لا فلاتر هنا — التوصية دائماً
+        elif trend in ("strong_up", "up"): side = 1
+        else:
+            _mtf_l, _ = mtf_score(sym, 1)
+            _mtf_s, _ = mtf_score(sym, -1)
+            side = 1 if _mtf_l >= _mtf_s else -1
     grade = grade_setup(df, i, side)
     lv = compute_meme_levels(df, i, side, price) if is_meme else compute_core_levels(df, i, side, price)
     if lv is None: raise NoData(sym)
@@ -813,7 +828,7 @@ def analyze(sym):
                 bar_t=int(last["t"]),
                 rsi=float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0,
                 macd=float(last["macd"]) if not pd.isna(last["macd"]) else 0.0,
-                candle=candle, trend=trend,
+                candle=candle, trend=trend, trend_d=trend_d,
                 sr_high=sr_high[:3], sr_low=sr_low[:3], fibs=fibs)
 def get_analysis(sym, force=False):
     hit = _analysis_cache.get(sym)
@@ -949,7 +964,6 @@ def render_chart(res, tier="free", published=False):
     return buf
 
 def caption_core(res, tier="free"):
-    """عرض احترافي — مثل أبو تركي وأفضل (بدون Grade/v23/MTF)"""
     side, lv, sym = res["side"], res["lv"], res["sym"]
     side_word = "🟢 شراء (LONG)" if side == 1 else "🔴 بيع (SHORT)"
     now_ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1050,13 +1064,16 @@ def build_vip_page():
 def build_admin_extras(res):
     trend_ar = {"strong_up":"صاعد قوي 📈","up":"صاعد","strong_down":"هابط قوي 📉",
                 "down":"هابط","range":"عرضي ↔️","unknown":"—"}.get(res.get("trend",""), "—")
+    trend_d_ar = {"strong_up":"صاعد قوي 📈","up":"صاعد","strong_down":"هابط قوي 📉",
+                "down":"هابط","range":"عرضي ↔️","unknown":"—"}.get(res.get("trend_d",""), "—")
     lines = [f"📊 المؤشرات - {res['sym']}/{res['tf']}", "",
              f"📈 RSI: {res['rsi']:.1f}",
              f"📊 ATR: {res['lv']['atr']:.4f}",
              f"📉 MACD: {res['macd']:.4f}",
              f"🎯 الاستراتيجية: {res['strategy']}",
              f"🏆 الدرجة: {res['grade']}",
-             f"📊 الاتجاه: {trend_ar}"]
+             f"📊 اتجاه {res['tf']}: {trend_ar}",
+             f"📊 اتجاه 1d: {trend_d_ar}"]
     if res.get("candle"): lines.append(f"🕯 الشمعة: {res['candle']}")
     lines.append("")
     for i,tp in enumerate(res['lv']['tps'], 1):
@@ -1195,7 +1212,6 @@ async def run_autopost(bot):
         key = f"{r['sym']}:{r['tf']}:{r['bar_t']}"
         if key in store.data["posted"] or not can_track(r): continue
         if vip_n >= VIP_POSTS_PER_CYCLE and free_n >= FREE_POSTS_PER_CYCLE: break
-        # فلاتر جودة VIP فقط
         vip_quality_ok = check_liquidity(r["sym"])
         if vip_quality_ok and REQUIRE_MTF_FOR_SMALL and r["sym"] not in MAJORS and r["sym"] not in MEME_COINS:
             mtf_c, mtf_t = mtf_score(r["sym"], r["side"])
@@ -1889,7 +1905,7 @@ async def post_init(app):
         asyncio.create_task(tracker_loop(app)),
         asyncio.create_task(predict_loop(app)),
     ]
-    log.info("ryma v32 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("ryma v33 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
@@ -1918,4 +1934,4 @@ def main():
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    main()
+    main().
