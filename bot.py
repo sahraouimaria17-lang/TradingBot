@@ -624,6 +624,48 @@ def detect_trend(df, i):
     if r["ema20"] < r["ema50"] and r["close"] < r["ema200"]: return "down"
     return "range"
 
+# ═══════════ DAILY BIAS (جديد) ═══════════
+def daily_bias(df_d):
+    """
+    اتجاه 1d بنظام النقاط (score) — أكثر مرونة من detect_trend
+    Returns: -1 (هابط) / 0 (محايد) / +1 (صاعد)
+    """
+    try:
+        if df_d is None or len(df_d) < 200: return 0
+        last = df_d.iloc[-1]
+        c = float(last["close"])
+        e20 = float(last["ema20"]) if not pd.isna(last["ema20"]) else c
+        e50 = float(last["ema50"]) if not pd.isna(last["ema50"]) else c
+        e200 = float(last["ema200"]) if not pd.isna(last["ema200"]) else c
+        rsi_v = float(last["rsi"]) if not pd.isna(last["rsi"]) else 50
+        
+        score = 0
+        # السعر مقابل المتوسطات
+        if c < e50: score -= 1
+        if c < e200: score -= 1
+        if c > e50: score += 1
+        if c > e200: score += 1
+        # ترتيب المتوسطات
+        if e20 < e50: score -= 1
+        if e50 < e200: score -= 1
+        if e20 > e50: score += 1
+        if e50 > e200: score += 1
+        # RSI
+        if rsi_v < 45: score -= 1
+        if rsi_v > 55: score += 1
+        # آخر 7 أيام
+        try:
+            change_7d = (c / float(df_d["close"].iloc[-8]) - 1) * 100
+            if change_7d < -5: score -= 1
+            if change_7d > 5: score += 1
+        except Exception: pass
+        
+        if score <= -2: return -1
+        if score >= 2: return 1
+        return 0
+    except Exception:
+        return 0
+
 def mtf_score(sym, side):
     try:
         tfs = []
@@ -787,28 +829,20 @@ def analyze(sym):
     price, _ = live_price(sym)
     price = float(price or df["close"].iloc[-1])
     trend = detect_trend(df, i)
-    trend_d = "unknown"
+    # ═══ 1d bias ═══
+    df_d = None
     try:
         df_d = get_candles(sym, "1d", 250, ttl=300, min_bars=100)
         df_d = add_indicators(df_d, 100)
-        trend_d = detect_trend(df_d, len(df_d)-1)
     except Exception:
         pass
+    bias_d = daily_bias(df_d) if df_d is not None else 0
     _rsi_now = float(df["rsi"].iloc[i]) if not pd.isna(df["rsi"].iloc[i]) else 50
-    # ═══ اتجاه عام — 1d له الأولوية المطلقة ═══
-    if trend_d in ("strong_down", "down"):
-        general_bias = -1
-    elif trend_d in ("strong_up", "up"):
-        general_bias = 1
-    elif trend in ("strong_down", "down"):
-        general_bias = -1
-    elif trend in ("strong_up", "up"):
-        general_bias = 1
-    else:
-        general_bias = 0
     # ═══ القرار النهائي ═══
-    if general_bias != 0:
-        side = general_bias
+    if bias_d == -1:
+        side = -1
+    elif bias_d == 1:
+        side = 1
     elif long_ok and not short_ok:
         side = 1
     elif short_ok and not long_ok:
@@ -832,7 +866,7 @@ def analyze(sym):
                 bar_t=int(last["t"]),
                 rsi=float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0,
                 macd=float(last["macd"]) if not pd.isna(last["macd"]) else 0.0,
-                candle=candle, trend=trend, trend_d=trend_d,
+                candle=candle, trend=trend, trend_d=("down" if bias_d==-1 else ("up" if bias_d==1 else "range")),
                 sr_high=sr_high[:3], sr_low=sr_low[:3], fibs=fibs)
 def get_analysis(sym, force=False):
     hit = _analysis_cache.get(sym)
@@ -1039,8 +1073,7 @@ def build_vip_page():
         "✅ 💬 مناقشة وتحليل مستمر\n"
         "✅ ⚡ تنبيهات فورية\n"
         "✅ 🛡 إدارة مخاطر احترافية\n"
-        "✅ 🔮 رادار تنبؤي للانفجارات\n"
-        "✅ 💧 فلتر السيولة الذكي\n\n"
+        "✅ 🔮 رادار تنبؤي للانفجارات\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "💎🚀 الرادارات الحصرية 🚀💎\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1077,7 +1110,7 @@ def build_admin_extras(res):
              f"🎯 الاستراتيجية: {res['strategy']}",
              f"🏆 الدرجة: {res['grade']}",
              f"📊 اتجاه {res['tf']}: {trend_ar}",
-             f"📊 اتجاه 1d: {trend_d_ar}"]
+             f"📊 1d bias: {trend_d_ar}"]
     if res.get("candle"): lines.append(f"🕯 الشمعة: {res['candle']}")
     lines.append("")
     for i,tp in enumerate(res['lv']['tps'], 1):
@@ -1909,7 +1942,7 @@ async def post_init(app):
         asyncio.create_task(tracker_loop(app)),
         asyncio.create_task(predict_loop(app)),
     ]
-    log.info("ryma v35 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("ryma v36 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
