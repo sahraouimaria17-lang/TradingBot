@@ -34,9 +34,9 @@ BRAND = "Ryma Crypto"
 EXCHANGES = ["okx", "mexc", "binance", "bybit", "kucoin", "gateio", "bitget"]
 MAJORS = {"BTC","ETH","BNB","SOL","XRP","ADA","DOGE","AVAX","LINK","DOT","LTC","TRX"}
 
-CORE_COINS = ["BTC","ETH","BNB","XRP","ADA","DOGE","AVAX","LTC",
-              "NEAR","SUI","ATOM","TRX","APT","SOL","DOT",
-              "LINK","ARB","OP"]
+CORE_COINS = ["AVAX","DOT","LINK","SUI","DOGE","BNB","ATOM",
+              "ETH","LTC","ADA","XRP","TRX","APT","OP",
+              "BTC","SOL","NEAR","ARB"]
 MEME_COINS = ["TIA","FLOKI"]
 COINS = CORE_COINS + MEME_COINS
 
@@ -64,21 +64,22 @@ SCAN_WORKERS = 4
 MAX_OPEN = 6
 MAX_BUY = 3
 MAX_SELL = 3
-VIP_POSTS_PER_CYCLE = 5
-FREE_POSTS_PER_CYCLE = 2
-FREE_MAX_PER_DAY = 6
+VIP_POSTS_PER_CYCLE = 3
+FREE_POSTS_PER_CYCLE = 5
+FREE_MAX_PER_DAY = 20
 
 PIVOT_WINDOW = 100
 PIVOT_LOOKBACK = 3
 MIN_PIVOT_DIST = 0.5
-CORE_SL_MAX = 4.0
+CORE_SL_MAX = 3.0
 CORE_SL_MIN = 1.5
 CORE_TP_FRACS = [0.50, 0.25, 0.15, 0.10]
+CORE_TP_PCTS = [3.0, 6.0, 10.0, 15.0]
 BE_TRIGGER_R = 0.1
 TRAIL_ATR = 3.0
 MAX_HOLD = 60
-CORE_VOL_MULT = 1.2
-CORE_RSI_LONG = (35, 70)
+CORE_VOL_MULT = 0.9
+CORE_RSI_LONG = (40, 65)
 CORE_RSI_SHORT = (35, 75)
 EXT_MAX_ATR = 3.5
 
@@ -623,7 +624,7 @@ def compute_core_levels(df, i, side, price=None):
         highs, lows = find_pivots(df, PIVOT_WINDOW)
         targets = select_targets(highs if side==1 else lows, entry, side)
         if len(targets) < 2:
-            targets = [entry*(1+x/100) for x in [2.5,5.0,7.0,8.0]] if side==1 else [entry*(1-x/100) for x in [2.5,5.0,7.0,8.0]]
+            targets = [entry*(1+x/100) for x in CORE_TP_PCTS] if side==1 else [entry*(1-x/100) for x in CORE_TP_PCTS]
         targets = targets[:4]
         lookback_df = df.tail(20)
         swing = float(lookback_df["low"].min()) if side==1 else float(lookback_df["high"].max())
@@ -1116,9 +1117,13 @@ async def run_autopost(bot):
     for r in cands:
         key = f"{r['sym']}:{r['tf']}:{r['bar_t']}"
         if key in store.data["posted"] or not can_track(r): continue
-        if vip_n >= VIP_POSTS_PER_CYCLE: break
-        free = free_n < FREE_POSTS_PER_CYCLE and _free_day["n"] < FREE_MAX_PER_DAY
-        sent = await publish(bot, r, vip=True, free=free, admin_copy=True)
+        if vip_n >= VIP_POSTS_PER_CYCLE and free_n >= FREE_POSTS_PER_CYCLE: break
+        vip_ok = (vip_n < VIP_POSTS_PER_CYCLE and r["grade"] == "A"
+                  and r.get("v23_score",0) >= 3 and r.get("mtf_conf",0) >= 2)
+        free_ok = (free_n < FREE_POSTS_PER_CYCLE and _free_day["n"] < FREE_MAX_PER_DAY
+                   and r["grade"] in ("A","B"))
+        if not vip_ok and not free_ok: continue
+        sent = await publish(bot, r, vip=vip_ok, free=free_ok, admin_copy=True)
         if sent and not any(s.startswith("err") for s in sent):
             track_signal(r)
             with store.lock:
@@ -1126,8 +1131,8 @@ async def run_autopost(bot):
                 cut = now_s() - 14*DAY
                 store.data["posted"] = {k:v for k,v in store.data["posted"].items() if v > cut}
                 store.save("posted")
-            vip_n += 1
-            if free: free_n += 1; _free_day["n"] += 1
+            if vip_ok: vip_n += 1
+            if free_ok: free_n += 1; _free_day["n"] += 1
             await asyncio.sleep(2)
 async def autopost_loop(app):
     await asyncio.sleep(20)
@@ -1710,7 +1715,7 @@ async def post_init(app):
     except Exception: pass
     app.bot_data["tasks"] = [asyncio.create_task(autopost_loop(app)),
                              asyncio.create_task(tracker_loop(app))]
-    log.info("ryma v23c started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("ryma v24 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
@@ -1739,3 +1744,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+      
