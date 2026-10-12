@@ -757,7 +757,7 @@ def compute_smart_targets(df, i, side, entry, atr):
     try:
         targets = []
         # 1. TP1 سريع (+2.5%)
-        targets.append({"px": float(entry * (1 + side * 0.025)), "src": "سريع"})
+        targets.append({"px": float(entry * (1 + side * 0.020)), "src": "سريع"})
         # 2. TP2 متوسط (+5%)
         targets.append({"px": float(entry * (1 + side * 0.05)), "src": "متوسط"})
         # 3. قمم/قيعان قريبة (Pivots)
