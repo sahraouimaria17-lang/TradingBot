@@ -787,7 +787,6 @@ def analyze(sym):
     price, _ = live_price(sym)
     price = float(price or df["close"].iloc[-1])
     trend = detect_trend(df, i)
-    # ═══ 1d trend check ═══
     trend_d = "unknown"
     try:
         df_d = get_candles(sym, "1d", 250, ttl=300, min_bars=100)
@@ -796,25 +795,28 @@ def analyze(sym):
     except Exception:
         pass
     _rsi_now = float(df["rsi"].iloc[i]) if not pd.isna(df["rsi"].iloc[i]) else 50
-    if long_ok and not short_ok: side = 1
-    elif short_ok and not long_ok: side = -1
-    elif long_ok and short_ok: side = 1 if _rsi_now < 50 else -1
+    # ═══ اتجاه عام — 1d له الأولوية المطلقة ═══
+    if trend_d in ("strong_down", "down"):
+        general_bias = -1
+    elif trend_d in ("strong_up", "up"):
+        general_bias = 1
+    elif trend in ("strong_down", "down"):
+        general_bias = -1
+    elif trend in ("strong_up", "up"):
+        general_bias = 1
     else:
-        if _rsi_now < 30: side = 1
-        elif _rsi_now > 70: side = -1
-        elif trend_d in ("strong_down", "down"): side = -1
-        elif trend_d in ("strong_up", "up"): side = 1
-        elif trend in ("strong_down", "down"): side = -1
-        elif trend in ("strong_up", "up"): side = 1
-        else:
-            _mtf_l, _ = mtf_score(sym, 1)
-            _mtf_s, _ = mtf_score(sym, -1)
-            side = 1 if _mtf_l >= _mtf_s else -1
-    # ═══ فيتو 1d — الأقوى ═══
-    if side == 1 and trend_d in ("strong_down", "down") and _rsi_now > 30:
-        side = -1
-    elif side == -1 and trend_d in ("strong_up", "up") and _rsi_now < 70:
+        general_bias = 0
+    # ═══ القرار النهائي ═══
+    if general_bias != 0:
+        side = general_bias
+    elif long_ok and not short_ok:
         side = 1
+    elif short_ok and not long_ok:
+        side = -1
+    elif long_ok and short_ok:
+        side = 1 if _rsi_now < 50 else -1
+    else:
+        side = 1 if _rsi_now < 50 else -1
     grade = grade_setup(df, i, side)
     lv = compute_meme_levels(df, i, side, price) if is_meme else compute_core_levels(df, i, side, price)
     if lv is None: raise NoData(sym)
@@ -1907,7 +1909,7 @@ async def post_init(app):
         asyncio.create_task(tracker_loop(app)),
         asyncio.create_task(predict_loop(app)),
     ]
-    log.info("ryma v34 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("ryma v35 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
