@@ -27,6 +27,7 @@ GITHUB_TOKEN = _e("GITHUB_TOKEN")
 CONTACT_LINK = _e("CONTACT_LINK", "@rym_rima1")
 CHANNEL_LINK = _e("CHANNEL_LINK", "https://t.me/rym_rima16")
 VIP_LINK = _e("VIP_LINK", "")
+VIP_INVITE_LINK = _e("VIP_INVITE_LINK", "https://t.me/+gTMJiBiiC_IyZjZk")   # ← جديد
 PAYMENT_INFO = _e("PAYMENT_INFO", "Binance Pay: 905142395")
 PROTECT = _e("PROTECT_CONTENT", "1") == "1"
 MAINTENANCE = _e("MAINTENANCE", "0") == "1"
@@ -407,7 +408,6 @@ def bottom_radar(sym):
         if pd.isna(last["rsi"]) or pd.isna(last["ema200"]): return None
         price = float(last["close"]); ema200 = float(last["ema200"])
         diff_pct = (price / ema200 - 1) * 100
-        # مرن: نقبل -15% أو أقل، مع RSI < 50
         rsi_v = float(last["rsi"])
         if diff_pct < -15 and rsi_v < 50:
             severity = "🔥 فرصة قوية" if diff_pct < -40 and rsi_v < 30 else ("⭐ فرصة جيدة" if diff_pct < -25 else "💡 مراقبة")
@@ -1079,9 +1079,10 @@ def build_copy_post(res):
     lines.append(f"🛑 SL: {fmt(lv['sl'])}")
     return "\n".join(lines)
 
+# ========== Keyboards ==========
 def keyboard_free(sym, tf):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💎 اشترك في VIP ✨", callback_data="vip_page")],
+        [InlineKeyboardButton("💎 اشترك في VIP ✨", url=VIP_INVITE_LINK)],          # ← تغيير
         [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
         [InlineKeyboardButton("📞 تواصل معنا", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
         [InlineKeyboardButton("🔄 تحديث", callback_data=f"tf:{sym}:{tf}")],
@@ -1097,6 +1098,7 @@ def keyboard_admin(sym, tf):
          InlineKeyboardButton("💧 السيولة", callback_data=f"liq:{sym}")],
         [InlineKeyboardButton("🐋 الحيتان", callback_data=f"whale:{sym}"),
          InlineKeyboardButton("🧪 Backtest", callback_data=f"btcb:{sym}")],
+        [InlineKeyboardButton("📋 قائمة الأوامر الكاملة", callback_data="admin_menu")],   # ← جديد
         [InlineKeyboardButton("🔄 تحديث", callback_data=f"tf:{sym}:{tf}")],
     ])
 def keyboard(sym, tf, tier):
@@ -1150,6 +1152,44 @@ def build_vip_menu_text():
         "• /futures BTC — بيانات الفيوتشر\n\n"
         "╰━━━━━━━━━━━━━━━━━━━━╯"
     )
+
+# ========== Admin full menu (جديد) ==========
+def build_admin_menu_text():
+    return (
+        "👑 <b>قائمة أوامر الأدمن الكاملة</b>\n\n"
+        "اضغط على أي زر لتنفيذ الأمر مباشرة.\n"
+        "الأوامر التي تحتاج وسيطاً (مثل رمز عملة) سيتم تنبيهك لإرسالها يدوياً.\n"
+    )
+
+def keyboard_admin_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 فحص السوق", callback_data="adm:/scan"),
+         InlineKeyboardButton("🔻 فرص شورت", callback_data="adm:/short")],
+        [InlineKeyboardButton("🔮 التنبؤ", callback_data="adm:/predict"),
+         InlineKeyboardButton("🐋 الحيتان", callback_data="adm:/whales")],
+        [InlineKeyboardButton("💥 الانفجارات", callback_data="adm:/explosions"),
+         InlineKeyboardButton("🚀 الصعود", callback_data="adm:/pump")],
+        [InlineKeyboardButton("📉 القيعان", callback_data="adm:/bottom"),
+         InlineKeyboardButton("🔻 شورت رادار", callback_data="adm:/shortsradar")],
+        [InlineKeyboardButton("⭐ Alpha", callback_data="adm:/alpha")],
+        [InlineKeyboardButton("🧪 Backtest", callback_data="adm:/bt"),
+         InlineKeyboardButton("🧪 Backtest TOP50", callback_data="adm:/bt50")],
+        [InlineKeyboardButton("👥 المستخدمون", callback_data="adm:/users"),
+         InlineKeyboardButton("💎 قائمة VIP", callback_data="adm:/viplist")],
+        [InlineKeyboardButton("📈 إحصائيات", callback_data="adm:/stats"),
+         InlineKeyboardButton("🗂 السجل", callback_data="adm:/history")],
+        [InlineKeyboardButton("🎛 لوحة التحكم", callback_data="adm:/dashboard"),
+         InlineKeyboardButton("📢 اختبار القنوات", callback_data="adm:/testchannels")],
+        [InlineKeyboardButton("🗑 قائمة الحذف", callback_data="adm:/delist"),
+         InlineKeyboardButton("💧 السيولة", callback_data="adm_args:liquidity")],
+        [InlineKeyboardButton("📊 فيوتشر", callback_data="adm_args:futures"),
+         InlineKeyboardButton("💲 أسعار", callback_data="adm_args:price")],
+        [InlineKeyboardButton("🔎 لماذا", callback_data="adm_args:why"),
+         InlineKeyboardButton("📝 نشر توصية", callback_data="adm_args:post")],
+        [InlineKeyboardButton("➕ إضافة VIP", callback_data="adm_args:addvip"),
+         InlineKeyboardButton("➖ إزالة VIP", callback_data="adm_args:removevip")],
+        [InlineKeyboardButton("❌ إغلاق القائمة", callback_data="close_menu")],
+    ])
 
 def build_admin_extras(res):
     trend_ar = {"strong_up":"صاعد قوي 📈","up":"صاعد","strong_down":"هابط قوي 📉",
@@ -1245,7 +1285,6 @@ def event_text(coin, tf, side, e, R, tier="free"):
     return None
 
 async def notify_both(bot, text, protect=True):
-    """يُرسل الحدث لكل من VIP + الأدمن"""
     for chat in (VIP_CHANNEL_ID, ADMIN_ID or None):
         if not chat: continue
         try:
@@ -1254,7 +1293,6 @@ async def notify_both(bot, text, protect=True):
         except Exception: pass
 
 async def notify_free(bot, text):
-    """يُرسل الحدث للقناة المجانية"""
     if CHANNEL_ID:
         try:
             await bot.send_message(CHANNEL_ID, text, protect_content=PROTECT)
@@ -1298,7 +1336,6 @@ async def publish(bot, res, vip=True, free=False, admin_copy=False):
     return sent
 
 def build_market_summary(symbols):
-    """ملخص السوق بنفس تنسيق الصورة"""
     now_ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = ["📊 تنبيهات السوق", f"🕐 {now_ts}", "━━━━━━━━━━━━━━━━", ""]
     for s in symbols:
@@ -1317,18 +1354,15 @@ def build_market_summary(symbols):
     return "\n".join(lines)
 
 async def market_summary_loop(app):
-    """ملخص السوق — كل 4 ساعات"""
     await asyncio.sleep(180)
     FREE_SYMS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX"]
     while True:
         try:
-            # FREE: 10 عملات أساسية
             if CHANNEL_ID:
                 txt = await asyncio.to_thread(build_market_summary, FREE_SYMS)
                 try:
                     await app.bot.send_message(CHANNEL_ID, txt, protect_content=PROTECT)
                 except Exception: pass
-            # VIP: 10 عملات Alpha
             if VIP_CHANNEL_ID:
                 txt = await asyncio.to_thread(build_market_summary, ALPHA_COINS[:10])
                 try:
@@ -1339,7 +1373,6 @@ async def market_summary_loop(app):
         await asyncio.sleep(4 * 3600)
 
 def pick_short_opportunities(n=3):
-    """يختار أفضل 3 فرص شورت"""
     syms = top_symbols(40)
     rows = []
     for s in syms[:30]:
@@ -1349,7 +1382,6 @@ def pick_short_opportunities(n=3):
     return rows[:n]
 
 async def short_free_loop(app):
-    """3 فرص شورت → القناة المجانية — كل 4 ساعات"""
     await asyncio.sleep(300)
     while True:
         try:
@@ -1540,7 +1572,7 @@ def vip_only(fn):
         st, _ = user_status(u.id, rec)
         if st not in ("admin","vip"):
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💎 اشترك في VIP", callback_data="vip_page")],
+                [InlineKeyboardButton("💎 اشترك في VIP", url=VIP_INVITE_LINK)],     # ← تغيير
             ])
             await update.message.reply_text(
                 "🔒 هذه الميزة حصرية لمشتركي VIP فقط\n\n💎 اشترك للحصول عليها",
@@ -1612,12 +1644,17 @@ async def cmd_start(update, ctx):
         await update.message.reply_text(f"🔧 البوت في صيانة.\n📞 {CONTACT_LINK}"); return
     touch_user(update.effective_user, "/start")
     if update.effective_user.id == ADMIN_ID:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 قائمة الأوامر الكاملة", callback_data="admin_menu")],   # ← جديد
+        ])
         await update.message.reply_text(
             "👑 مرحباً أيها الأدمن\n\n"
             "📋 الأوامر الإدارية:\n"
             "/dashboard /users /viplist /stats /history\n"
             "/scan /short /bt /bt50 /post /testchannels\n"
-            "/whales /liquidity /explosions /pump /bottom /alpha /shortsradar /futures /why")
+            "/whales /liquidity /explosions /pump /bottom /alpha /shortsradar /futures /why\n\n"
+            "👇 أو اضغط الزر لعرض كل الأوامر كأزرار",
+            reply_markup=kb)
         return
     u = update.effective_user; rec = touch_user(u, "/start")
     st, day = user_status(u.id, rec)
@@ -1631,7 +1668,7 @@ async def cmd_start(update, ctx):
             reply_markup=kb)
         return
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💎 اشترك في VIP ✨", callback_data="vip_page")],
+        [InlineKeyboardButton("💎 اشترك في VIP ✨", url=VIP_INVITE_LINK)],           # ← تغيير
         [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
         [InlineKeyboardButton("📞 تواصل معنا", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
     ])
@@ -1670,7 +1707,7 @@ async def cmd_vip(update, ctx):
         await update.message.reply_text(f"🔧 البوت في صيانة.\n📞 {CONTACT_LINK}"); return
     u = update.effective_user; rec = touch_user(u, "/vip")
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💎 اشترك الآن ✨", callback_data="vip_page")],
+        [InlineKeyboardButton("💎 اشترك الآن ✨", url=VIP_INVITE_LINK)],             # ← تغيير
         [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
         [InlineKeyboardButton("📞 تواصل معنا", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
     ])
@@ -1681,9 +1718,13 @@ async def cmd_menu(update, ctx):
     u = update.effective_user
     rec = store.data["users"].get(str(u.id), {})
     st, _ = user_status(u.id, rec)
-    if st not in ("admin","vip"):
+    if st == "admin":                                                              # ← جديد
+        await update.message.reply_text(build_admin_menu_text(), reply_markup=keyboard_admin_menu(),
+                                        parse_mode=ParseMode.HTML)
+        return
+    if st != "vip":
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💎 اشترك في VIP", callback_data="vip_page")],
+            [InlineKeyboardButton("💎 اشترك في VIP", url=VIP_INVITE_LINK)],        # ← تغيير
         ])
         await update.message.reply_text("🔒 القائمة متاحة لمشتركي VIP فقط", reply_markup=kb)
         return
@@ -1782,7 +1823,6 @@ async def cmd_short(update, ctx):
 
 @admin_only
 async def cmd_delist(update, ctx):
-    """قائمة العملات التي ستُحذف — فقط المستقبلية"""
     touch_user(update.effective_user, "/delist")
     wait = await update.message.reply_text("⏳ جارٍ الجلب...")
     try:
@@ -1797,7 +1837,6 @@ async def cmd_delist(update, ctx):
         for a in arts[:40]:
             title = a.get("title", "")
             release_ts = a.get("releaseDate", 0)
-            # فقط التنبيهات المستقبلية
             if release_ts and release_ts > now_ms:
                 dt_str = dt.datetime.utcfromtimestamp(release_ts / 1000).strftime("%Y-%m-%d")
                 for w in re.findall(r'\b[A-Z0-9]{2,10}\b', title):
@@ -1806,7 +1845,6 @@ async def cmd_delist(update, ctx):
         if not rows:
             await wait.edit_text("✅ لا توجد عملات مجدولة للحذف حالياً")
             return
-        # إزالة التكرار
         seen = set()
         lines = ["⚠️ عملات مجدولة للحذف قريباً:", ""]
         for c, d, t in rows:
@@ -2093,14 +2131,84 @@ async def cmd_alpha(update, ctx):
         lines.append(f"   📊 30ي {r['change_30d']:+.2f}% | RSI {r['rsi']}")
     await wait.edit_text("\n".join(lines))
 
+# ========== Fake update + admin cmd map (جديد) ==========
+class _FakeUpdate:
+    def __init__(self, msg, user):
+        self.message = msg
+        self.effective_user = user
+        self.callback_query = None
+
+ADMIN_CMD_MAP = {
+    "/predict": cmd_predict, "/whales": cmd_whales, "/explosions": cmd_explosions,
+    "/pump": cmd_pump, "/bottom": cmd_bottoms, "/shortsradar": cmd_shorts_radar,
+    "/alpha": cmd_alpha, "/scan": cmd_scan, "/short": cmd_short,
+    "/bt": cmd_bt, "/bt50": cmd_bt50, "/users": cmd_users,
+    "/viplist": cmd_viplist, "/stats": cmd_stats, "/history": cmd_history,
+    "/dashboard": cmd_dashboard, "/testchannels": cmd_testchannels,
+    "/delist": cmd_delist,
+}
+
+ADMIN_ARGS_HINTS = {
+    "liquidity": "أرسل: /liquidity BTC",
+    "futures": "أرسل: /futures BTC",
+    "price": "أرسل: /price BTC",
+    "why": "أرسل: /why BTC",
+    "post": "أرسل: /post BTC",
+    "addvip": "أرسل: /addvip ID DAYS",
+    "removevip": "أرسل: /removevip ID",
+}
+
 async def cb_handler(update, ctx):
     q = update.callback_query
     try: await q.answer()
     except Exception: pass
+
+    # زر قائمة الأدمن الكاملة
+    if q.data == "admin_menu":
+        if q.from_user.id != ADMIN_ID:
+            return
+        try:
+            await q.message.reply_text(build_admin_menu_text(),
+                                       reply_markup=keyboard_admin_menu(),
+                                       parse_mode=ParseMode.HTML)
+        except Exception as e:
+            try: await q.message.reply_text(f"⚠️ {str(e)[:150]}")
+            except Exception: pass
+        return
+
+    if q.data == "close_menu":
+        try: await q.message.delete()
+        except Exception: pass
+        return
+
+    # أوامر أدمن مباشرة
+    if q.data.startswith("adm_args:"):
+        if q.from_user.id != ADMIN_ID: return
+        key = q.data.split(":", 1)[1]
+        hint = ADMIN_ARGS_HINTS.get(key, "أرسل الأمر مع الوسيط")
+        await q.message.reply_text(f"✏️ {hint}")
+        return
+
+    if q.data.startswith("adm:"):
+        if q.from_user.id != ADMIN_ID: return
+        cmd_name = q.data.split(":", 1)[1]
+        fn = ADMIN_CMD_MAP.get(cmd_name)
+        if not fn:
+            await q.message.reply_text("⚠️ أمر غير معروف")
+            return
+        fake = _FakeUpdate(q.message, q.from_user)
+        try:
+            await fn(fake, ctx)
+        except Exception as e:
+            try: await q.message.reply_text(f"⚠️ {str(e)[:150]}")
+            except Exception: pass
+        return
+
     if q.data == "vip" or q.data == "vip_page":
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📞 تواصل للاشتراك", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
+            [InlineKeyboardButton("💎 انضم لقناة VIP ✨", url=VIP_INVITE_LINK)],     # ← تغيير
             [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
+            [InlineKeyboardButton("📞 تواصل معنا", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
         ])
         try: await q.message.reply_text(build_vip_page(), reply_markup=kb)
         except Exception as e: await q.message.reply_text(f"⚠️ {str(e)[:200]}")
@@ -2110,7 +2218,7 @@ async def cb_handler(update, ctx):
         rec = store.data["users"].get(str(u.id), {})
         st, _ = user_status(u.id, rec)
         if st not in ("admin","vip"):
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("💎 اشترك VIP", callback_data="vip_page")]])
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("💎 اشترك VIP", url=VIP_INVITE_LINK)]])   # ← تغيير
             await q.message.reply_text("🔒 القائمة لمشتركي VIP", reply_markup=kb)
             return
         kb = InlineKeyboardMarkup([
