@@ -79,9 +79,8 @@ CORE_RSI_LONG = (35, 70)
 CORE_RSI_SHORT = (50, 80)
 EXT_MAX_ATR = 3.5
 
-# ═══════════ فلاتر جديدة ═══════════
-MIN_DAILY_VOLUME_USD = 5_000_000  # 5M$ حد أدنى للسيولة
-REQUIRE_MTF_FOR_SMALL = True      # للعملات الصغيرة: MTF إلزامي
+MIN_DAILY_VOLUME_USD = 5_000_000
+REQUIRE_MTF_FOR_SMALL = True
 
 MEME_TP_PCTS = [3.0, 6.0, 10.0, 15.0]
 MEME_TP_FRACS = [0.50, 0.25, 0.15, 0.10]
@@ -298,10 +297,8 @@ def all_prices(sym):
     with ThreadPoolExecutor(len(EXCHANGES)) as pool:
         return {n:p for n,p in pool.map(one, EXCHANGES) if p}
 
-# ═══════════ فلتر السيولة (جديد) ═══════════
 _liq_cache = {}
 def check_liquidity(sym, min_usd=MIN_DAILY_VOLUME_USD):
-    """يتحقق من سيولة العملة اليومية"""
     hit = _liq_cache.get(sym)
     if hit and time.time()-hit[0] < 600: return hit[1]
     try:
@@ -709,13 +706,13 @@ def compute_core_levels(df, i, side, price=None):
         for idx, px in enumerate(targets):
             pct = 100 * side * (px - entry) / entry
             frac = CORE_TP_FRACS[idx] if idx < len(CORE_TP_FRACS) else 0
-            tps.append(dict(px=float(px), pct=round(pct,2), frac=frac, hit=False, src="مقاومة" if side==1 else "دعم"))
+            tps.append(dict(px=float(px), pct=round(pct,2), frac=frac, hit=False, src=""))
         while len(tps) < 4:
             last_px = tps[-1]["px"]
             next_px = last_px + side * atr * 1.5
             pct = 100 * side * (next_px - entry) / entry
             frac = CORE_TP_FRACS[len(tps)] if len(tps) < len(CORE_TP_FRACS) else 0
-            tps.append(dict(px=float(next_px), pct=round(pct,2), frac=frac, hit=False, src="ATR"))
+            tps.append(dict(px=float(next_px), pct=round(pct,2), frac=frac, hit=False, src=""))
         return dict(entry=entry, sl=sl, risk=risk, tps=tps, atr=atr)
     except Exception: return None
 def compute_meme_levels(df, i, side, price=None):
@@ -728,7 +725,7 @@ def compute_meme_levels(df, i, side, price=None):
         tps = []
         for pct, f in zip(MEME_TP_PCTS, MEME_TP_FRACS):
             px = entry * (1 + side*pct/100)
-            tps.append(dict(px=float(px), pct=pct, frac=f, hit=False, src="نسبة"))
+            tps.append(dict(px=float(px), pct=pct, frac=f, hit=False, src=""))
         atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0
         return dict(entry=entry, sl=sl, risk=risk, tps=tps, atr=atr)
     except Exception: return None
@@ -800,17 +797,7 @@ def analyze(sym):
         elif _rsi_now > 65: side = -1
         elif trend in ("strong_down", "down"): side = -1
         else: side = 1
-
-    # ═══════════ فلاتر جديدة ═══════════
-    # 1. فلتر السيولة (دائماً)
-    if not check_liquidity(sym):
-        raise LowLiquidity(sym)
-    # 2. MTF إلزامي للعملات الصغيرة (ليس MAJORS ولا Meme)
-    if REQUIRE_MTF_FOR_SMALL and sym not in MAJORS and not is_meme:
-        mtf_c, mtf_t = mtf_score(sym, side)
-        if mtf_t >= 2 and mtf_c == 0:
-            raise NoData(sym)
-
+    # ⚠️ لا فلاتر هنا — التوصية دائماً
     grade = grade_setup(df, i, side)
     lv = compute_meme_levels(df, i, side, price) if is_meme else compute_core_levels(df, i, side, price)
     if lv is None: raise NoData(sym)
@@ -962,29 +949,43 @@ def render_chart(res, tier="free", published=False):
     return buf
 
 def caption_core(res, tier="free"):
+    """عرض احترافي — مثل أبو تركي وأفضل (بدون Grade/v23/MTF)"""
     side, lv, sym = res["side"], res["lv"], res["sym"]
     side_word = "🟢 شراء (LONG)" if side == 1 else "🔴 بيع (SHORT)"
-    lines = [f"📌 #{sym}/USDT", "", f"🎯 التوصية: {side_word}", "",
-             f"💵 الدخول: {fmt(lv['entry'])}",
-             f"🛑 وقف الخسارة: {fmt(lv['sl'])}", ""]
+    now_ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines = [
+        f"📌 #{sym}/USDT",
+        "",
+        f"🎯 التوصية: {side_word}",
+        "",
+        f"💵 الدخول: {fmt(lv['entry'])}",
+        f"🛑 وقف الخسارة: {fmt(lv['sl'])}",
+        "",
+    ]
     n_tps = 4 if tier in ("admin","vip") else 2
     for i,tp in enumerate(lv["tps"][:n_tps], 1):
-        src = tp.get("src", "")
-        src_txt = f" ({src})" if src else ""
-        lines.append(f"🎯 الهدف {i}: {fmt(tp['px'])}{src_txt}")
-    lines += ["", "━━━━━━━━━━━━━━━━━━━━━━", "",
-              "⚠️ تنبيهات مهمة:",
-              "• ليست كل صفقاتنا ناجحة — قد نصيب وقد نخطئ.",
-              "• إدارة المخاطر هي سر النجاح.",
-              "• التزم بحجم الصفقة المناسب لكل صفقة.",
-              "• هذه ليست نصيحة مالية — اعمل بحثك الخاص.",
-              "", "━━━━━━━━━━━━━━━━━━━━━━", "",
-              "💎 للحصول على التحليل الفني الكامل وأهداف إضافية:"]
+        lines.append(f"🎯 الهدف {i}: {fmt(tp['px'])}")
+    if tier == "free" and len(lv["tps"]) > 2:
+        lines.append("")
+        lines.append("💎 للأهداف الإضافية → VIP")
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "⚠️ تنبيهات مهمة:",
+        "• ليست كل صفقاتنا ناجحة — قد نصيب وقد نخطئ.",
+        "• إدارة المخاطر هي سر النجاح.",
+        "• التزم بحجم الصفقة المناسب لكل صفقة.",
+        "• هذه ليست نصيحة مالية — اعمل بحثك الخاص.",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        f"📅 {now_ts}",
+        f"👤 {BRAND}",
+    ]
     return "\n".join(lines)
 def caption_free(res): return caption_core(res, "free")
-def caption_vip(res):
-    base = caption_core(res, "vip")
-    return base + f"\n\n🏆 الدرجة: {res['grade']}"
+def caption_vip(res): return caption_core(res, "vip")
 
 def keyboard_free(sym, tf):
     return InlineKeyboardMarkup([
@@ -1059,7 +1060,7 @@ def build_admin_extras(res):
     if res.get("candle"): lines.append(f"🕯 الشمعة: {res['candle']}")
     lines.append("")
     for i,tp in enumerate(res['lv']['tps'], 1):
-        lines.append(f"🎯 هدف {i}: {tp['pct']}% ({tp.get('src','')})")
+        lines.append(f"🎯 هدف {i}: {tp['pct']}%")
     return "\n".join(lines)
 def build_copy_post(res):
     side, lv, sym = res["side"], res["lv"], res["sym"]
@@ -1194,7 +1195,13 @@ async def run_autopost(bot):
         key = f"{r['sym']}:{r['tf']}:{r['bar_t']}"
         if key in store.data["posted"] or not can_track(r): continue
         if vip_n >= VIP_POSTS_PER_CYCLE and free_n >= FREE_POSTS_PER_CYCLE: break
-        vip_ok = (vip_n < VIP_POSTS_PER_CYCLE and r["grade"] == "A")
+        # فلاتر جودة VIP فقط
+        vip_quality_ok = check_liquidity(r["sym"])
+        if vip_quality_ok and REQUIRE_MTF_FOR_SMALL and r["sym"] not in MAJORS and r["sym"] not in MEME_COINS:
+            mtf_c, mtf_t = mtf_score(r["sym"], r["side"])
+            if mtf_t >= 2 and mtf_c == 0:
+                vip_quality_ok = False
+        vip_ok = (vip_n < VIP_POSTS_PER_CYCLE and r["grade"] == "A" and vip_quality_ok)
         free_ok = (free_n < FREE_POSTS_PER_CYCLE and _free_day["n"] < FREE_MAX_PER_DAY
                    and r["grade"] in ("A","B"))
         if not vip_ok and not free_ok: continue
@@ -1385,7 +1392,6 @@ async def handle_symbol(update, raw, to_channel=False):
             try: await asyncio.to_thread(track_signal, res)
             except Exception: pass
     except PairNotFound: await update.message.reply_text(f"❌ لم أجد العملة: {sym}")
-    except LowLiquidity: await update.message.reply_text(f"⚠️ سيولة {sym} ضعيفة — تجاوزنا التحليل للحماية")
     except NoData: await update.message.reply_text("⚠️ البيانات غير متوفرة")
     except Exception: log.exception("handle"); await update.message.reply_text("⚠️ حدث خطأ")
     finally:
@@ -1883,7 +1889,7 @@ async def post_init(app):
         asyncio.create_task(tracker_loop(app)),
         asyncio.create_task(predict_loop(app)),
     ]
-    log.info("ryma v31 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("ryma v32 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
