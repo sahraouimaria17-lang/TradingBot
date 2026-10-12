@@ -215,7 +215,6 @@ def time_ago(ts):
 
 class PairNotFound(Exception): pass
 class NoData(Exception): pass
-class LowLiquidity(Exception): pass
 _ex, _ex_lock, _down = {}, {}, {}
 _ex_init = threading.Lock()
 def get_ex(name):
@@ -788,7 +787,7 @@ def analyze(sym):
     price, _ = live_price(sym)
     price = float(price or df["close"].iloc[-1])
     trend = detect_trend(df, i)
-    # ═══ تحقق من 1d (الفريم الكبير) — الأولوية ═══
+    # ═══ 1d trend check ═══
     trend_d = "unknown"
     try:
         df_d = get_candles(sym, "1d", 250, ttl=300, min_bars=100)
@@ -796,12 +795,11 @@ def analyze(sym):
         trend_d = detect_trend(df_d, len(df_d)-1)
     except Exception:
         pass
+    _rsi_now = float(df["rsi"].iloc[i]) if not pd.isna(df["rsi"].iloc[i]) else 50
     if long_ok and not short_ok: side = 1
     elif short_ok and not long_ok: side = -1
-    elif long_ok and short_ok: side = 1 if df["rsi"].iloc[i] < 50 else -1
+    elif long_ok and short_ok: side = 1 if _rsi_now < 50 else -1
     else:
-        _rsi_now = float(df["rsi"].iloc[i]) if not pd.isna(df["rsi"].iloc[i]) else 50
-        # الأولوية: RSI المتطرف > 1d trend > 4h trend > MTF
         if _rsi_now < 30: side = 1
         elif _rsi_now > 70: side = -1
         elif trend_d in ("strong_down", "down"): side = -1
@@ -812,6 +810,11 @@ def analyze(sym):
             _mtf_l, _ = mtf_score(sym, 1)
             _mtf_s, _ = mtf_score(sym, -1)
             side = 1 if _mtf_l >= _mtf_s else -1
+    # ═══ فيتو 1d — الأقوى ═══
+    if side == 1 and trend_d in ("strong_down", "down") and _rsi_now > 30:
+        side = -1
+    elif side == -1 and trend_d in ("strong_up", "up") and _rsi_now < 70:
+        side = 1
     grade = grade_setup(df, i, side)
     lv = compute_meme_levels(df, i, side, price) if is_meme else compute_core_levels(df, i, side, price)
     if lv is None: raise NoData(sym)
@@ -1904,7 +1907,7 @@ async def post_init(app):
         asyncio.create_task(tracker_loop(app)),
         asyncio.create_task(predict_loop(app)),
     ]
-    log.info("ryma v33 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("ryma v34 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
