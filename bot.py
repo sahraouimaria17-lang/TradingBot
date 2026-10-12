@@ -72,7 +72,7 @@ FREE_MAX_PER_DAY = 20
 PIVOT_WINDOW = 100
 PIVOT_LOOKBACK = 3
 MIN_PIVOT_DIST = 0.5
-CORE_SL_MAX = 4.0
+CORE_SL_MAX = 3.0
 CORE_SL_MIN = 1.5
 CORE_TP_FRACS = [0.50, 0.25, 0.15, 0.10]
 BE_TRIGGER_R = 0.1
@@ -753,35 +753,37 @@ def select_targets(pivots, price, side, min_dist_pct=MIN_PIVOT_DIST):
     return selected
 
 def compute_smart_targets(df, i, side, entry, atr):
-    """أهداف ذكية: TP1 سريع + قمم/قيعان/فيبو/ATR — يضمن 4 أهداف دائماً"""
+    """أهداف ذكية: TP1=+2.5% + TP2=+5% + قمم/قيعان/فيبو/ATR — يضمن 4 أهداف"""
     try:
         targets = []
-        # 1. TP1 سريع (+1.5%)
-        targets.append({"px": float(entry * (1 + side * 0.015)), "src": "سريع"})
-        # 2. قمم/قيعان قريبة (Pivots)
+        # 1. TP1 سريع (+2.5%)
+        targets.append({"px": float(entry * (1 + side * 0.025)), "src": "سريع"})
+        # 2. TP2 متوسط (+5%)
+        targets.append({"px": float(entry * (1 + side * 0.05)), "src": "متوسط"})
+        # 3. قمم/قيعان قريبة (Pivots)
         highs, lows = find_pivots(df, PIVOT_WINDOW)
         pivots = select_targets(highs if side==1 else lows, entry, side)
         for p in pivots[:2]:
             targets.append({"px": float(p), "src": "مقاومة" if side==1 else "دعم"})
-        # 3. فيبوناتشي
+        # 4. فيبوناتشي
         fibs = fib_levels(df, SR_LOOKBACK)
         for f in fibs:
             if side == 1 and f > entry:
                 targets.append({"px": float(f), "src": "فيبو"})
             elif side == -1 and f < entry:
                 targets.append({"px": float(f), "src": "فيبو"})
-        # 4. ATR-based
-        targets.append({"px": float(entry + side * 2.0 * atr), "src": "ATR×2"})
+        # 5. ATR-based
         targets.append({"px": float(entry + side * 3.0 * atr), "src": "ATR×3"})
+        targets.append({"px": float(entry + side * 4.0 * atr), "src": "ATR×4"})
         # إزالة التكرارات
         unique = []
         for t in targets:
             if any(abs(t["px"] - u["px"]) / u["px"] < 0.005 for u in unique): continue
             unique.append(t)
         unique.sort(key=lambda x: side * (x["px"] - entry))
-        # ضمان 4 أهداف دائماً
+        # ضمان 4 أهداف
         if len(unique) < 4:
-            extra_mult = [1.5, 2.5, 4.0, 5.0, 6.0, 7.5]
+            extra_mult = [1.5, 2.0, 2.5, 5.0, 6.0, 7.5]
             for m in extra_mult:
                 if len(unique) >= 4: break
                 new_px = entry + side * m * atr
@@ -792,6 +794,7 @@ def compute_smart_targets(df, i, side, entry, atr):
     except Exception: return []
 
 def compute_smart_sl(df, i, side, entry, atr):
+    """SL ذكي: آخر قاع/قمة + 0.5 ATR — dist_max = 3%"""
     try:
         lookback = df.tail(20)
         if side == 1:
@@ -802,12 +805,12 @@ def compute_smart_sl(df, i, side, entry, atr):
             sl = swing + 0.5 * atr
         dist = abs(entry - sl)
         dist_min = entry * 0.015
-        dist_max = entry * 0.04
+        dist_max = entry * 0.03
         dist = min(max(dist, dist_min), dist_max)
         sl = entry - side * dist
         return sl
     except Exception:
-        return entry - side * 0.025 * entry
+        return entry - side * 0.02 * entry
 
 def compute_core_levels(df, i, side, price=None):
     try:
@@ -2002,7 +2005,7 @@ async def post_init(app):
         asyncio.create_task(tracker_loop(app)),
         asyncio.create_task(predict_loop(app)),
     ]
-    log.info("ryma v26 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("ryma v27 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
