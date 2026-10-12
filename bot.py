@@ -35,7 +35,6 @@ EXCHANGES = ["okx", "mexc", "binance", "bybit", "kucoin", "gateio", "bitget"]
 BINANCE_FAPI = "https://fapi.binance.com"
 MAJORS = {"BTC","ETH","BNB","SOL","XRP","ADA","DOGE","AVAX","LINK","DOT","LTC","TRX"}
 
-# v22b الاستراتيجية الأصلية — 19 عملة
 CORE_COINS = ["BTC","ETH","BNB","XRP","ADA","DOGE","AVAX","LTC",
               "NEAR","SUI","ATOM","TRX","BONK","OP"]
 MEME_COINS = ["TIA","FLOKI","SOL","DOT","INJ"]
@@ -75,11 +74,14 @@ CORE_TP_FRACS = [0.50, 0.25, 0.15, 0.10]
 BE_TRIGGER_R = 0.1
 TRAIL_ATR = 3.0
 MAX_HOLD = 60
-# ═══ v22b القيم الأصلية ═══
 CORE_VOL_MULT = 0.7
 CORE_RSI_LONG = (35, 70)
 CORE_RSI_SHORT = (50, 80)
 EXT_MAX_ATR = 3.5
+
+# ═══════════ فلاتر جديدة ═══════════
+MIN_DAILY_VOLUME_USD = 5_000_000  # 5M$ حد أدنى للسيولة
+REQUIRE_MTF_FOR_SMALL = True      # للعملات الصغيرة: MTF إلزامي
 
 MEME_TP_PCTS = [3.0, 6.0, 10.0, 15.0]
 MEME_TP_FRACS = [0.50, 0.25, 0.15, 0.10]
@@ -94,7 +96,6 @@ MEME_MAX_HOLD = 50
 
 RISK_SIZE = {"A": 0.08, "B": 0.05, "C": 0.02}
 
-# Predic
 PREDICT_BB_SQZ = 0.75
 PREDICT_VOL_BUILDUP = 1.4
 PREDICT_RSI_NEUTRAL = (42, 58)
@@ -215,6 +216,7 @@ def time_ago(ts):
 
 class PairNotFound(Exception): pass
 class NoData(Exception): pass
+class LowLiquidity(Exception): pass
 _ex, _ex_lock, _down = {}, {}, {}
 _ex_init = threading.Lock()
 def get_ex(name):
@@ -295,6 +297,24 @@ def all_prices(sym):
         except Exception: return name, None
     with ThreadPoolExecutor(len(EXCHANGES)) as pool:
         return {n:p for n,p in pool.map(one, EXCHANGES) if p}
+
+# ═══════════ فلتر السيولة (جديد) ═══════════
+_liq_cache = {}
+def check_liquidity(sym, min_usd=MIN_DAILY_VOLUME_USD):
+    """يتحقق من سيولة العملة اليومية"""
+    hit = _liq_cache.get(sym)
+    if hit and time.time()-hit[0] < 600: return hit[1]
+    try:
+        df = get_candles(sym, "1h", 24, ttl=600, min_bars=20)
+        if df.empty or len(df) < 20:
+            _liq_cache[sym] = (time.time(), False)
+            return False
+        vol_usdt = float((df["volume"] * df["close"]).sum())
+        ok = vol_usdt >= min_usd
+        _liq_cache[sym] = (time.time(), ok)
+        return ok
+    except Exception:
+        return False
 
 def whale_radar(sym):
     try:
@@ -608,6 +628,29 @@ def detect_trend(df, i):
     if r["ema20"] < r["ema50"] and r["close"] < r["ema200"]: return "down"
     return "range"
 
+def mtf_score(sym, side):
+    try:
+        tfs = []
+        if sym in MAJORS: tfs = ["1d", "4h"]
+        elif sym in MEME_COINS: tfs = ["4h", "1d"]
+        else: tfs = ["4h", "1h", "1d"]
+        confirms = 0; total = 0
+        for tf in tfs:
+            try:
+                df = get_candles(sym, tf, 250, ttl=300, min_bars=100)
+                df = add_indicators(df, 100)
+                last = df.iloc[-1]
+                if pd.isna(last["ema50"]) or pd.isna(last["ema200"]): continue
+                total += 1
+                if side == 1:
+                    if last["close"] > last["ema50"] and last["close"] > last["ema200"]: confirms += 1
+                else:
+                    if last["close"] < last["ema50"] and last["close"] < last["ema200"]: confirms += 1
+            except Exception: continue
+        if total == 0: return 0, 0
+        return confirms, total
+    except Exception: return 0, 0
+
 def find_pivots(df, window=PIVOT_WINDOW, lookback=PIVOT_LOOKBACK):
     try:
         n = len(df)
@@ -641,37 +684,7 @@ def select_targets(pivots, price, side, min_dist_pct=MIN_PIVOT_DIST):
         if len(selected) >= 4: break
     return selected
 
-def compute_smart_targets(df, i, side, entry, atr):
-    """v22b الأصلية: Pivots + fallback نسب"""
-    try:
-        targets = []
-        highs, lows = find_pivots(df, PIVOT_WINDOW)
-        pivots = select_targets(highs if side==1 else lows, entry, side)
-        if len(pivots) < 2:
-            fallback = [2.5, 5.0, 7.0, 8.0]
-            for x in fallback:
-                targets.append({"px": float(entry * (1 + side * x/100)), "src": "نسبة"})
-        else:
-            for p in pivots[:4]:
-                targets.append({"px": float(p), "src": "مقاومة" if side==1 else "دعم"})
-        unique = []
-        for t in targets:
-            if any(abs(t["px"] - u["px"]) / u["px"] < 0.005 for u in unique): continue
-            unique.append(t)
-        unique.sort(key=lambda x: side * (x["px"] - entry))
-        if len(unique) < 4:
-            fb = [2.5, 5.0, 7.0, 8.0, 10.0, 12.0]
-            for x in fb:
-                if len(unique) >= 4: break
-                new_px = entry * (1 + side * x/100)
-                if not any(abs(new_px - u["px"]) / u["px"] < 0.005 for u in unique):
-                    unique.append({"px": float(new_px), "src": "نسبة"})
-            unique.sort(key=lambda x: side * (x["px"] - entry))
-        return unique[:4]
-    except Exception: return []
-
 def compute_core_levels(df, i, side, price=None):
-    """v22b الأصلية: Pivots + SL ذكي"""
     try:
         r = df.iloc[i]
         atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0
@@ -721,7 +734,6 @@ def compute_meme_levels(df, i, side, price=None):
     except Exception: return None
 
 def detect_core_conditions(df, i, side):
-    """v22b الأصلية"""
     if i < 30: return False
     r = df.iloc[i]
     if pd.isna(r.rsi) or pd.isna(r.ema20) or pd.isna(r.ema50) or pd.isna(r.rvol): return False
@@ -788,6 +800,17 @@ def analyze(sym):
         elif _rsi_now > 65: side = -1
         elif trend in ("strong_down", "down"): side = -1
         else: side = 1
+
+    # ═══════════ فلاتر جديدة ═══════════
+    # 1. فلتر السيولة (دائماً)
+    if not check_liquidity(sym):
+        raise LowLiquidity(sym)
+    # 2. MTF إلزامي للعملات الصغيرة (ليس MAJORS ولا Meme)
+    if REQUIRE_MTF_FOR_SMALL and sym not in MAJORS and not is_meme:
+        mtf_c, mtf_t = mtf_score(sym, side)
+        if mtf_t >= 2 and mtf_c == 0:
+            raise NoData(sym)
+
     grade = grade_setup(df, i, side)
     lv = compute_meme_levels(df, i, side, price) if is_meme else compute_core_levels(df, i, side, price)
     if lv is None: raise NoData(sym)
@@ -997,7 +1020,8 @@ def build_vip_page():
         "✅ 💬 مناقشة وتحليل مستمر\n"
         "✅ ⚡ تنبيهات فورية\n"
         "✅ 🛡 إدارة مخاطر احترافية\n"
-        "✅ 🔮 رادار تنبؤي للانفجارات\n\n"
+        "✅ 🔮 رادار تنبؤي للانفجارات\n"
+        "✅ 💧 فلتر السيولة الذكي\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "💎🚀 الرادارات الحصرية 🚀💎\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1068,15 +1092,13 @@ def can_track(res):
     if _linked_block(res["sym"]): return False
     return True
 def track_signal(res):
-    sz = risk_size_v22(res["grade"])
+    sz = RISK_SIZE.get(res["grade"], 0.02)
     p = new_trade(res["sym"], res["tf"], res["side"], res["lv"], res["bar_t"],
                   res["grade"], res["setup"], size_pct=sz)
     with store.lock:
         store.data["signals"].append(p)
         store.save("signals")
     return p
-def risk_size_v22(grade):
-    return RISK_SIZE.get(grade, 0.02)
 def _archive(p):
     with store.lock:
         store.data["history"].append(dict(
@@ -1363,6 +1385,7 @@ async def handle_symbol(update, raw, to_channel=False):
             try: await asyncio.to_thread(track_signal, res)
             except Exception: pass
     except PairNotFound: await update.message.reply_text(f"❌ لم أجد العملة: {sym}")
+    except LowLiquidity: await update.message.reply_text(f"⚠️ سيولة {sym} ضعيفة — تجاوزنا التحليل للحماية")
     except NoData: await update.message.reply_text("⚠️ البيانات غير متوفرة")
     except Exception: log.exception("handle"); await update.message.reply_text("⚠️ حدث خطأ")
     finally:
@@ -1860,8 +1883,7 @@ async def post_init(app):
         asyncio.create_task(tracker_loop(app)),
         asyncio.create_task(predict_loop(app)),
     ]
-    log.info("ryma v30 (v22b + features) started | maintenance=%s | storage=%s",
-             MAINTENANCE, store.remote_msg)
+    log.info("ryma v31 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
