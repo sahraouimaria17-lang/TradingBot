@@ -32,6 +32,7 @@ MAINTENANCE = _e("MAINTENANCE", "0") == "1"
 
 BRAND = "Ryma Crypto"
 EXCHANGES = ["okx", "mexc", "binance", "bybit", "kucoin", "gateio", "bitget"]
+BINANCE_FAPI = "https://fapi.binance.com"
 MAJORS = {"BTC","ETH","BNB","SOL","XRP","ADA","DOGE","AVAX","LINK","DOT","LTC","TRX"}
 
 CORE_COINS = ["AVAX","DOT","LINK","SUI","DOGE","BNB","ATOM",
@@ -56,7 +57,7 @@ PLANS = [("شهر", 30, 50), ("3 أشهر", 90, 100), ("سنة", 365, 300)]
 TRIAL_DAYS = 7
 VIP_FORCE_DAY = 13
 FEE, SLIP = 0.0008, 0.0005
-TF_MS = {"1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
+TF_MS = {"15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
 CANDLE_TTL, PRICE_TTL = 240, 60
 MIN_BARS = 215
 CHART_BARS = 90
@@ -71,10 +72,9 @@ FREE_MAX_PER_DAY = 20
 PIVOT_WINDOW = 100
 PIVOT_LOOKBACK = 3
 MIN_PIVOT_DIST = 0.5
-CORE_SL_MAX = 3.0
+CORE_SL_MAX = 4.0
 CORE_SL_MIN = 1.5
 CORE_TP_FRACS = [0.50, 0.25, 0.15, 0.10]
-CORE_TP_PCTS = [3.0, 6.0, 10.0, 15.0]
 BE_TRIGGER_R = 0.1
 TRAIL_ATR = 3.0
 MAX_HOLD = 60
@@ -108,9 +108,20 @@ RISK_SIZE = {"A": 0.08, "B": 0.05, "C": 0.02}
 RISK_V23_BONUS = 0.02
 RISK_V23_PENALTY = 0.01
 
+# ═══════════════ إعدادات الرادار التنبؤي (جديد) ═══════════════
+PREDICT_BB_SQZ = 0.75
+PREDICT_VOL_BUILDUP = 1.4
+PREDICT_RSI_NEUTRAL = (42, 58)
+PREDICT_OI_CHANGE_MIN = 3.0
+PREDICT_FUNDING_EXTREME = 0.05
+PREDICT_TOP_N = 10
+PREDICT_LOOKBACK = 30
+PREDICT_TF = "4h"
+PREDICT_INTERVAL_HOURS = 4
+
 SR_LOOKBACK = 50
 SR_MERGE_PCT = 0.5
-FIB_LEVELS = [0.236, 0.382, 0.5, 0.618, 0.786]
+FIB_LEVELS = [0.236, 0.382, 0.5, 0.618, 0.786, 1.272, 1.618]
 MACD_FAST, MACD_SLOW, MACD_SIGNAL = 12, 26, 9
 
 GRADE = {2: "A", 1: "B", 0: "C"}
@@ -299,130 +310,147 @@ def all_prices(sym):
         except Exception: return name, None
     with ThreadPoolExecutor(len(EXCHANGES)) as pool:
         return {n:p for n,p in pool.map(one, EXCHANGES) if p}
-def whale_radar(sym):
+
+# ═══════════════ FUTURES DATA (جديد) ═══════════════
+def futures_open_interest(sym):
+    """Open Interest من Binance Futures"""
     try:
-        for ex_name in ["binance", "mexc", "okx", "bybit"]:
-            try:
-                ex = get_ex(ex_name)
-                with _ex_lock[ex_name]:
-                    trades = ex.fetch_trades(f"{sym}/USDT", limit=500)
-                if not trades: continue
-                large, largest = 0, 0.0
-                buy_vol, sell_vol = 0.0, 0.0
-                for t in trades:
-                    notional = float(t.get("price",0)) * float(t.get("amount",0))
-                    largest = max(largest, notional)
-                    if notional >= 20000:
-                        large += 1
-                        side = t.get("side", "")
-                        if side == "buy": buy_vol += notional
-                        elif side == "sell": sell_vol += notional
-                if largest > 0:
-                    return large, largest, buy_vol, sell_vol
-            except Exception: continue
-        return None, None, 0, 0
-    except Exception: return None, None, 0, 0
-def liquidity_radar(sym):
-    try:
-        for ex_name in ["binance", "mexc", "okx", "bybit"]:
-            try:
-                ex = get_ex(ex_name)
-                with _ex_lock[ex_name]:
-                    ob = ex.fetch_order_book(f"{sym}/USDT", limit=50)
-                bids = sum(b[0]*b[1] for b in ob.get("bids",[]))
-                asks = sum(a[0]*a[1] for a in ob.get("asks",[]))
-                total = bids + asks
-                if total > 0:
-                    return dict(bids=bids, asks=asks, ratio=bids/total, source=ex_name)
-            except Exception: continue
-        return None
+        r = requests.get(f"{BINANCE_FAPI}/fapi/v1/openInterest",
+                         params={"symbol": f"{sym}USDT"}, timeout=8)
+        if r.status_code != 200: return None
+        d = r.json()
+        return float(d.get("openInterest", 0))
     except Exception: return None
-def explosion_radar(sym):
+def futures_oi_history(sym, period="4h", limit=20):
+    """تاريخ OI لحساب التغير"""
     try:
-        df = get_candles(sym, "1h", 60, ttl=120, min_bars=30)
-        if df.empty or len(df) < 20: return None
-        last_vol = float(df["volume"].iloc[-1])
-        avg_vol = float(df["volume"].iloc[-20:-1].mean())
-        if avg_vol <= 0: return None
-        ratio = last_vol / avg_vol
-        price_change = (float(df["close"].iloc[-1]) / float(df["close"].iloc[-5]) - 1) * 100
-        return dict(vol_ratio=round(ratio,2), price_change=round(price_change,2))
+        r = requests.get(f"{BINANCE_FAPI}/futures/data/openInterestHist",
+                         params={"symbol": f"{sym}USDT", "period": period, "limit": limit},
+                         timeout=8)
+        if r.status_code != 200: return None
+        data = r.json()
+        if not data: return None
+        oi_values = [float(x["sumOpenInterest"]) for x in data]
+        if len(oi_values) < 5: return None
+        old = sum(oi_values[:3]) / 3
+        new = sum(oi_values[-3:]) / 3
+        if old <= 0: return None
+        change_pct = (new / old - 1) * 100
+        return dict(current=new, change_pct=round(change_pct,2), history=oi_values)
     except Exception: return None
-def pump_radar(sym):
+def futures_funding_rate(sym):
+    """Funding Rate الحالي"""
     try:
-        df = get_candles(sym, "1h", 100, ttl=180, min_bars=30)
-        if df.empty or len(df) < 30: return None
-        change_1h = (float(df["close"].iloc[-1]) / float(df["close"].iloc[-2]) - 1) * 100
-        change_4h = (float(df["close"].iloc[-1]) / float(df["close"].iloc[-5]) - 1) * 100
-        last_vol = float(df["volume"].iloc[-1])
-        avg_vol = float(df["volume"].iloc[-20:-1].mean())
-        if avg_vol <= 0: return None
-        vol_ratio = last_vol / avg_vol
-        if change_1h > 3 and vol_ratio > 2:
-            return dict(change_1h=round(change_1h,2), change_4h=round(change_4h,2), vol_ratio=round(vol_ratio,2))
-        return None
+        r = requests.get(f"{BINANCE_FAPI}/fapi/v1/premiumIndex",
+                         params={"symbol": f"{sym}USDT"}, timeout=8)
+        if r.status_code != 200: return None
+        d = r.json()
+        return float(d.get("lastFundingRate", 0)) * 100
     except Exception: return None
-def bottom_radar(sym):
+def futures_long_short_ratio(sym, period="4h", limit=10):
+    """Long/Short Ratio من Binance Futures"""
     try:
-        df = get_candles(sym, "4h", 200, ttl=300, min_bars=100)
-        if df.empty or len(df) < 100: return None
-        df = add_indicators(df, 100)
-        last = df.iloc[-1]
-        if pd.isna(last["rsi"]) or pd.isna(last["ema200"]): return None
-        price = float(last["close"]); ema200 = float(last["ema200"])
-        diff_pct = (price / ema200 - 1) * 100
-        if diff_pct < -25 and last["rsi"] < 40:
-            return dict(diff=round(diff_pct,1), rsi=round(float(last["rsi"]),1))
-        return None
+        r = requests.get(f"{BINANCE_FAPI}/futures/data/globalLongShortAccountRatio",
+                         params={"symbol": f"{sym}USDT", "period": period, "limit": limit},
+                         timeout=8)
+        if r.status_code != 200: return None
+        data = r.json()
+        if not data: return None
+        ratio = float(data[-1].get("longShortRatio", 1.0))
+        return round(ratio, 3)
     except Exception: return None
-def short_radar(sym):
+
+# ═══════════════ PREDICTIVE RADAR (جديد) ═══════════════
+def predictive_score(sym):
+    """حساب مؤشر التنبؤ بالانفجار"""
     try:
-        df = get_candles(sym, "4h", 200, ttl=300, min_bars=100)
-        if df.empty or len(df) < 100: return None
-        df = add_indicators(df, 100)
-        last = df.iloc[-1]
-        if pd.isna(last["rsi"]) or pd.isna(last["ema50"]): return None
-        if last["rsi"] > 65 and last["close"] < last["ema50"]:
-            return dict(rsi=round(float(last["rsi"]),1),
-                       price=round(float(last["close"]),6))
-        return None
-    except Exception: return None
-def alpha_radar(sym):
-    try:
-        df = get_candles(sym, "1d", 100, ttl=600, min_bars=50)
+        df = get_candles(sym, PREDICT_TF, 200, ttl=180, min_bars=100)
         if df.empty or len(df) < 50: return None
         df = add_indicators(df, 100)
         last = df.iloc[-1]
-        if pd.isna(last["rsi"]) or pd.isna(last["ema20"]) or pd.isna(last["ema50"]): return None
-        change_7d = (float(df["close"].iloc[-1]) / float(df["close"].iloc[-7]) - 1) * 100
-        change_30d = (float(df["close"].iloc[-1]) / float(df["close"].iloc[-30]) - 1) * 100
-        if last["ema20"] > last["ema50"] and 30 < last["rsi"] < 75 and change_7d > 5:
-            return dict(change_7d=round(change_7d,2), change_30d=round(change_30d,2),
-                       rsi=round(float(last["rsi"]),1))
+        if pd.isna(last["bb_up"]) or pd.isna(last["rsi"]) or pd.isna(last["rvol"]): return None
+
+        score = 0
+        reasons = []
+
+        # 1. BB Squeeze (نطاق ضيق = انفجار قريب)
+        bb_up = float(last["bb_up"]); bb_lo = float(last["bb_lo"]); bb_mid = float(last["bb_mid"])
+        bb_width = (bb_up - bb_lo) / bb_mid if bb_mid > 0 else 1
+        widths = ((df["bb_up"] - df["bb_lo"]) / df["bb_mid"]).rolling(20).mean()
+        width_ma = float(widths.iloc[-1]) if not pd.isna(widths.iloc[-1]) else bb_width
+        squeeze_ratio = bb_width / width_ma if width_ma > 0 else 1
+        if squeeze_ratio < PREDICT_BB_SQZ:
+            score += 3
+            reasons.append("BB Squeeze")
+
+        # 2. Volume Buildup (تجميع)
+        rvol = float(last["rvol"])
+        avg_rvol_10 = float(df["rvol"].tail(10).mean())
+        if rvol > PREDICT_VOL_BUILDUP and avg_rvol_10 > 1.0:
+            score += 2
+            reasons.append("حجم متزايد")
+
+        # 3. RSI محايد (استعداد للانفجار)
+        rsi_val = float(last["rsi"])
+        if PREDICT_RSI_NEUTRAL[0] <= rsi_val <= PREDICT_RSI_NEUTRAL[1]:
+            score += 2
+            reasons.append("RSI محايد")
+
+        # 4. Open Interest يرتفع (تحضير)
+        oi = futures_oi_history(sym, "4h", 20)
+        if oi and oi["change_pct"] >= PREDICT_OI_CHANGE_MIN:
+            score += 3
+            reasons.append(f"OI +{oi['change_pct']}%")
+
+        # 5. Funding Rate متطرف (انعكاس)
+        fr = futures_funding_rate(sym)
+        if fr is not None and abs(fr) >= PREDICT_FUNDING_EXTREME:
+            score += 2
+            reasons.append(f"Funding {fr:+.3f}%")
+
+        # 6. Long/Short Ratio
+        ls = futures_long_short_ratio(sym)
+        if ls is not None:
+            if ls >= 1.5:
+                score += 1; reasons.append(f"L/S {ls}")
+            elif ls <= 0.67:
+                score += 1; reasons.append(f"L/S {ls}")
+
+        # 7. اتجاه متوقع
+        trend = detect_trend(df, len(df)-1)
+        if trend in ("strong_up", "up"):
+            direction = "LONG"
+        elif trend in ("strong_down", "down"):
+            direction = "SHORT"
+        else:
+            direction = "LONG" if rsi_val < 50 else "SHORT"
+
+        # 8. جلب السعر
+        price, _ = live_price(sym)
+        price = float(price or last["close"])
+
+        if score < 4: return None
+
+        return dict(
+            sym=sym, score=score, reasons=reasons, direction=direction,
+            price=price, rsi=rsi_val, rvol=rvol,
+            oi_change=oi["change_pct"] if oi else 0,
+            funding=fr if fr else 0,
+            ls_ratio=ls if ls else 0,
+            squeeze_ratio=round(squeeze_ratio, 2),
+            atr=float(last["atr"]) if not pd.isna(last["atr"]) else 0,
+        )
+    except Exception as e:
+        log.warning(f"predictive_score {sym}: {e}")
         return None
-    except Exception: return None
-_top_cache = [0, []]
-def top_symbols(n=60):
-    if time.time()-_top_cache[0] < 1800 and _top_cache[1]: return _top_cache[1][:n]
-    for name in EXCHANGES:
-        if _down.get(name,0) > time.time(): continue
-        try:
-            ex = get_ex(name)
-            with _ex_lock[name]: tk = ex.fetch_tickers()
-            rows = []
-            for s,t in tk.items():
-                if not s.endswith("/USDT") or ":" in s: continue
-                base = s.split("/")[0]
-                if base in STABLES or len(base) < 2: continue
-                if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S)$", base): continue
-                qv = t.get("quoteVolume") or 0
-                if qv and qv > 2e6: rows.append((qv, base))
-            rows.sort(reverse=True)
-            if rows:
-                _top_cache[0], _top_cache[1] = time.time(), [b for _,b in rows]
-                return _top_cache[1][:n]
-        except Exception: continue
-    return COINS[:n]
+def predictive_scan(symbols):
+    """فحص مجموعة عملات"""
+    results = []
+    for s in symbols:
+        r = predictive_score(s)
+        if r: results.append(r)
+    results.sort(key=lambda x: -x["score"])
+    return results[:PREDICT_TOP_N]
 
 def wilder(s,n): return s.ewm(alpha=1/n, adjust=False, min_periods=n).mean()
 def ema(s,n): return s.ewm(span=n, adjust=False, min_periods=n).mean()
@@ -615,32 +643,74 @@ def select_targets(pivots, price, side, min_dist_pct=MIN_PIVOT_DIST):
             selected.append(p)
         if len(selected) >= 4: break
     return selected
+
+# ═══════════════ SMART TARGETS (جديد) ═══════════════
+def compute_smart_targets(df, i, side, entry, atr):
+    """أهداف ذكية: قمم/قيعان/فيبو/ATR"""
+    try:
+        targets = []
+        # 1. قمم/قيعان قريبة (Pivots)
+        highs, lows = find_pivots(df, PIVOT_WINDOW)
+        pivots = select_targets(highs if side==1 else lows, entry, side)
+        for p in pivots[:2]:
+            targets.append({"px": float(p), "src": "مقاومة" if side==1 else "دعم"})
+        # 2. فيبوناتشي
+        fibs = fib_levels(df, SR_LOOKBACK)
+        for f in fibs:
+            if side == 1 and f > entry:
+                targets.append({"px": float(f), "src": "فيبو"})
+            elif side == -1 and f < entry:
+                targets.append({"px": float(f), "src": "فيبو"})
+        # 3. ATR-based (للأهداف البعيدة)
+        targets.append({"px": float(entry + side * 2.0 * atr), "src": "ATR×2"})
+        targets.append({"px": float(entry + side * 3.0 * atr), "src": "ATR×3"})
+        # إزالة التكرارات والترتيب
+        unique = []
+        for t in targets:
+            if any(abs(t["px"] - u["px"]) / u["px"] < 0.005 for u in unique): continue
+            unique.append(t)
+        # ترتيب حسب البعد عن الدخول
+        unique.sort(key=lambda x: side * (x["px"] - entry))
+        return unique[:4]
+    except Exception: return []
+def compute_smart_sl(df, i, side, entry, atr):
+    """SL ذكي: تحت/فوق أقرب قاع/قمة قريبة"""
+    try:
+        lookback = df.tail(20)
+        if side == 1:
+            swing = float(lookback["low"].min())
+            sl = swing - 0.5 * atr
+        else:
+            swing = float(lookback["high"].max())
+            sl = swing + 0.5 * atr
+        # ضمان حدود معقولة
+        dist = abs(entry - sl)
+        dist_min = entry * 0.015
+        dist_max = entry * 0.04
+        dist = min(max(dist, dist_min), dist_max)
+        sl = entry - side * dist
+        return sl
+    except Exception:
+        return entry - side * 0.025 * entry
+
 def compute_core_levels(df, i, side, price=None):
     try:
         r = df.iloc[i]
         atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0
         if atr <= 0: return None
         entry = float(price) if price else float(r["close"])
-        highs, lows = find_pivots(df, PIVOT_WINDOW)
-        targets = select_targets(highs if side==1 else lows, entry, side)
-        if len(targets) < 2:
-            targets = [entry*(1+x/100) for x in CORE_TP_PCTS] if side==1 else [entry*(1-x/100) for x in CORE_TP_PCTS]
-        targets = targets[:4]
-        lookback_df = df.tail(20)
-        swing = float(lookback_df["low"].min()) if side==1 else float(lookback_df["high"].max())
-        sl_raw = swing - 0.1*atr if side==1 else swing + 0.1*atr
-        dist_raw = abs(entry - sl_raw)
-        dist_min = entry * CORE_SL_MIN/100
-        dist_max = entry * CORE_SL_MAX/100
-        dist = min(max(dist_raw, dist_min), dist_max)
-        sl = entry - side * dist
+        smart_targets = compute_smart_targets(df, i, side, entry, atr)
+        if len(smart_targets) < 2:
+            return None
+        sl = compute_smart_sl(df, i, side, entry, atr)
         risk = abs(entry - sl)
         if risk <= 0: return None
         tps = []
-        for idx, px in enumerate(targets):
+        for idx, t in enumerate(smart_targets):
+            px = t["px"]
             pct = 100 * side * (px - entry) / entry
             frac = CORE_TP_FRACS[idx] if idx < len(CORE_TP_FRACS) else 0
-            tps.append(dict(px=float(px), pct=round(pct,2), frac=frac, hit=False))
+            tps.append(dict(px=float(px), pct=round(pct,2), frac=frac, hit=False, src=t.get("src","")))
         if len(tps) < 4:
             remaining = sum(CORE_TP_FRACS[len(tps):])
             if tps: tps[-1]["frac"] += remaining
@@ -650,14 +720,17 @@ def compute_meme_levels(df, i, side, price=None):
     try:
         r = df.iloc[i]
         entry = float(price) if price else float(r["close"])
-        sl = entry * (1 - side * MEME_SL_PCT/100)
+        atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0
+        if atr <= 0:
+            sl = entry * (1 - side * MEME_SL_PCT/100)
+        else:
+            sl = compute_smart_sl(df, i, side, entry, atr)
         risk = abs(entry - sl)
         if risk <= 0: return None
         tps = []
         for pct, f in zip(MEME_TP_PCTS, MEME_TP_FRACS):
             px = entry * (1 + side*pct/100)
-            tps.append(dict(px=float(px), pct=pct, frac=f, hit=False))
-        atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0
+            tps.append(dict(px=float(px), pct=pct, frac=f, hit=False, src="نسبة"))
         return dict(entry=entry, sl=sl, risk=risk, tps=tps, atr=atr)
     except Exception: return None
 
@@ -892,7 +965,9 @@ def caption_core(res, tier="free"):
              f"🛑 وقف الخسارة: {fmt(lv['sl'])}", ""]
     n_tps = 4 if tier in ("admin","vip") else 2
     for i,tp in enumerate(lv["tps"][:n_tps], 1):
-        lines.append(f"🎯 الهدف {i}: {fmt(tp['px'])}")
+        src = tp.get("src", "")
+        src_txt = f" ({src})" if src else ""
+        lines.append(f"🎯 الهدف {i}: {fmt(tp['px'])}{src_txt}")
     lines += ["", "━━━━━━━━━━━━━━━━━━━━━━", "",
               "⚠️ تنبيهات مهمة:",
               "• ليست كل صفقاتنا ناجحة — قد نصيب وقد نخطئ.",
@@ -905,7 +980,7 @@ def caption_core(res, tier="free"):
 def caption_free(res): return caption_core(res, "free")
 def caption_vip(res):
     base = caption_core(res, "vip")
-    return base + f"\n\n🏆 الدرجة: {res['grade']} | تأكيد: {res.get('v23_score',0)}/4"
+    return base + f"\n\n🏆 الدرجة: {res['grade']}"
 
 def keyboard_free(sym, tf):
     return InlineKeyboardMarkup([
@@ -940,7 +1015,8 @@ def build_vip_page():
         "✅ 📡 متابعة لحظية للصفقات\n"
         "✅ 💬 مناقشة وتحليل مستمر\n"
         "✅ ⚡ تنبيهات فورية\n"
-        "✅ 🛡 إدارة مخاطر احترافية\n\n"
+        "✅ 🛡 إدارة مخاطر احترافية\n"
+        "✅ 🔮 رادار تنبؤي للانفجارات\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "💎🚀 الرادارات الحصرية 🚀💎\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -949,7 +1025,8 @@ def build_vip_page():
         "✅ 💧 رادار السيولة\n"
         "✅ 📉 رادار القيعان\n"
         "✅ 🔻 رادار الفرص الشورت\n"
-        "✅ ⭐ رادار عملات Alpha\n\n"
+        "✅ ⭐ رادار عملات Alpha\n"
+        "✅ 🔮 رادار التنبؤ (Predict)\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "💎✨ كيف تنضم لقناة VIP؟ ✨💎\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -979,7 +1056,7 @@ def build_admin_extras(res):
     lines.append(f"✅ تأكيد MTF: {res.get('mtf_conf',0)}/{res.get('mtf_total',0)}")
     lines.append("")
     for i,tp in enumerate(res['lv']['tps'], 1):
-        lines.append(f"🎯 هدف {i}: {tp['pct']}%")
+        lines.append(f"🎯 هدف {i}: {tp['pct']}% ({tp.get('src','')})")
     return "\n".join(lines)
 def build_copy_post(res):
     side, lv, sym = res["side"], res["lv"], res["sym"]
@@ -1119,7 +1196,7 @@ async def run_autopost(bot):
         if key in store.data["posted"] or not can_track(r): continue
         if vip_n >= VIP_POSTS_PER_CYCLE and free_n >= FREE_POSTS_PER_CYCLE: break
         vip_ok = (vip_n < VIP_POSTS_PER_CYCLE and r["grade"] == "A"
-                  and r.get("v23_score",0) >= 3 and r.get("mtf_conf",0) >= 2)
+                  and r.get("v23_score",0) >= 2)
         free_ok = (free_n < FREE_POSTS_PER_CYCLE and _free_day["n"] < FREE_MAX_PER_DAY
                    and r["grade"] in ("A","B"))
         if not vip_ok and not free_ok: continue
@@ -1134,6 +1211,31 @@ async def run_autopost(bot):
             if vip_ok: vip_n += 1
             if free_ok: free_n += 1; _free_day["n"] += 1
             await asyncio.sleep(2)
+
+async def predict_loop(app):
+    await asyncio.sleep(120)
+    while True:
+        try:
+            if VIP_CHANNEL_ID:
+                syms = await asyncio.to_thread(top_symbols, 40)
+                preds = await asyncio.to_thread(predictive_scan, syms[:30])
+                if preds:
+                    lines = ["🔮 رادار التنبؤ بالانفجارات", "", "عملات في طور التحضير لحركة قوية:", ""]
+                    for p in preds[:7]:
+                        icon = "🟢" if p["direction"] == "LONG" else "🔴"
+                        reasons = " | ".join(p["reasons"][:3])
+                        lines.append(f"{icon} #{p['sym']} ({p['score']}/15)")
+                        lines.append(f"   {reasons}")
+                    lines.append("")
+                    lines.append("💎 VIP يحصل على التنبؤات فوراً")
+                    try:
+                        await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines),
+                                                   protect_content=PROTECT)
+                    except Exception: pass
+        except asyncio.CancelledError: raise
+        except Exception: log.exception("predict")
+        await asyncio.sleep(PREDICT_INTERVAL_HOURS * 3600)
+
 async def autopost_loop(app):
     await asyncio.sleep(20)
     while True:
@@ -1304,7 +1406,7 @@ async def cmd_help(update, ctx):
     if MAINTENANCE and update.effective_user.id != ADMIN_ID:
         await update.message.reply_text(f"🔧 البوت في صيانة.\n📞 {CONTACT_LINK}"); return
     touch_user(update.effective_user, "/help")
-    await update.message.reply_text("ℹ️ مساعدة Ryma Crypto\n\n📝 أرسل رمز عملة للتحليل (مثل: BTC)\n🆔 /myid - رقم Telegram\n💎 /vip - معلومات الاشتراك")
+    await update.message.reply_text("ℹ️ مساعدة Ryma Crypto\n\n📝 أرسل رمز عملة للتحليل (مثل: BTC)\n🆔 /myid - رقم Telegram\n💎 /vip - معلومات الاشتراك\n🔮 /predict - رادار التنبؤ")
 async def cmd_myid(update, ctx):
     touch_user(update.effective_user, "/myid")
     await update.message.reply_text(f"🆔 رقمك: {update.effective_user.id}")
@@ -1317,6 +1419,34 @@ async def cmd_vip(update, ctx):
         [InlineKeyboardButton("📞 تواصل معنا مباشرة", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
     ])
     await update.message.reply_text(build_vip_page(), reply_markup=kb)
+
+async def cmd_predict(update, ctx):
+    touch_user(update.effective_user, "/predict")
+    st, ok = await gate(update)
+    if not ok: return
+    wait = await update.message.reply_text("🔮 جارٍ فحص العملات للتنبؤ بالانفجارات...\n(قد يستغرق 30-60 ثانية)")
+    try:
+        syms = await asyncio.to_thread(top_symbols, 40)
+        preds = await asyncio.to_thread(predictive_scan, syms[:30])
+        if not preds:
+            await wait.edit_text("🔮 لا توجد عملات في طور الانفجار حالياً\n(السوق هادئ — جرّب لاحقاً)")
+            return
+        tier = "admin" if st=="admin" else ("vip" if st=="vip" else "free")
+        n_show = 7 if tier in ("admin","vip") else 3
+        lines = ["🔮 رادار التنبؤ بالانفجارات", "", "عملات في طور التحضير لحركة قوية:", ""]
+        for p in preds[:n_show]:
+            icon = "🟢 LONG" if p["direction"] == "LONG" else "🔴 SHORT"
+            lines.append(f"{icon} #{p['sym']} — قوة: {p['score']}/15")
+            lines.append(f"   💵 السعر: {fmt(p['price'])}")
+            for r in p["reasons"][:4]:
+                lines.append(f"   ✅ {r}")
+            lines.append("")
+        if tier == "free":
+            lines.append(f"💎 للأدق والأكثر تفصيلاً → VIP\n📞 {CONTACT_LINK}")
+        await wait.edit_text("\n".join(lines))
+    except Exception as e:
+        log.exception("predict")
+        await wait.edit_text(f"⚠️ حدث خطأ: {str(e)[:150]}")
 
 @admin_only
 async def cmd_post(update, ctx):
@@ -1550,6 +1680,29 @@ async def cmd_liquidity(update, ctx):
         f"📊 نسبة الشراء: {liq['ratio']*100:.1f}%\n"
         f"🎯 {bias}")
 @admin_only
+async def cmd_futures(update, ctx):
+    touch_user(update.effective_user, "/futures")
+    if not ctx.args: await update.message.reply_text("مثال: /futures BTC"); return
+    sym = clean_symbol(ctx.args[0])
+    wait = await update.message.reply_text(f"⏳ جلب بيانات الفيوتشر لـ {sym}...")
+    try:
+        oi = await asyncio.to_thread(futures_oi_history, sym, "4h", 20)
+        fr = await asyncio.to_thread(futures_funding_rate, sym)
+        ls = await asyncio.to_thread(futures_long_short_ratio, sym)
+        lines = [f"📊 بيانات الفيوتشر - {sym}/USDT", ""]
+        if oi:
+            lines.append(f"📈 Open Interest: {oi['current']:,.0f}")
+            lines.append(f"📊 تغير OI (24س): {oi['change_pct']:+.2f}%")
+        if fr is not None:
+            fr_icon = "🟢" if fr > 0 else "🔴"
+            lines.append(f"{fr_icon} Funding Rate: {fr:+.4f}%")
+        if ls is not None:
+            ls_icon = "🟢" if ls > 1.2 else ("🔴" if ls < 0.83 else "⚖️")
+            lines.append(f"{ls_icon} Long/Short Ratio: {ls}")
+        await wait.edit_text("\n".join(lines))
+    except Exception as e:
+        await wait.edit_text(f"⚠️ خطأ: {str(e)[:150]}")
+@admin_only
 async def cmd_explosions(update, ctx):
     touch_user(update.effective_user, "/explosions")
     wait = await update.message.reply_text("⏳ رادار الانفجارات...")
@@ -1709,13 +1862,17 @@ async def on_text(update, ctx):
     if update.message and update.message.text:
         await handle_symbol(update, update.message.text.split()[0])
 
-PUBLIC_COMMANDS = [("start","ابدأ"),("help","المساعدة"),("myid","رقمي"),("vip","VIP")]
+PUBLIC_COMMANDS = [("start","ابدأ"),("help","المساعدة"),("myid","رقمي"),
+                   ("vip","VIP"),("predict","رادار التنبؤ 🔮")]
 async def post_init(app):
     try: await app.bot.set_my_commands([BotCommand(c,d) for c,d in PUBLIC_COMMANDS])
     except Exception: pass
-    app.bot_data["tasks"] = [asyncio.create_task(autopost_loop(app)),
-                             asyncio.create_task(tracker_loop(app))]
-    log.info("ryma v24 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    app.bot_data["tasks"] = [
+        asyncio.create_task(autopost_loop(app)),
+        asyncio.create_task(tracker_loop(app)),
+        asyncio.create_task(predict_loop(app)),
+    ]
+    log.info("ryma v25 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
@@ -1726,12 +1883,13 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
     handlers = [
         ("start",cmd_start),("help",cmd_help),("myid",cmd_myid),("vip",cmd_vip),
+        ("predict",cmd_predict),
         ("post",cmd_post),("bt",cmd_bt),("backtest",cmd_bt),("bt50",cmd_bt50),
         ("scan",cmd_scan),("short",cmd_short),("delist",cmd_delist),("price",cmd_price),
         ("users",cmd_users),("testchannels",cmd_testchannels),("stats",cmd_stats),
         ("history",cmd_history),("dashboard",cmd_dashboard),
         ("addvip",cmd_addvip),("removevip",cmd_removevip),("viplist",cmd_viplist),
-        ("whales",cmd_whales),("liquidity",cmd_liquidity),
+        ("whales",cmd_whales),("liquidity",cmd_liquidity),("futures",cmd_futures),
         ("explosions",cmd_explosions),("pump",cmd_pump),("bottoms",cmd_bottoms),
         ("shortsradar",cmd_shorts_radar),("alpha",cmd_alpha),
     ]
@@ -1744,4 +1902,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-      
