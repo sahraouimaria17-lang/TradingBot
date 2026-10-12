@@ -34,7 +34,7 @@ MAINTENANCE = _e("MAINTENANCE", "0") == "1"
 
 BRAND = "💎 Ryma Crypto 💎"
 
-# ✅ منصات موسّعة (12 منصة) — تغطية أعلى للعملات الصغيرة
+# ✅ منصات موسّعة (12 منصة)
 EXCHANGES = ["binance", "okx", "mexc", "bybit", "kucoin", "gateio",
              "bitget", "htx", "bingx", "lbank", "bitmart", "poloniex"]
 
@@ -308,6 +308,7 @@ def live_price(sym):
         except ccxt.NetworkError: _down[name] = time.time()+120
         except Exception: continue
     return None, None
+
 def all_prices(sym):
     def one(name):
         try:
@@ -319,23 +320,39 @@ def all_prices(sym):
     with ThreadPoolExecutor(len(EXCHANGES)) as pool:
         return {n:p for n,p in pool.map(one, EXCHANGES) if p}
 
+# ============ ✅ ticker_change مُصلَح ============
 def ticker_change(sym):
-    try:
-        ex = get_ex("binance")
-        with _ex_lock["binance"]:
-            t = ex.fetch_ticker(f"{sym}/USDT")
-        price = float(t.get("last") or 0)
-        change_24h = float(t.get("percentage") or 0)
-        change_7d = 0.0
+    """جلب السعر + تغييرات 24h و 7d — بمحاولة عدة منصات (fallback)"""
+    price, change_24h = 0.0, 0.0
+
+    for ex_name in ["binance", "mexc", "gateio", "bitget", "okx",
+                    "kucoin", "bybit", "htx"]:
+        if _down.get(ex_name, 0) > time.time():
+            continue
         try:
-            df = get_candles(sym, "1d", 10, ttl=600, min_bars=8)
-            if len(df) >= 8 and float(df["close"].iloc[-8]) > 0:
-                change_7d = (float(df["close"].iloc[-1]) / float(df["close"].iloc[-8]) - 1) * 100
+            ex = get_ex(ex_name)
+            with _ex_lock[ex_name]:
+                t = ex.fetch_ticker(f"{sym}/USDT")
+            p = float(t.get("last") or 0)
+            if p > 0:
+                price = p
+                change_24h = float(t.get("percentage") or 0)
+                break
+        except ccxt.NetworkError:
+            _down[ex_name] = time.time() + 120
+            continue
         except Exception:
-            pass
-        return price, change_24h, change_7d
+            continue
+
+    change_7d = 0.0
+    try:
+        df = get_candles(sym, "1d", 10, ttl=600, min_bars=8)
+        if len(df) >= 8 and float(df["close"].iloc[-8]) > 0:
+            change_7d = (float(df["close"].iloc[-1]) / float(df["close"].iloc[-8]) - 1) * 100
     except Exception:
-        return 0, 0, 0
+        pass
+
+    return price, change_24h, change_7d
 
 _liq_cache = {}
 def check_liquidity(sym, min_usd=MIN_DAILY_VOLUME_USD):
@@ -1367,21 +1384,32 @@ async def publish(bot, res, vip=True, free=False, admin_copy=False):
     except Exception as e: sent.append(f"err:{str(e)[:40]}")
     return sent
 
+# ============ ✅ build_market_summary مُصلَح ============
 def build_market_summary(symbols):
     now_ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = ["📊 تنبيهات السوق", f"🕐 {now_ts}", "━━━━━━━━━━━━━━━━", ""]
+    ok_count = 0
     for s in symbols:
         try:
             price, ch24, ch7 = ticker_change(s)
-            if price <= 0: continue
+            if price <= 0:
+                log.warning(f"market_summary: لم أجد سعر {s} من أي منصة")
+                continue
             icon_24 = "🔺" if ch24 >= 0 else "🔻"
             icon_7 = "🔺" if ch7 >= 0 else "🔻"
             lines.append(f"💠 {s} — {fmt(price)}")
             lines.append(f"{icon_24} 24h: {ch24:+.2f}%")
             lines.append(f"{icon_7} 7d: {ch7:+.2f}%")
             lines.append("")
-        except Exception:
+            ok_count += 1
+        except Exception as e:
+            log.warning(f"market_summary {s}: {e}")
             continue
+
+    if ok_count == 0:
+        log.warning("market_summary: لا توجد بيانات — تخطي الإرسال")
+        return None
+
     lines.append(f"📣 {CHANNEL_LINK}")
     return "\n".join(lines)
 
@@ -1392,14 +1420,16 @@ async def market_summary_loop(app):
         try:
             if CHANNEL_ID:
                 txt = await asyncio.to_thread(build_market_summary, FREE_SYMS)
-                try:
-                    await app.bot.send_message(CHANNEL_ID, txt, protect_content=PROTECT)
-                except Exception: pass
+                if txt:
+                    try:
+                        await app.bot.send_message(CHANNEL_ID, txt, protect_content=PROTECT)
+                    except Exception: pass
             if VIP_CHANNEL_ID:
                 txt = await asyncio.to_thread(build_market_summary, ALPHA_COINS[:10])
-                try:
-                    await app.bot.send_message(VIP_CHANNEL_ID, txt, protect_content=PROTECT)
-                except Exception: pass
+                if txt:
+                    try:
+                        await app.bot.send_message(VIP_CHANNEL_ID, txt, protect_content=PROTECT)
+                    except Exception: pass
         except asyncio.CancelledError: raise
         except Exception: log.exception("market_summary")
         await asyncio.sleep(4 * 3600)
@@ -2367,7 +2397,7 @@ async def post_init(app):
         asyncio.create_task(market_summary_loop(app)),
         asyncio.create_task(short_free_loop(app)),
     ]
-    log.info("ryma v41 started | maintenance=%s | storage=%s | exchanges=%d",
+    log.info("ryma v42 started | maintenance=%s | storage=%s | exchanges=%d",
              MAINTENANCE, store.remote_msg, len(EXCHANGES))
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
