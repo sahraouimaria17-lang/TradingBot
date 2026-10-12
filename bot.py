@@ -27,13 +27,17 @@ GITHUB_TOKEN = _e("GITHUB_TOKEN")
 CONTACT_LINK = _e("CONTACT_LINK", "@rym_rima1")
 CHANNEL_LINK = _e("CHANNEL_LINK", "https://t.me/rym_rima16")
 VIP_LINK = _e("VIP_LINK", "")
-VIP_INVITE_LINK = _e("VIP_INVITE_LINK", "https://t.me/+gTMJiBiiC_IyZjZk")   # ← جديد
+VIP_INVITE_LINK = _e("VIP_INVITE_LINK", "https://t.me/+gTMJiBiiC_IyZjZk")
 PAYMENT_INFO = _e("PAYMENT_INFO", "Binance Pay: 905142395")
 PROTECT = _e("PROTECT_CONTENT", "1") == "1"
 MAINTENANCE = _e("MAINTENANCE", "0") == "1"
 
 BRAND = "💎 Ryma Crypto 💎"
-EXCHANGES = ["okx", "mexc", "binance", "bybit", "kucoin", "gateio", "bitget"]
+
+# ✅ منصات موسّعة (12 منصة) — تغطية أعلى للعملات الصغيرة
+EXCHANGES = ["binance", "okx", "mexc", "bybit", "kucoin", "gateio",
+             "bitget", "htx", "bingx", "lbank", "bitmart", "poloniex"]
+
 BINANCE_FAPI = "https://fapi.binance.com"
 MAJORS = {"BTC","ETH","BNB","SOL","XRP","ADA","DOGE","AVAX","LINK","DOT","LTC","TRX"}
 
@@ -223,7 +227,7 @@ _ex_init = threading.Lock()
 def get_ex(name):
     with _ex_init:
         if name not in _ex:
-            _ex[name] = getattr(ccxt, name)({"enableRateLimit":True,"timeout":15000})
+            _ex[name] = getattr(ccxt, name)({"enableRateLimit":True,"timeout":12000})
             _ex_lock[name] = threading.Lock()
     return _ex[name]
 def default_tf(sym): return "1d" if sym in MAJORS else "4h"
@@ -249,30 +253,46 @@ def _fetch_exchange(name, sym, tf, bars):
             if last_ts + tfms >= now: break
             since = last_ts + tfms
     return rows
+
 _candle_cache = {}
 def get_candles(sym, tf, bars=450, ttl=CANDLE_TTL, min_bars=MIN_BARS):
     key = (sym, tf, bars, min_bars)
     hit = _candle_cache.get(key)
     if hit and time.time()-hit[0] < ttl: return hit[1]
-    notfound, best = 0, None
+
+    bad, tried, best = 0, 0, None
     for name in EXCHANGES:
-        if _down.get(name,0) > time.time(): continue
-        try: df = _rows_to_df(_fetch_exchange(name, sym, tf, bars), tf, bars)
-        except ccxt.BadSymbol: notfound += 1; continue
-        except ccxt.NetworkError: _down[name] = time.time()+300; continue
-        except Exception: continue
+        if _down.get(name, 0) > time.time(): continue
+        tried += 1
+        try:
+            rows = _fetch_exchange(name, sym, tf, bars)
+        except ccxt.BadSymbol:
+            bad += 1
+            continue
+        except ccxt.NetworkError:
+            _down[name] = time.time() + 120
+            continue
+        except Exception as e:
+            log.debug(f"{sym} {tf} {name}: {type(e).__name__}: {str(e)[:60]}")
+            continue
+        if not rows: continue
+        df = _rows_to_df(rows, tf, bars)
         if len(df) >= min_bars:
             df.attrs.update(source=name, degraded=False)
             _candle_cache[key] = (time.time(), df)
             return df
         if len(df) >= 40 and (best is None or len(df) > len(best)):
-            df.attrs.update(source=name, degraded=True); best = df
+            df.attrs.update(source=name, degraded=True)
+            best = df
+
     if best is not None:
-        best.attrs["degraded"] = True
         _candle_cache[key] = (time.time(), best)
         return best
-    if notfound: raise PairNotFound(sym)
+
+    if tried > 0 and bad == tried:
+        raise PairNotFound(sym)
     raise NoData(sym)
+
 _price_cache = {}
 def live_price(sym):
     hit = _price_cache.get(sym)
@@ -285,7 +305,7 @@ def live_price(sym):
             p = float(t.get("last") or 0)
             if p > 0:
                 _price_cache[sym] = (time.time(), p, name); return p, name
-        except ccxt.NetworkError: _down[name] = time.time()+300
+        except ccxt.NetworkError: _down[name] = time.time()+120
         except Exception: continue
     return None, None
 def all_prices(sym):
@@ -300,7 +320,6 @@ def all_prices(sym):
         return {n:p for n,p in pool.map(one, EXCHANGES) if p}
 
 def ticker_change(sym):
-    """جلب السعر + تغييرات 24h و 7d"""
     try:
         ex = get_ex("binance")
         with _ex_lock["binance"]:
@@ -336,7 +355,7 @@ def check_liquidity(sym, min_usd=MIN_DAILY_VOLUME_USD):
 
 def whale_radar(sym):
     try:
-        for ex_name in ["binance", "mexc", "okx", "bybit"]:
+        for ex_name in ["binance", "mexc", "okx", "bybit", "gateio", "bitget"]:
             try:
                 ex = get_ex(ex_name)
                 with _ex_lock[ex_name]:
@@ -359,7 +378,7 @@ def whale_radar(sym):
     except Exception: return None, None, 0, 0
 def liquidity_radar(sym):
     try:
-        for ex_name in ["binance", "mexc", "okx", "bybit"]:
+        for ex_name in ["binance", "mexc", "okx", "bybit", "gateio", "bitget"]:
             try:
                 ex = get_ex(ex_name)
                 with _ex_lock[ex_name]:
@@ -399,7 +418,6 @@ def pump_radar(sym):
     except Exception: return None
 
 def bottom_radar(sym):
-    """رادار القيعان — دائماً يعطي نتيجة حسب قوة الانخفاض"""
     try:
         df = get_candles(sym, "4h", 400, ttl=300, min_bars=200)
         if df.empty or len(df) < 200: return None
@@ -443,7 +461,7 @@ def alpha_radar(sym):
 _top_cache = [0, []]
 def top_symbols(n=60):
     if time.time()-_top_cache[0] < 1800 and _top_cache[1]: return _top_cache[1][:n]
-    for name in EXCHANGES:
+    for name in ["binance","mexc","gateio","bitget","okx","kucoin","bybit","htx"]:
         if _down.get(name,0) > time.time(): continue
         try:
             ex = get_ex(name)
@@ -856,7 +874,22 @@ def decide_side(df, i, trend, bias_d, long_ok, short_ok):
 _analysis_cache = {}
 def analyze(sym):
     tf = default_tf(sym)
-    df = get_candles(sym, tf, 450)
+    df = None
+    last_err = None
+    fallbacks = [tf] + [x for x in ("1h", "4h", "1d") if x != tf]
+    for try_tf in fallbacks:
+        try:
+            df = get_candles(sym, try_tf, 450)
+            tf = try_tf
+            break
+        except PairNotFound:
+            raise
+        except NoData as e:
+            last_err = e
+            continue
+    if df is None:
+        raise last_err or NoData(sym)
+
     degraded = bool(df.attrs.get("degraded"))
     df = add_indicators(df, 100)
     i = len(df) - 1
@@ -1082,7 +1115,7 @@ def build_copy_post(res):
 # ========== Keyboards ==========
 def keyboard_free(sym, tf):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💎 اشترك في VIP ✨", url=VIP_INVITE_LINK)],          # ← تغيير
+        [InlineKeyboardButton("💎 اشترك في VIP ✨", url=VIP_INVITE_LINK)],
         [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
         [InlineKeyboardButton("📞 تواصل معنا", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
         [InlineKeyboardButton("🔄 تحديث", callback_data=f"tf:{sym}:{tf}")],
@@ -1098,7 +1131,7 @@ def keyboard_admin(sym, tf):
          InlineKeyboardButton("💧 السيولة", callback_data=f"liq:{sym}")],
         [InlineKeyboardButton("🐋 الحيتان", callback_data=f"whale:{sym}"),
          InlineKeyboardButton("🧪 Backtest", callback_data=f"btcb:{sym}")],
-        [InlineKeyboardButton("📋 قائمة الأوامر الكاملة", callback_data="admin_menu")],   # ← جديد
+        [InlineKeyboardButton("📋 قائمة الأوامر الكاملة", callback_data="admin_menu")],
         [InlineKeyboardButton("🔄 تحديث", callback_data=f"tf:{sym}:{tf}")],
     ])
 def keyboard(sym, tf, tier):
@@ -1153,12 +1186,11 @@ def build_vip_menu_text():
         "╰━━━━━━━━━━━━━━━━━━━━╯"
     )
 
-# ========== Admin full menu (جديد) ==========
 def build_admin_menu_text():
     return (
         "👑 <b>قائمة أوامر الأدمن الكاملة</b>\n\n"
         "اضغط على أي زر لتنفيذ الأمر مباشرة.\n"
-        "الأوامر التي تحتاج وسيطاً (مثل رمز عملة) سيتم تنبيهك لإرسالها يدوياً.\n"
+        "الأوامر التي تحتاج وسيطاً سيتم تنبيهك لإرسالها يدوياً.\n"
     )
 
 def keyboard_admin_menu():
@@ -1572,7 +1604,7 @@ def vip_only(fn):
         st, _ = user_status(u.id, rec)
         if st not in ("admin","vip"):
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💎 اشترك في VIP", url=VIP_INVITE_LINK)],     # ← تغيير
+                [InlineKeyboardButton("💎 اشترك في VIP", url=VIP_INVITE_LINK)],
             ])
             await update.message.reply_text(
                 "🔒 هذه الميزة حصرية لمشتركي VIP فقط\n\n💎 اشترك للحصول عليها",
@@ -1645,7 +1677,7 @@ async def cmd_start(update, ctx):
     touch_user(update.effective_user, "/start")
     if update.effective_user.id == ADMIN_ID:
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📋 قائمة الأوامر الكاملة", callback_data="admin_menu")],   # ← جديد
+            [InlineKeyboardButton("📋 قائمة الأوامر الكاملة", callback_data="admin_menu")],
         ])
         await update.message.reply_text(
             "👑 مرحباً أيها الأدمن\n\n"
@@ -1668,7 +1700,7 @@ async def cmd_start(update, ctx):
             reply_markup=kb)
         return
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💎 اشترك في VIP ✨", url=VIP_INVITE_LINK)],           # ← تغيير
+        [InlineKeyboardButton("💎 اشترك في VIP ✨", url=VIP_INVITE_LINK)],
         [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
         [InlineKeyboardButton("📞 تواصل معنا", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
     ])
@@ -1707,7 +1739,7 @@ async def cmd_vip(update, ctx):
         await update.message.reply_text(f"🔧 البوت في صيانة.\n📞 {CONTACT_LINK}"); return
     u = update.effective_user; rec = touch_user(u, "/vip")
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💎 اشترك الآن ✨", url=VIP_INVITE_LINK)],             # ← تغيير
+        [InlineKeyboardButton("💎 اشترك الآن ✨", url=VIP_INVITE_LINK)],
         [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
         [InlineKeyboardButton("📞 تواصل معنا", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
     ])
@@ -1718,13 +1750,13 @@ async def cmd_menu(update, ctx):
     u = update.effective_user
     rec = store.data["users"].get(str(u.id), {})
     st, _ = user_status(u.id, rec)
-    if st == "admin":                                                              # ← جديد
+    if st == "admin":
         await update.message.reply_text(build_admin_menu_text(), reply_markup=keyboard_admin_menu(),
                                         parse_mode=ParseMode.HTML)
         return
     if st != "vip":
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💎 اشترك في VIP", url=VIP_INVITE_LINK)],        # ← تغيير
+            [InlineKeyboardButton("💎 اشترك في VIP", url=VIP_INVITE_LINK)],
         ])
         await update.message.reply_text("🔒 القائمة متاحة لمشتركي VIP فقط", reply_markup=kb)
         return
@@ -2131,7 +2163,7 @@ async def cmd_alpha(update, ctx):
         lines.append(f"   📊 30ي {r['change_30d']:+.2f}% | RSI {r['rsi']}")
     await wait.edit_text("\n".join(lines))
 
-# ========== Fake update + admin cmd map (جديد) ==========
+# ========== Fake update + admin cmd map ==========
 class _FakeUpdate:
     def __init__(self, msg, user):
         self.message = msg
@@ -2163,7 +2195,6 @@ async def cb_handler(update, ctx):
     try: await q.answer()
     except Exception: pass
 
-    # زر قائمة الأدمن الكاملة
     if q.data == "admin_menu":
         if q.from_user.id != ADMIN_ID:
             return
@@ -2181,7 +2212,6 @@ async def cb_handler(update, ctx):
         except Exception: pass
         return
 
-    # أوامر أدمن مباشرة
     if q.data.startswith("adm_args:"):
         if q.from_user.id != ADMIN_ID: return
         key = q.data.split(":", 1)[1]
@@ -2206,7 +2236,7 @@ async def cb_handler(update, ctx):
 
     if q.data == "vip" or q.data == "vip_page":
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💎 انضم لقناة VIP ✨", url=VIP_INVITE_LINK)],     # ← تغيير
+            [InlineKeyboardButton("💎 انضم لقناة VIP ✨", url=VIP_INVITE_LINK)],
             [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
             [InlineKeyboardButton("📞 تواصل معنا", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
         ])
@@ -2218,7 +2248,7 @@ async def cb_handler(update, ctx):
         rec = store.data["users"].get(str(u.id), {})
         st, _ = user_status(u.id, rec)
         if st not in ("admin","vip"):
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("💎 اشترك VIP", url=VIP_INVITE_LINK)]])   # ← تغيير
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("💎 اشترك VIP", url=VIP_INVITE_LINK)]])
             await q.message.reply_text("🔒 القائمة لمشتركي VIP", reply_markup=kb)
             return
         kb = InlineKeyboardMarkup([
@@ -2337,7 +2367,8 @@ async def post_init(app):
         asyncio.create_task(market_summary_loop(app)),
         asyncio.create_task(short_free_loop(app)),
     ]
-    log.info("ryma v40 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("ryma v41 started | maintenance=%s | storage=%s | exchanges=%d",
+             MAINTENANCE, store.remote_msg, len(EXCHANGES))
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
