@@ -35,20 +35,19 @@ EXCHANGES = ["okx", "mexc", "binance", "bybit", "kucoin", "gateio", "bitget"]
 BINANCE_FAPI = "https://fapi.binance.com"
 MAJORS = {"BTC","ETH","BNB","SOL","XRP","ADA","DOGE","AVAX","LINK","DOT","LTC","TRX"}
 
-CORE_COINS = ["AVAX","DOT","LINK","SUI","DOGE","BNB","ATOM",
-              "ETH","LTC","ADA","XRP","TRX","APT","OP",
-              "BTC","SOL","NEAR","ARB"]
-MEME_COINS = ["TIA","FLOKI"]
+# v22b الاستراتيجية الأصلية — 19 عملة
+CORE_COINS = ["BTC","ETH","BNB","XRP","ADA","DOGE","AVAX","LTC",
+              "NEAR","SUI","ATOM","TRX","BONK","OP"]
+MEME_COINS = ["TIA","FLOKI","SOL","DOT","INJ"]
 COINS = CORE_COINS + MEME_COINS
 
-WEAK_COINS = {"UNI","INJ","BONK","WIF","SHIB","JUP","RAY","MEME","WLD","PEPE","ZEC"}
+WEAK_COINS = set()
 
 LINKED_GROUPS = [
     {"BTC","ETH","BNB"},
-    {"SOL","AVAX","NEAR","SUI","APT"},
-    {"DOGE","FLOKI","BONK","WIF","SHIB"},
-    {"TIA","INJ","DOT","ATOM","LINK"},
-    {"PEPE","MEME","WLD","JUP","RAY","ARB","UNI","OP"},
+    {"SOL","AVAX","NEAR","SUI"},
+    {"DOGE","FLOKI","BONK"},
+    {"TIA","INJ","DOT","ATOM"},
 ]
 
 STABLES = {"USDT","USDC","FDUSD","TUSD","DAI","BUSD","USDP","USDD","USDE","PYUSD","EUR","AEUR"}
@@ -62,31 +61,30 @@ CANDLE_TTL, PRICE_TTL = 240, 60
 MIN_BARS = 215
 CHART_BARS = 90
 SCAN_WORKERS = 4
-MAX_OPEN = 6
-MAX_BUY = 3
-MAX_SELL = 3
-VIP_POSTS_PER_CYCLE = 3
+MAX_OPEN = 8
+VIP_POSTS_PER_CYCLE = 5
 FREE_POSTS_PER_CYCLE = 5
 FREE_MAX_PER_DAY = 20
 
 PIVOT_WINDOW = 100
 PIVOT_LOOKBACK = 3
 MIN_PIVOT_DIST = 0.5
-CORE_SL_MAX = 3.0
+CORE_SL_MAX = 4.0
 CORE_SL_MIN = 1.5
 CORE_TP_FRACS = [0.50, 0.25, 0.15, 0.10]
 BE_TRIGGER_R = 0.1
 TRAIL_ATR = 3.0
 MAX_HOLD = 60
-CORE_VOL_MULT = 0.9
-CORE_RSI_LONG = (40, 65)
-CORE_RSI_SHORT = (35, 75)
+# ═══ v22b القيم الأصلية ═══
+CORE_VOL_MULT = 0.7
+CORE_RSI_LONG = (35, 70)
+CORE_RSI_SHORT = (50, 80)
 EXT_MAX_ATR = 3.5
 
 MEME_TP_PCTS = [3.0, 6.0, 10.0, 15.0]
 MEME_TP_FRACS = [0.50, 0.25, 0.15, 0.10]
 MEME_SL_PCT = 6.5
-MEME_VOL_MULT = 2.0
+MEME_VOL_MULT = 1.5
 MEME_RSI_LOW = 25
 MEME_RSI_HIGH = 75
 MEME_BREAKOUT_BARS = 5
@@ -94,27 +92,15 @@ MEME_TRAIL_ATR = 2.0
 MEME_TIME_STOP = 15
 MEME_MAX_HOLD = 50
 
-V23_VWAP_PERIOD = 20
-V23_ST_ATR = 10
-V23_ST_MULT = 3.0
-V23_MACD_FAST, V23_MACD_SLOW, V23_MACD_SIG = 12, 26, 9
-V23_RSI_PERIOD = 14
-V23_RSI_OB, V23_RSI_OS = 70, 30
-V23_BB_PERIOD = 20
-V23_BB_STD = 2.0
-V23_BB_SQZ = 0.8
-
 RISK_SIZE = {"A": 0.08, "B": 0.05, "C": 0.02}
-RISK_V23_BONUS = 0.02
-RISK_V23_PENALTY = 0.01
 
+# Predic
 PREDICT_BB_SQZ = 0.75
 PREDICT_VOL_BUILDUP = 1.4
 PREDICT_RSI_NEUTRAL = (42, 58)
 PREDICT_OI_CHANGE_MIN = 3.0
 PREDICT_FUNDING_EXTREME = 0.05
 PREDICT_TOP_N = 10
-PREDICT_LOOKBACK = 30
 PREDICT_TF = "4h"
 PREDICT_INTERVAL_HOURS = 4
 
@@ -394,8 +380,7 @@ def short_radar(sym):
         last = df.iloc[-1]
         if pd.isna(last["rsi"]) or pd.isna(last["ema50"]): return None
         if last["rsi"] > 65 and last["close"] < last["ema50"]:
-            return dict(rsi=round(float(last["rsi"]),1),
-                       price=round(float(last["close"]),6))
+            return dict(rsi=round(float(last["rsi"]),1), price=round(float(last["close"]),6))
         return None
     except Exception: return None
 def alpha_radar(sym):
@@ -486,69 +471,44 @@ def predictive_score(sym):
         df = add_indicators(df, 100)
         last = df.iloc[-1]
         if pd.isna(last["bb_up"]) or pd.isna(last["rsi"]) or pd.isna(last["rvol"]): return None
-
-        score = 0
-        reasons = []
-
+        score = 0; reasons = []
         bb_up = float(last["bb_up"]); bb_lo = float(last["bb_lo"]); bb_mid = float(last["bb_mid"])
         bb_width = (bb_up - bb_lo) / bb_mid if bb_mid > 0 else 1
         widths = ((df["bb_up"] - df["bb_lo"]) / df["bb_mid"]).rolling(20).mean()
         width_ma = float(widths.iloc[-1]) if not pd.isna(widths.iloc[-1]) else bb_width
         squeeze_ratio = bb_width / width_ma if width_ma > 0 else 1
         if squeeze_ratio < PREDICT_BB_SQZ:
-            score += 3
-            reasons.append("BB Squeeze")
-
+            score += 3; reasons.append("BB Squeeze")
         rvol = float(last["rvol"])
         avg_rvol_10 = float(df["rvol"].tail(10).mean())
         if rvol > PREDICT_VOL_BUILDUP and avg_rvol_10 > 1.0:
-            score += 2
-            reasons.append("حجم متزايد")
-
+            score += 2; reasons.append("حجم متزايد")
         rsi_val = float(last["rsi"])
         if PREDICT_RSI_NEUTRAL[0] <= rsi_val <= PREDICT_RSI_NEUTRAL[1]:
-            score += 2
-            reasons.append("RSI محايد")
-
+            score += 2; reasons.append("RSI محايد")
         oi = futures_oi_history(sym, "4h", 20)
         if oi and oi["change_pct"] >= PREDICT_OI_CHANGE_MIN:
-            score += 3
-            reasons.append(f"OI +{oi['change_pct']}%")
-
+            score += 3; reasons.append(f"OI +{oi['change_pct']}%")
         fr = futures_funding_rate(sym)
         if fr is not None and abs(fr) >= PREDICT_FUNDING_EXTREME:
-            score += 2
-            reasons.append(f"Funding {fr:+.3f}%")
-
+            score += 2; reasons.append(f"Funding {fr:+.3f}%")
         ls = futures_long_short_ratio(sym)
         if ls is not None:
-            if ls >= 1.5:
-                score += 1; reasons.append(f"L/S {ls}")
-            elif ls <= 0.67:
-                score += 1; reasons.append(f"L/S {ls}")
-
+            if ls >= 1.5: score += 1; reasons.append(f"L/S {ls}")
+            elif ls <= 0.67: score += 1; reasons.append(f"L/S {ls}")
         trend = detect_trend(df, len(df)-1)
-        if trend in ("strong_up", "up"):
-            direction = "LONG"
-        elif trend in ("strong_down", "down"):
-            direction = "SHORT"
-        else:
-            direction = "LONG" if rsi_val < 50 else "SHORT"
-
+        if trend in ("strong_up", "up"): direction = "LONG"
+        elif trend in ("strong_down", "down"): direction = "SHORT"
+        else: direction = "LONG" if rsi_val < 50 else "SHORT"
         price, _ = live_price(sym)
         price = float(price or last["close"])
-
         if score < 4: return None
-
-        return dict(
-            sym=sym, score=score, reasons=reasons, direction=direction,
-            price=price, rsi=rsi_val, rvol=rvol,
-            oi_change=oi["change_pct"] if oi else 0,
-            funding=fr if fr else 0,
-            ls_ratio=ls if ls else 0,
-            squeeze_ratio=round(squeeze_ratio, 2),
-            atr=float(last["atr"]) if not pd.isna(last["atr"]) else 0,
-        )
+        return dict(sym=sym, score=score, reasons=reasons, direction=direction,
+                    price=price, rsi=rsi_val, rvol=rvol,
+                    oi_change=oi["change_pct"] if oi else 0,
+                    funding=fr if fr else 0, ls_ratio=ls if ls else 0,
+                    squeeze_ratio=round(squeeze_ratio, 2),
+                    atr=float(last["atr"]) if not pd.isna(last["atr"]) else 0)
     except Exception as e:
         log.warning(f"predictive_score {sym}: {e}")
         return None
@@ -648,77 +608,6 @@ def detect_trend(df, i):
     if r["ema20"] < r["ema50"] and r["close"] < r["ema200"]: return "down"
     return "range"
 
-def mtf_score(sym, side):
-    try:
-        tfs = []
-        if sym in MAJORS: tfs = ["1d", "4h"]
-        elif sym in MEME_COINS: tfs = ["4h", "1d"]
-        else: tfs = ["4h", "1h", "1d"]
-        confirms = 0; total = 0
-        for tf in tfs:
-            try:
-                df = get_candles(sym, tf, 250, ttl=300, min_bars=100)
-                df = add_indicators(df, 100)
-                last = df.iloc[-1]
-                if pd.isna(last["ema50"]) or pd.isna(last["ema200"]): continue
-                total += 1
-                if side == 1:
-                    if last["close"] > last["ema50"] and last["close"] > last["ema200"]: confirms += 1
-                else:
-                    if last["close"] < last["ema50"] and last["close"] < last["ema200"]: confirms += 1
-            except Exception: continue
-        if total == 0: return 0, 0
-        return confirms, total
-    except Exception: return 0, 0
-
-def v23_score(df, i, side):
-    try:
-        if i < 30: return 0, {"vwap": False, "supertrend": False, "macd": False, "bb": False}
-        sub = df.iloc[:i+1].copy(); close = sub["close"]
-        tp = (sub["high"] + sub["low"] + sub["close"]) / 3
-        vwap = (tp * sub["volume"]).cumsum() / sub["volume"].cumsum()
-        vwap_ma = vwap.rolling(V23_VWAP_PERIOD).mean()
-        if pd.isna(vwap_ma.iloc[-1]): vwap_ok = False
-        elif side == 1: vwap_ok = float(vwap.iloc[-1]) > float(vwap_ma.iloc[-1])
-        else: vwap_ok = float(vwap.iloc[-1]) < float(vwap_ma.iloc[-1])
-        if "atr" in sub.columns and not pd.isna(sub["atr"].iloc[-1]):
-            atr_val = float(sub["atr"].iloc[-1])
-            ema20 = float(sub["ema20"].iloc[-1]) if not pd.isna(sub["ema20"].iloc[-1]) else 0
-            if atr_val > 0 and ema20 > 0:
-                st_ok = (float(close.iloc[-1]) > ema20) if side == 1 else (float(close.iloc[-1]) < ema20)
-            else: st_ok = False
-        else: st_ok = False
-        if "macd" in sub.columns and "rsi" in sub.columns and not pd.isna(sub["macd"].iloc[-1]):
-            macd_now = float(sub["macd"].iloc[-1])
-            macd_sig = float(sub["macd_sig"].iloc[-1]) if not pd.isna(sub["macd_sig"].iloc[-1]) else 0
-            rsi_now = float(sub["rsi"].iloc[-1]) if not pd.isna(sub["rsi"].iloc[-1]) else 50
-            if side == 1: macd_ok = macd_now > macd_sig and rsi_now < 75
-            else: macd_ok = macd_now < macd_sig and rsi_now > 25
-        else:
-            macd_ok = False
-        if "bb_up" in sub.columns and not pd.isna(sub["bb_up"].iloc[-1]):
-            bb_up = float(sub["bb_up"].iloc[-1]); bb_lo = float(sub["bb_lo"].iloc[-1])
-            bb_mid = float(sub["bb_mid"].iloc[-1])
-            bb_width = (bb_up - bb_lo) / bb_mid if bb_mid > 0 else 0
-            widths = ((sub["bb_up"] - sub["bb_lo"]) / sub["bb_mid"]).rolling(V23_BB_PERIOD).mean()
-            width_ma = float(widths.iloc[-1]) if not pd.isna(widths.iloc[-1]) else bb_width
-            squeeze = bb_width < width_ma * V23_BB_SQZ if width_ma > 0 else False
-            if side == 1: bb_ok = float(close.iloc[-1]) > bb_mid and squeeze
-            else: bb_ok = float(close.iloc[-1]) < bb_mid and squeeze
-        else:
-            bb_ok = False
-        details = {"vwap": vwap_ok, "supertrend": st_ok, "macd": macd_ok, "bb": bb_ok}
-        return sum([vwap_ok, st_ok, macd_ok, bb_ok]), details
-    except Exception as e:
-        log.warning(f"v23_score: {e}")
-        return 0, {"vwap": False, "supertrend": False, "macd": False, "bb": False}
-
-def risk_size(grade, v23_sc):
-    base = RISK_SIZE.get(grade, 0.02)
-    if v23_sc >= 3: return base + RISK_V23_BONUS
-    if v23_sc == 0: return max(0.01, base - RISK_V23_PENALTY)
-    return base
-
 def find_pivots(df, window=PIVOT_WINDOW, lookback=PIVOT_LOOKBACK):
     try:
         n = len(df)
@@ -753,109 +642,86 @@ def select_targets(pivots, price, side, min_dist_pct=MIN_PIVOT_DIST):
     return selected
 
 def compute_smart_targets(df, i, side, entry, atr):
-    """أهداف ذكية: TP1=+2.5% + TP2=+5% + قمم/قيعان/فيبو/ATR — يضمن 4 أهداف"""
+    """v22b الأصلية: Pivots + fallback نسب"""
     try:
         targets = []
-        # 1. TP1 سريع (+2.5%)
-        targets.append({"px": float(entry * (1 + side * 0.020)), "src": "سريع"})
-        # 2. TP2 متوسط (+5%)
-        targets.append({"px": float(entry * (1 + side * 0.05)), "src": "متوسط"})
-        # 3. قمم/قيعان قريبة (Pivots)
         highs, lows = find_pivots(df, PIVOT_WINDOW)
         pivots = select_targets(highs if side==1 else lows, entry, side)
-        for p in pivots[:2]:
-            targets.append({"px": float(p), "src": "مقاومة" if side==1 else "دعم"})
-        # 4. فيبوناتشي
-        fibs = fib_levels(df, SR_LOOKBACK)
-        for f in fibs:
-            if side == 1 and f > entry:
-                targets.append({"px": float(f), "src": "فيبو"})
-            elif side == -1 and f < entry:
-                targets.append({"px": float(f), "src": "فيبو"})
-        # 5. ATR-based
-        targets.append({"px": float(entry + side * 3.0 * atr), "src": "ATR×3"})
-        targets.append({"px": float(entry + side * 4.0 * atr), "src": "ATR×4"})
-        # إزالة التكرارات
+        if len(pivots) < 2:
+            fallback = [2.5, 5.0, 7.0, 8.0]
+            for x in fallback:
+                targets.append({"px": float(entry * (1 + side * x/100)), "src": "نسبة"})
+        else:
+            for p in pivots[:4]:
+                targets.append({"px": float(p), "src": "مقاومة" if side==1 else "دعم"})
         unique = []
         for t in targets:
             if any(abs(t["px"] - u["px"]) / u["px"] < 0.005 for u in unique): continue
             unique.append(t)
         unique.sort(key=lambda x: side * (x["px"] - entry))
-        # ضمان 4 أهداف
         if len(unique) < 4:
-            extra_mult = [1.5, 2.0, 2.5, 5.0, 6.0, 7.5]
-            for m in extra_mult:
+            fb = [2.5, 5.0, 7.0, 8.0, 10.0, 12.0]
+            for x in fb:
                 if len(unique) >= 4: break
-                new_px = entry + side * m * atr
+                new_px = entry * (1 + side * x/100)
                 if not any(abs(new_px - u["px"]) / u["px"] < 0.005 for u in unique):
-                    unique.append({"px": float(new_px), "src": f"ATR×{m}"})
+                    unique.append({"px": float(new_px), "src": "نسبة"})
             unique.sort(key=lambda x: side * (x["px"] - entry))
         return unique[:4]
     except Exception: return []
 
-def compute_smart_sl(df, i, side, entry, atr):
-    """SL ذكي: آخر قاع/قمة + 0.5 ATR — dist_max = 3%"""
-    try:
-        lookback = df.tail(20)
-        if side == 1:
-            swing = float(lookback["low"].min())
-            sl = swing - 0.5 * atr
-        else:
-            swing = float(lookback["high"].max())
-            sl = swing + 0.5 * atr
-        dist = abs(entry - sl)
-        dist_min = entry * 0.015
-        dist_max = entry * 0.03
-        dist = min(max(dist, dist_min), dist_max)
-        sl = entry - side * dist
-        return sl
-    except Exception:
-        return entry - side * 0.02 * entry
-
 def compute_core_levels(df, i, side, price=None):
+    """v22b الأصلية: Pivots + SL ذكي"""
     try:
         r = df.iloc[i]
         atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0
         if atr <= 0: return None
         entry = float(price) if price else float(r["close"])
-        smart_targets = compute_smart_targets(df, i, side, entry, atr)
-        if len(smart_targets) < 2: return None
-        sl = compute_smart_sl(df, i, side, entry, atr)
+        highs, lows = find_pivots(df, PIVOT_WINDOW)
+        targets = select_targets(highs if side==1 else lows, entry, side)
+        if len(targets) < 2:
+            targets = [entry*(1+x/100) for x in [2.5,5.0,7.0,8.0]] if side==1 else [entry*(1-x/100) for x in [2.5,5.0,7.0,8.0]]
+        targets = targets[:4]
+        lookback_df = df.tail(20)
+        swing = float(lookback_df["low"].min()) if side==1 else float(lookback_df["high"].max())
+        sl_raw = swing - 0.1*atr if side==1 else swing + 0.1*atr
+        dist_raw = abs(entry - sl_raw)
+        dist_min = entry * CORE_SL_MIN/100
+        dist_max = entry * CORE_SL_MAX/100
+        dist = min(max(dist_raw, dist_min), dist_max)
+        sl = entry - side * dist
         risk = abs(entry - sl)
         if risk <= 0: return None
         tps = []
-        for idx, t in enumerate(smart_targets):
-            px = t["px"]
+        for idx, px in enumerate(targets):
             pct = 100 * side * (px - entry) / entry
             frac = CORE_TP_FRACS[idx] if idx < len(CORE_TP_FRACS) else 0
-            tps.append(dict(px=float(px), pct=round(pct,2), frac=frac, hit=False, src=t.get("src","")))
+            tps.append(dict(px=float(px), pct=round(pct,2), frac=frac, hit=False, src="مقاومة" if side==1 else "دعم"))
         while len(tps) < 4:
             last_px = tps[-1]["px"]
-            next_px = last_px + side * atr
+            next_px = last_px + side * atr * 1.5
             pct = 100 * side * (next_px - entry) / entry
             frac = CORE_TP_FRACS[len(tps)] if len(tps) < len(CORE_TP_FRACS) else 0
-            tps.append(dict(px=float(next_px), pct=round(pct,2), frac=frac, hit=False, src="ATR إضافي"))
+            tps.append(dict(px=float(next_px), pct=round(pct,2), frac=frac, hit=False, src="ATR"))
         return dict(entry=entry, sl=sl, risk=risk, tps=tps, atr=atr)
     except Exception: return None
 def compute_meme_levels(df, i, side, price=None):
     try:
         r = df.iloc[i]
         entry = float(price) if price else float(r["close"])
-        atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0
-        if atr <= 0:
-            sl = entry * (1 - side * MEME_SL_PCT/100)
-        else:
-            sl = compute_smart_sl(df, i, side, entry, atr)
+        sl = entry * (1 - side * MEME_SL_PCT/100)
         risk = abs(entry - sl)
         if risk <= 0: return None
         tps = []
         for pct, f in zip(MEME_TP_PCTS, MEME_TP_FRACS):
             px = entry * (1 + side*pct/100)
             tps.append(dict(px=float(px), pct=pct, frac=f, hit=False, src="نسبة"))
+        atr = float(r["atr"]) if not pd.isna(r["atr"]) else 0
         return dict(entry=entry, sl=sl, risk=risk, tps=tps, atr=atr)
     except Exception: return None
 
 def detect_core_conditions(df, i, side):
+    """v22b الأصلية"""
     if i < 30: return False
     r = df.iloc[i]
     if pd.isna(r.rsi) or pd.isna(r.ema20) or pd.isna(r.ema50) or pd.isna(r.rvol): return False
@@ -864,7 +730,7 @@ def detect_core_conditions(df, i, side):
         if not (r.ema20 > r.ema50*0.99 and r.close > r.ema50*0.99): return False
     else:
         if not (CORE_RSI_SHORT[0] <= r.rsi <= CORE_RSI_SHORT[1]): return False
-        if not (r.ema20 < r.ema50 and r.close < r.ema50): return False
+        if not (r.ema20 < r.ema50*1.01 and r.close < r.ema50*1.01): return False
     if r.rvol < CORE_VOL_MULT: return False
     if abs(r.ext_atr) > EXT_MAX_ATR: return False
     return True
@@ -922,7 +788,6 @@ def analyze(sym):
         elif _rsi_now > 65: side = -1
         elif trend in ("strong_down", "down"): side = -1
         else: side = 1
-    mtf_conf, mtf_total = mtf_score(sym, side)
     grade = grade_setup(df, i, side)
     lv = compute_meme_levels(df, i, side, price) if is_meme else compute_core_levels(df, i, side, price)
     if lv is None: raise NoData(sym)
@@ -930,21 +795,16 @@ def analyze(sym):
     sr_high, sr_low = find_sr_levels(df)
     fibs = fib_levels(df)
     last = df.iloc[-1]
-    v23_sc, v23_details = v23_score(df, i, side)
     return dict(sym=sym, tf=tf, df=df, side=side, strategy=strategy,
                 rank={"A":2,"B":1,"C":0}.get(grade, 0),
                 grade=grade, setup=strategy,
                 ok=1 if grade in ("A","B") else 0, total=4,
                 lv=lv, price=price, degraded=degraded,
-                fake_pump=False, bar_t=int(last["t"]),
+                bar_t=int(last["t"]),
                 rsi=float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0,
-                adx=0.0,
                 macd=float(last["macd"]) if not pd.isna(last["macd"]) else 0.0,
-                macd_sig=float(last["macd_sig"]) if not pd.isna(last["macd_sig"]) else 0.0,
                 candle=candle, trend=trend,
-                sr_high=sr_high[:3], sr_low=sr_low[:3], fibs=fibs,
-                v23_score=v23_sc, v23_details=v23_details,
-                mtf_conf=mtf_conf, mtf_total=mtf_total)
+                sr_high=sr_high[:3], sr_low=sr_low[:3], fibs=fibs)
 def get_analysis(sym, force=False):
     hit = _analysis_cache.get(sym)
     if hit and not force and time.time()-hit[0] < 60: return hit[1]
@@ -1173,8 +1033,6 @@ def build_admin_extras(res):
              f"🏆 الدرجة: {res['grade']}",
              f"📊 الاتجاه: {trend_ar}"]
     if res.get("candle"): lines.append(f"🕯 الشمعة: {res['candle']}")
-    lines.append(f"✅ تأكيد v23: {res.get('v23_score',0)}/4")
-    lines.append(f"✅ تأكيد MTF: {res.get('mtf_conf',0)}/{res.get('mtf_total',0)}")
     lines.append("")
     for i,tp in enumerate(res['lv']['tps'], 1):
         lines.append(f"🎯 هدف {i}: {tp['pct']}% ({tp.get('src','')})")
@@ -1207,20 +1065,18 @@ def can_track(res):
     act = active_signals()
     if len(act) >= MAX_OPEN: return False
     if any(p["coin"]==res["sym"] for p in act): return False
-    buys = sum(1 for p in act if p["side"]==1)
-    sells = sum(1 for p in act if p["side"]==-1)
-    if res["side"]==1 and buys >= MAX_BUY: return False
-    if res["side"]==-1 and sells >= MAX_SELL: return False
     if _linked_block(res["sym"]): return False
     return True
 def track_signal(res):
-    sz = risk_size(res["grade"], res.get("v23_score",0))
+    sz = risk_size_v22(res["grade"])
     p = new_trade(res["sym"], res["tf"], res["side"], res["lv"], res["bar_t"],
                   res["grade"], res["setup"], size_pct=sz)
     with store.lock:
         store.data["signals"].append(p)
         store.save("signals")
     return p
+def risk_size_v22(grade):
+    return RISK_SIZE.get(grade, 0.02)
 def _archive(p):
     with store.lock:
         store.data["history"].append(dict(
@@ -1308,7 +1164,7 @@ async def run_autopost(bot):
     syms = await asyncio.to_thread(top_symbols, 60)
     results = await asyncio.to_thread(scan_sync, syms)
     cands = [r for r in results if r["rank"] >= 0 and r["sym"] not in WEAK_COINS]
-    cands.sort(key=lambda r: (-r["rank"], -r.get("v23_score",0), -r.get("mtf_conf",0)))
+    cands.sort(key=lambda r: (-r["rank"], -r.get("ok",0)))
     today = dt.datetime.utcnow().strftime("%Y%m%d")
     if _free_day["d"] != today: _free_day.update(d=today, n=0)
     vip_n = free_n = 0
@@ -1316,8 +1172,7 @@ async def run_autopost(bot):
         key = f"{r['sym']}:{r['tf']}:{r['bar_t']}"
         if key in store.data["posted"] or not can_track(r): continue
         if vip_n >= VIP_POSTS_PER_CYCLE and free_n >= FREE_POSTS_PER_CYCLE: break
-        vip_ok = (vip_n < VIP_POSTS_PER_CYCLE and r["grade"] == "A"
-                  and r.get("v23_score",0) >= 2)
+        vip_ok = (vip_n < VIP_POSTS_PER_CYCLE and r["grade"] == "A")
         free_ok = (free_n < FREE_POSTS_PER_CYCLE and _free_day["n"] < FREE_MAX_PER_DAY
                    and r["grade"] in ("A","B"))
         if not vip_ok and not free_ok: continue
@@ -1616,12 +1471,12 @@ async def cmd_scan(update, ctx):
     syms = await asyncio.to_thread(top_symbols, 60)
     res = await asyncio.to_thread(scan_sync, syms[:30])
     res = [r for r in res if r["rank"] >= 0 and r["sym"] not in WEAK_COINS]
-    res.sort(key=lambda r: (-r["rank"], -r.get("v23_score",0), -r.get("mtf_conf",0)))
+    res.sort(key=lambda r: (-r["rank"], -r.get("ok",0)))
     if not res: await wait.edit_text("لا توجد إشارات"); return
     lines = ["🎯 أفضل الإعدادات", ""]
     for r in res[:10]:
         s = "🟢 شراء" if r["side"]==1 else "🔴 بيع"
-        lines.append(f"{r['grade']} | #{r['sym']} | {s} | v23:{r.get('v23_score',0)} | MTF:{r.get('mtf_conf',0)}/{r.get('mtf_total',0)}")
+        lines.append(f"{r['grade']} | #{r['sym']} | {s}")
     await wait.edit_text("\n".join(lines))
 @admin_only
 async def cmd_short(update, ctx):
@@ -1634,7 +1489,7 @@ async def cmd_short(update, ctx):
         return
     lines = ["🔻 فرص الشورت", ""]
     for r in res[:15]:
-        lines.append(f"{r['grade']} | #{r['sym']} | v23:{r.get('v23_score',0)}")
+        lines.append(f"{r['grade']} | #{r['sym']}")
     await wait.edit_text("\n".join(lines))
 @admin_only
 async def cmd_delist(update, ctx):
@@ -2005,7 +1860,8 @@ async def post_init(app):
         asyncio.create_task(tracker_loop(app)),
         asyncio.create_task(predict_loop(app)),
     ]
-    log.info("ryma v27 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("ryma v30 (v22b + features) started | maintenance=%s | storage=%s",
+             MAINTENANCE, store.remote_msg)
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
