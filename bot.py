@@ -1005,57 +1005,52 @@ def render_chart(res, tier="free", published=False):
     return buf
 
 def caption_core(res, tier="free"):
+    """تصميم احترافي مثل الصورة — 2 أهداف للعادي، 4 للأدمن/VIP"""
     side, lv, sym = res["side"], res["lv"], res["sym"]
-    tf_txt = {"1d": "اليومي (Daily)", "4h": "4 ساعات (4 Hours)",
-              "1h": "ساعة (1 Hour)", "15m": "15 دقيقة"}.get(res["tf"], res["tf"])
-    rec = "🟢 شراء (Bullish)" if side == 1 else "🔴 بيع (Bearish)"
-    src_name = str(res.get("source", "?")).capitalize()
+    side_word = "🟢 شراء (LONG)" if side == 1 else "🔴 بيع (SHORT)"
+    now_ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = [
-        f"📊 تقرير التحليل الفني المباشر لعملة #{sym}",
+        f"🎯 التوصية: {side_word}",
         "",
-        f"⚡ منصة التداول: {src_name} (متزامن 100%)",
-        f"⏱ فريم التحليل: {tf_txt}",
-        f"💡 التوصية المتوقعة: {rec}",
-        f"💵 السعر الحالي / الدخول: {fmt(lv['entry'])}",
+        f"💵 الدخول: {fmt(lv['entry'])}",
+        f"🛑 وقف الخسارة: {fmt(lv['sl'])}",
+        "",
     ]
-    n_tps = 4 if tier in ("admin", "vip") else 2
-    names = ["الأول", "الثاني", "الثالث", "الرابع"]
-    for i, tp in enumerate(lv["tps"][:n_tps]):
-        lines.append(f"🎯 الهدف {names[i]}: {fmt(tp['px'])}")
-    lines.append(f"🛑 إيقاف الخسارة (Stop Loss): {fmt(lv['sl'])}")
+    n_tps = 4 if tier in ("admin","vip") else 2
+    for i,tp in enumerate(lv["tps"][:n_tps], 1):
+        lines.append(f"🎯 الهدف {i}: {fmt(tp['px'])}")
     if tier == "free" and len(lv["tps"]) > 2:
+        lines.append("")
         lines.append("💎 للأهداف الإضافية → VIP")
-    if res.get("degraded"):
-        lines.append("⚠️ بيانات محدودة - الثقة أقل")
     lines += [
         "",
-        f"📈 مصدر الشارت: {src_name} Live Data",
+        "━━━━━━━━━━━━━━━━━━━━━━",
         "",
-        "⚠️ ليست نصيحة مالية — اعمل بحثك الخاص.",
-        "🛡 إدارة المخاطر هي سر النجاح.",
+        "⚠️ تنبيهات مهمة:",
+        "• ليست كل صفقاتنا ناجحة — قد نصيب وقد نخطئ.",
+        "• إدارة المخاطر هي سر النجاح.",
+        "• التزم بحجم الصفقة المناسب لكل صفقة.",
+        "• هذه ليست نصيحة مالية — اعمل بحثك الخاص.",
         "",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        f"📅 {now_ts}",
         f"👤 {BRAND}",
-        f"📢 قناة التوصيات: {CONTACT_LINK}",
     ]
     return "\n".join(lines)
 def caption_free(res): return caption_core(res, "free")
 def caption_vip(res): return caption_core(res, "vip")
 
 def build_copy_post(res):
-    """نص مضغوط قابل للنسخ والنشر في أي مكان"""
+    """نص مضغوط للأدمن فقط — 3 أهداف، بدون رابط"""
     side, lv, sym = res["side"], res["lv"], res["sym"]
     side_icon = "🟢" if side == 1 else "🔴"
     side_word = "LONG" if side == 1 else "SHORT"
-    lines = [
-        f"#{sym}/USDT  {side_icon} {side_word}",
-        "",
-        f"💵 Entry: {fmt(lv['entry'])}",
-    ]
+    lines = [f"#{sym}/USDT  {side_icon} {side_word}", ""]
+    lines.append(f"💵 Entry: {fmt(lv['entry'])}")
     for i, tp in enumerate(lv["tps"][:3], 1):
         lines.append(f"🎯 TP{i}: {fmt(tp['px'])}")
     lines.append(f"🛑 SL: {fmt(lv['sl'])}")
-    lines.append("")
-    lines.append(f"👤 {BRAND}  |  {CONTACT_LINK}")
     return "\n".join(lines)
 
 def keyboard_free(sym, tf):
@@ -1235,18 +1230,12 @@ async def publish(bot, res, vip=True, free=False, admin_copy=False):
             img = await asyncio.to_thread(render_chart, res, "vip", True)
             await bot.send_photo(VIP_CHANNEL_ID, img, caption=caption_vip(res),
                                  parse_mode=ParseMode.HTML, protect_content=PROTECT)
-            try:
-                await bot.send_message(VIP_CHANNEL_ID, copy_text, protect_content=PROTECT)
-            except Exception: pass
             sent.append("VIP")
         if free and CHANNEL_ID:
             img = await asyncio.to_thread(render_chart, res, "free", True)
             await bot.send_photo(CHANNEL_ID, img, caption=caption_free(res),
                                  parse_mode=ParseMode.HTML, protect_content=PROTECT,
                                  reply_markup=keyboard_free(res["sym"], res["tf"]))
-            try:
-                await bot.send_message(CHANNEL_ID, copy_text, protect_content=PROTECT)
-            except Exception: pass
             sent.append("FREE")
         if admin_copy and ADMIN_ID:
             try: await bot.send_message(ADMIN_ID, copy_text)
@@ -1458,9 +1447,9 @@ async def handle_symbol(update, raw, to_channel=False):
                                           parse_mode=ParseMode.HTML,
                                           protect_content=(st!="admin" and PROTECT),
                                           reply_markup=kb)
-        try:
-            await update.message.reply_text(build_copy_post(res))
-        except Exception: pass
+        if st == "admin":
+            try: await update.message.reply_text(build_copy_post(res))
+            except Exception: pass
         if res["rank"] >= 0 and can_track(res):
             try: await asyncio.to_thread(track_signal, res)
             except Exception: pass
@@ -1475,6 +1464,21 @@ async def cmd_start(update, ctx):
     if MAINTENANCE and update.effective_user.id != ADMIN_ID:
         await update.message.reply_text(f"🔧 البوت في صيانة.\n📞 {CONTACT_LINK}"); return
     touch_user(update.effective_user, "/start")
+    if update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text(
+            "👑 مرحباً أيها الأدمن\n\n"
+            "📋 الأوامر الإدارية المتاحة:\n"
+            "/dashboard - لوحة التحكم\n"
+            "/users - المستخدمون\n"
+            "/viplist - قائمة VIP\n"
+            "/stats - إحصائيات آخر أسبوع\n"
+            "/history - آخر الصفقات\n"
+            "/scan - فحص السوق\n"
+            "/short - فرص الشورت\n"
+            "/bt - Backtest\n"
+            "/post - نشر صفقة يدوياً\n"
+            "/testchannels - اختبار القنوات")
+        return
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("💎 اشترك في VIP الآن ✨", callback_data="vip_page")],
         [InlineKeyboardButton("📞 تواصل معنا مباشرة", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
@@ -1604,16 +1608,27 @@ async def cmd_delist(update, ctx):
         skip = {"BINANCE","WILL","DELIST","ON","AND","THE","FOR","USD","USDT","FROM",
                 "SPOT","TRADING","PAIRS","PAIR","TOKEN","TOKENS","ANNOUNCEMENT","API",
                 "BNB","LISTING","MARGIN","FUTURES","MONITORING"}
-        coins = set()
+        coins = {}
         for a in arts[:30]:
-            for w in re.findall(r'\b[A-Z0-9]{2,10}\b', a.get("title","")):
-                if w in skip or w.isdigit() or len(w)<2: continue
-                coins.add(w)
+            title = a.get("title", "")
+            release_ts = a.get("releaseDate", 0)
+            dt_str = "—"
+            if release_ts:
+                try:
+                    dt_str = dt.datetime.utcfromtimestamp(release_ts / 1000).strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+            for w in re.findall(r'\b[A-Z0-9]{2,10}\b', title):
+                if w in skip or w.isdigit() or len(w) < 2: continue
+                if w not in coins:
+                    coins[w] = dt_str
         if not coins:
             await wait.edit_text("لا توجد عملات ملغاة")
             return
-        msg = "⚠️ عملات ملغاة\n\n" + "\n".join(f"• {c}" for c in sorted(coins))
-        await wait.edit_text(msg)
+        lines = ["⚠️ عملات ملغاة:"]
+        for c, d in sorted(coins.items()):
+            lines.append(f"• {c}  —  {d}")
+        await wait.edit_text("\n".join(lines))
     except Exception as e:
         await wait.edit_text(f"⚠️ خطأ: {str(e)[:150]}")
 @admin_only
@@ -1966,9 +1981,9 @@ async def cb_handler(update, ctx):
             img = await asyncio.to_thread(render_chart, res, tier)
             cap = caption_vip(res) if tier in ("admin","vip") else caption_free(res)
             await ctx.bot.send_photo(q.message.chat.id, photo=img, caption=cap, reply_markup=kb)
-            try:
-                await q.message.reply_text(build_copy_post(res))
-            except Exception: pass
+            if st == "admin":
+                try: await q.message.reply_text(build_copy_post(res))
+                except Exception: pass
         except Exception as e: await q.message.reply_text(f"⚠️ {str(e)[:200]}")
 async def on_error(update, ctx): log.error("err: %s", ctx.error, exc_info=ctx.error)
 async def on_text(update, ctx):
@@ -1985,7 +2000,7 @@ async def post_init(app):
         asyncio.create_task(tracker_loop(app)),
         asyncio.create_task(predict_loop(app)),
     ]
-    log.info("ryma v38 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
+    log.info("ryma v39 started | maintenance=%s | storage=%s", MAINTENANCE, store.remote_msg)
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
     try: store.flush()
@@ -2003,7 +2018,8 @@ def main():
         ("history",cmd_history),("dashboard",cmd_dashboard),
         ("addvip",cmd_addvip),("removevip",cmd_removevip),("viplist",cmd_viplist),
         ("whales",cmd_whales),("liquidity",cmd_liquidity),("futures",cmd_futures),
-        ("explosions",cmd_explosions),("pump",cmd_pump),("bottoms",cmd_bottoms),
+        ("explosions",cmd_explosions),("pump",cmd_pump),
+        ("bottom",cmd_bottoms),("bottoms",cmd_bottoms),
         ("shortsradar",cmd_shorts_radar),("alpha",cmd_alpha),("why",cmd_why),
     ]
     for name, fn in handlers:
@@ -2014,4 +2030,4 @@ def main():
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    main()
+    main() 
