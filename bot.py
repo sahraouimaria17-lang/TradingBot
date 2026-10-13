@@ -40,7 +40,7 @@ BRAND = "💎 Ryma Crypto 💎"
 # ✅ 7 منصات سريعة للمسح العام
 FAST_EXCHANGES = ["binance", "mexc", "gateio", "bitget", "okx", "kucoin", "htx"]
 
-# ✅ 12 منصة كاملة للبحث عن عملة صعبة أو نادرة
+# ✅ 12 منصة كاملة للبحث
 EXCHANGES = ["binance", "mexc", "gateio", "bitget", "okx", "kucoin",
              "bybit", "htx", "bingx", "lbank", "bitmart", "poloniex"]
 
@@ -73,7 +73,9 @@ CANDLE_TTL, PRICE_TTL = 240, 60
 MIN_BARS = 215
 CHART_BARS = 90
 SCAN_WORKERS = 6
-MAX_OPEN = 15
+
+# ✅ MAX_OPEN مرتفع ليتناسب مع التراكم
+MAX_OPEN = 30
 
 # ============================================================
 #              قواعد النشر — VIP و FREE
@@ -91,6 +93,10 @@ CYCLE_AUTOPOST       = 12600   # 3.5 ساعة
 CYCLE_SHORT_FREE     = 14400   # 4 ساعات
 CYCLE_MARKET_SUMMARY = 16200   # 4.5 ساعة
 CYCLE_PREDICT        = 14400   # 4 ساعات
+
+# ✅ تنظيف الصفقات الميتة
+STALE_TRADE_DAYS = 21          # الصفقات الأقدم من هذا تُقفل تلقائياً
+CLEANUP_EVERY_CYCLES = 20      # كل 20 دورة tracker (~1.5 ساعة)
 
 PIVOT_WINDOW = 100
 PIVOT_LOOKBACK = 3
@@ -145,7 +151,7 @@ DAY = 86400
 def now_s(): return int(time.time())
 
 # ============================================================
-#                    التخزين (Store)
+#                    التخزين
 # ============================================================
 KEYS = ["users","vip","signals","history","posted"]
 DEFAULTS = {"users":{},"vip":{},"signals":[],"history":[],"posted":{}}
@@ -491,7 +497,8 @@ def pump_radar(sym):
         if avg_vol <= 0: return None
         vol_ratio = last_vol / avg_vol
         if change_1h > 3 and vol_ratio > 2:
-            return dict(change_1h=round(change_1h,2), change_4h=round(change_4h,2), vol_ratio=round(vol_ratio,2))
+            return dict(change_1h=round(change_1h,2), change_4h=round(change_4h,2),
+                        vol_ratio=round(vol_ratio,2))
         return None
     except Exception: return None
 
@@ -573,8 +580,7 @@ def futures_open_interest(sym):
         r = requests.get(f"{BINANCE_FAPI}/fapi/v1/openInterest",
                          params={"symbol": f"{sym}USDT"}, timeout=8)
         if r.status_code != 200: return None
-        d = r.json()
-        return float(d.get("openInterest", 0))
+        return float(r.json().get("openInterest", 0))
     except Exception: return None
 
 def futures_oi_history(sym, period="4h", limit=20):
@@ -599,8 +605,7 @@ def futures_funding_rate(sym):
         r = requests.get(f"{BINANCE_FAPI}/fapi/v1/premiumIndex",
                          params={"symbol": f"{sym}USDT"}, timeout=8)
         if r.status_code != 200: return None
-        d = r.json()
-        return float(d.get("lastFundingRate", 0)) * 100
+        return float(r.json().get("lastFundingRate", 0)) * 100
     except Exception: return None
 
 def futures_long_short_ratio(sym, period="4h", limit=10):
@@ -611,8 +616,7 @@ def futures_long_short_ratio(sym, period="4h", limit=10):
         if r.status_code != 200: return None
         data = r.json()
         if not data: return None
-        ratio = float(data[-1].get("longShortRatio", 1.0))
-        return round(ratio, 3)
+        return round(float(data[-1].get("longShortRatio", 1.0)), 3)
     except Exception: return None
 
 # ============================================================
@@ -1343,7 +1347,9 @@ def build_admin_menu_text():
 
 def keyboard_admin_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ تشغيل النشر الفوري", callback_data="adm:/forcepost"),
+        [InlineKeyboardButton("⚡ تشغيل النشر", callback_data="adm:/forcepost"),
+         InlineKeyboardButton("🧹 تفريغ الصفقات", callback_data="adm:/clearsignals")],
+        [InlineKeyboardButton("🔍 تشخيص", callback_data="adm:/debug"),
          InlineKeyboardButton("📊 فحص السوق", callback_data="adm:/scan")],
         [InlineKeyboardButton("🔻 فرص شورت", callback_data="adm:/short"),
          InlineKeyboardButton("🔮 التنبؤ", callback_data="adm:/predict")],
@@ -1430,24 +1436,69 @@ def _archive(p):
                                     (q.get("closed") or q.get("created",0)) > cutoff]
         store.save("signals","history")
 
+# ============================================================
+#              ✅ تنظيف الصفقات الميتة (جديد)
+# ============================================================
+def cleanup_stale_trades(max_age_days=STALE_TRADE_DAYS):
+    """أقفل الصفقات التي تجاوزت المدة المحددة بشكل قسري"""
+    cutoff = int(time.time()*1000) - max_age_days*DAY*1000
+    closed_n = 0
+    with store.lock:
+        for p in list(store.data["signals"]):
+            if p.get("state") not in ("pending","open"): continue
+            if p.get("created", 0) < cutoff:
+                p["state"] = "closed"
+                p["result"] = "STALE"
+                p["R"] = p.get("R") or 0
+                p["closed"] = int(time.time()*1000)
+                closed_n += 1
+        if closed_n:
+            store.save("signals")
+    if closed_n:
+        log.info(f"cleanup: أقفلت {closed_n} صفقة ميتة (أقدم من {max_age_days} يوم)")
+    return closed_n
+
+# ============================================================
+#              ✅ check_signals_sync (مُصلَح)
+# ============================================================
 def check_signals_sync():
     notes = []
     by = {}
-    for p in active_signals(): by.setdefault((p["coin"], p["tf"]), []).append(p)
+    for p in active_signals():
+        by.setdefault((p["coin"], p["tf"]), []).append(p)
+
+    log.info(f"tracker: {len(by)} زوج عملة/فريم، {sum(len(v) for v in by.values())} صفقة")
+
+    ok_pairs, fail_pairs = 0, 0
     for (coin, tf), plist in by.items():
         try:
             raw = get_candles(coin, tf, 450, min_bars=60)
             d = add_indicators(raw, 100)
-        except Exception: continue
-        for p in plist:
-            with store.lock:
-                for row in d[d["t"] >= p["next_t"]].itertuples():
-                    ev = trade_step(p, row.open, row.high, row.low, row.close, row.atr)
-                    p["next_t"] = int(row.t) + TF_MS[tf]
-                    notes += [(coin, tf, p["side"], e, p.get("R")) for e in ev if e["kind"] != "DONE"]
-                    if p["state"] in ("closed","expired"): break
-                store.save("signals")
-            if p["state"] == "closed": _archive(p)
+        except Exception as e:
+            fail_pairs += 1
+            log.warning(f"tracker: تخطي {coin}/{tf} — {type(e).__name__}: {str(e)[:80]}")
+            continue
+
+        ok_pairs += 1
+        for p in list(plist):
+            try:
+                with store.lock:
+                    rows = d[d["t"] >= p["next_t"]]
+                    for row in rows.itertuples():
+                        ev = trade_step(p, row.open, row.high, row.low, row.close, row.atr)
+                        p["next_t"] = int(row.t) + TF_MS[tf]
+                        notes += [(coin, tf, p["side"], e, p.get("R"))
+                                  for e in ev if e["kind"] != "DONE"]
+                        if p["state"] in ("closed","expired"): break
+                    store.save("signals")
+                if p["state"] == "closed":
+                    _archive(p)
+                    log.info(f"tracker: {coin}/{tf} أُقفلت — R={p.get('R')}")
+            except Exception as e:
+                log.warning(f"tracker: خطأ في {coin}/{tf} — {str(e)[:80]}")
+                continue
+
+    log.info(f"tracker: OK={ok_pairs}, فشل={fail_pairs}, ملاحظات={len(notes)}")
     return notes
 
 def event_text(coin, tf, side, e, R, tier="free"):
@@ -1564,7 +1615,7 @@ async def run_autopost(bot):
     cands.sort(key=lambda r: (-r["rank"], -r.get("ok",0)))
     log.info(f"run_autopost: {len(cands)} مرشح")
 
-    today = dt.datetime.utcnow().strftime("%Y%m%d")
+    today = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d")
     if _free_day["d"] != today: _free_day.update(d=today, n=0)
 
     a_candidates = [r for r in cands if r["grade"] == "A"]
@@ -1574,16 +1625,24 @@ async def run_autopost(bot):
     vip_pool = a_candidates if a_candidates else b_candidates
     log.info(f"run_autopost: VIP pool = {len(vip_pool)} (A={len(a_candidates)}, B={len(b_candidates)})")
 
+    # ✅ فحص MAX_OPEN قبل البدء
+    act_now = active_signals()
+    if len(act_now) >= MAX_OPEN:
+        log.warning(f"run_autopost: MAX_OPEN {len(act_now)}/{MAX_OPEN} — تخطي الدورة")
+        return
+
     vip_n = free_n = 0
     used = set()
 
-    # -------- 1) VIP أولاً (A أو B احتياطي) --------
+    # -------- 1) VIP (A أو B احتياطي) --------
     for r in vip_pool:
         if vip_n >= VIP_POSTS_PER_CYCLE: break
         key = f"{r['sym']}:{r['tf']}:{r['bar_t']}"
         if key in store.data["posted"]: continue
         act = active_signals()
-        if len(act) >= MAX_OPEN: break
+        if len(act) >= MAX_OPEN:
+            log.warning(f"run_autopost: MAX_OPEN أثناء VIP — توقف")
+            return
         if any(p["coin"]==r["sym"] and p["tf"]==r["tf"] for p in act): continue
 
         vip_liq_ok = check_liquidity(r["sym"], min_usd=VIP_MIN_LIQUIDITY)
@@ -1613,7 +1672,7 @@ async def run_autopost(bot):
             used.add(r["sym"])
             await asyncio.sleep(2)
 
-    # -------- 2) FREE (B + C فقط، بدون A) --------
+    # -------- 2) FREE (B + C فقط) --------
     free_pool = [r for r in cands if r["grade"] in ("B","C") and r["sym"] not in used]
     for r in free_pool:
         if free_n >= FREE_POSTS_PER_CYCLE: break
@@ -1621,7 +1680,9 @@ async def run_autopost(bot):
         key = f"{r['sym']}:{r['tf']}:{r['bar_t']}"
         if key in store.data["posted"]: continue
         act = active_signals()
-        if len(act) >= MAX_OPEN: break
+        if len(act) >= MAX_OPEN:
+            log.warning(f"run_autopost: MAX_OPEN أثناء FREE — توقف")
+            return
         if any(p["coin"]==r["sym"] and p["tf"]==r["tf"] for p in act): continue
 
         try:
@@ -1663,11 +1724,22 @@ async def autopost_loop(app):
         except Exception: log.exception("autopost")
         await asyncio.sleep(60)
 
+# ✅ tracker_loop مع cleanup دوري
 async def tracker_loop(app):
     await asyncio.sleep(30)
+    cycle = 0
     while True:
         try:
+            cycle += 1
+            # ✅ كل CLEANUP_EVERY_CYCLES دورة (كل ~1.5 ساعة)
+            if cycle % CLEANUP_EVERY_CYCLES == 0:
+                await asyncio.to_thread(cleanup_stale_trades, STALE_TRADE_DAYS)
+
+            t0 = time.time()
             notes = await asyncio.to_thread(check_signals_sync)
+            dt_ = time.time() - t0
+            log.info(f"tracker: انتهت الدورة في {dt_:.1f}s — {len(notes)} ملاحظة")
+
             for coin, tf, side, e, R in notes:
                 txt_vip = event_text(coin, tf, side, e, R, "vip")
                 if txt_vip:
@@ -1954,7 +2026,7 @@ async def cmd_start(update, ctx):
             "👑 مرحباً أيها الأدمن\n\n"
             "📋 الأوامر الإدارية:\n"
             "/dashboard /users /viplist /stats /history\n"
-            "/scan /short /bt /bt50 /post /testchannels /forcepost\n"
+            "/scan /short /bt /bt50 /post /testchannels /forcepost /clearsignals /debug\n"
             "/whales /liquidity /explosions /pump /bottom /alpha /shortsradar /futures /why\n\n"
             "👇 أو اضغط الزر لعرض كل الأوامر كأزرار",
             reply_markup=kb)
@@ -2240,6 +2312,50 @@ async def cmd_forcepost(update, ctx):
         await wait.edit_text(f"⚠️ {str(e)[:200]}")
 
 @admin_only
+async def cmd_clearsignals(update, ctx):
+    touch_user(update.effective_user, "/clearsignals")
+    with store.lock:
+        n = len(store.data["signals"])
+        store.data["signals"] = []
+        store.save("signals")
+    await update.message.reply_text(f"✅ تم حذف {n} صفقة نشطة")
+
+@admin_only
+async def cmd_debug(update, ctx):
+    touch_user(update.effective_user, "/debug")
+    lines = ["🔍 تشخيص البوت", ""]
+    lines.append(f"💾 Storage: {store.remote_msg}")
+    lines.append(f"   GIST_ID: {'✅' if GIST_ID else '❌'}")
+    lines.append(f"   TOKEN: {'✅' if GITHUB_TOKEN else '❌'}")
+    lines.append(f"📢 FREE: {'✅' if CHANNEL_ID else '❌'}")
+    lines.append(f"📢 VIP: {'✅' if VIP_CHANNEL_ID else '❌'}")
+    act = active_signals()
+    lines.append("")
+    lines.append(f"📊 MAX_OPEN: {MAX_OPEN} | نشطة: {len(act)}")
+    if act:
+        for p in act[:10]:
+            lines.append(f"   • {p['coin']} {p['tf']} ({p['grade']})")
+    lines.append("")
+    lines.append(f"📝 posted: {len(store.data['posted'])}")
+    now = time.time()
+    down = [n for n, t in _down.items() if t > now]
+    lines.append(f"⛔ منصات محظورة: {len(down)}")
+    if down:
+        for n in down[:5]:
+            lines.append(f"   • {n} ({int(_down[n]-now)}s)")
+    syms = await asyncio.to_thread(top_symbols, 60)
+    lines.append(f"🎯 top_symbols: {len(syms)}")
+    if syms:
+        lines.append(f"   {', '.join(syms[:10])}")
+    if syms:
+        try:
+            res = await asyncio.to_thread(get_analysis, syms[0])
+            lines.append(f"✅ تحليل {syms[0]}: grade={res['grade']}, side={res['side']}, rank={res['rank']}")
+        except Exception as e:
+            lines.append(f"❌ تحليل {syms[0]}: {type(e).__name__}: {str(e)[:80]}")
+    await update.message.reply_text("\n".join(lines)[:4000])
+
+@admin_only
 async def cmd_post(update, ctx):
     touch_user(update.effective_user, "/post")
     if not ctx.args: await update.message.reply_text("مثال: /post BTC"); return
@@ -2435,7 +2551,7 @@ async def cmd_dashboard(update, ctx):
     ch_vip = "✅" if VIP_CHANNEL_ID else "—"
     msg = (f"🎛 لوحة التحكم — {maint}\n\n"
            f"👥 المستخدمون: {nu} | 💎 VIP: {nv}\n"
-           f"📊 صفقات نشطة: {len(act)}\n"
+           f"📊 صفقات نشطة: {len(act)}/{MAX_OPEN}\n"
            f"💾 التخزين: {store.remote_msg}\n"
            f"📢 القنوات: FREE {ch_free} | VIP {ch_vip}\n\n"
            f"⏱ autopost: كل {CYCLE_AUTOPOST//3600}س | short: كل {CYCLE_SHORT_FREE//3600}س | summary: كل {CYCLE_MARKET_SUMMARY//3600}س")
@@ -2478,6 +2594,8 @@ class _FakeUpdate:
 
 ADMIN_CMD_MAP = {
     "/forcepost": cmd_forcepost,
+    "/clearsignals": cmd_clearsignals,
+    "/debug": cmd_debug,
     "/predict": cmd_predict, "/whales": cmd_whales, "/explosions": cmd_explosions,
     "/pump": cmd_pump, "/bottom": cmd_bottoms, "/shortsradar": cmd_shorts_radar,
     "/alpha": cmd_alpha, "/scan": cmd_scan, "/short": cmd_short,
@@ -2678,6 +2796,14 @@ PUBLIC_COMMANDS = [("start","ابدأ"),("help","المساعدة"),("myid","ر�
 async def post_init(app):
     try: await app.bot.set_my_commands([BotCommand(c,d) for c,d in PUBLIC_COMMANDS])
     except Exception: pass
+
+    # ✅ تنظيف الصفقات الميتة عند البدء
+    try:
+        n = await asyncio.to_thread(cleanup_stale_trades, STALE_TRADE_DAYS)
+        log.info(f"startup: نظفت {n} صفقة ميتة")
+    except Exception as e:
+        log.warning(f"startup cleanup: {e}")
+
     app.bot_data["tasks"] = [
         asyncio.create_task(autopost_loop(app)),
         asyncio.create_task(tracker_loop(app)),
@@ -2685,8 +2811,8 @@ async def post_init(app):
         asyncio.create_task(market_summary_loop(app)),
         asyncio.create_task(short_free_loop(app)),
     ]
-    log.info("ryma v44 started | maintenance=%s | storage=%s | fast_ex=%d | all_ex=%d",
-             MAINTENANCE, store.remote_msg, len(FAST_EXCHANGES), len(EXCHANGES))
+    log.info("ryma v45 started | maintenance=%s | storage=%s | fast_ex=%d | all_ex=%d | max_open=%d",
+             MAINTENANCE, store.remote_msg, len(FAST_EXCHANGES), len(EXCHANGES), MAX_OPEN)
 
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
@@ -2703,6 +2829,8 @@ def main():
         ("menu",cmd_menu),
         ("predict",cmd_predict),
         ("forcepost",cmd_forcepost),
+        ("clearsignals",cmd_clearsignals),
+        ("debug",cmd_debug),
         ("post",cmd_post),("bt",cmd_bt),("backtest",cmd_bt),("bt50",cmd_bt50),
         ("scan",cmd_scan),("short",cmd_short),("delist",cmd_delist),("price",cmd_price),
         ("users",cmd_users),("testchannels",cmd_testchannels),("stats",cmd_stats),
