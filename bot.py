@@ -136,6 +136,12 @@ SR_MERGE_PCT = 0.5
 FIB_LEVELS = [0.236, 0.382, 0.5, 0.618, 0.786, 1.272, 1.618]
 MACD_FAST, MACD_SLOW, MACD_SIGNAL = 12, 26, 9
 
+# /daily config
+DAILY_LONGS = 2
+DAILY_SHORTS = 2
+DAILY_MIN_STARS = 3
+DAILY_TP_COUNT = 3
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("ryma")
 START_TS = time.time()
@@ -1283,6 +1289,128 @@ def event_text(coin, tf, side, e, R, tier="free", trade=None):
     return None
 
 # ============================================================
+#              ✅ /daily — صفقة اليوم
+# ============================================================
+def _stars(score):
+    """تحويل النقاط إلى نجوم"""
+    score = max(1, min(5, int(score)))
+    return "⭐" * score + "☆" * (5 - score)
+
+def _score_setup(res, trend_ok_cache=None):
+    """
+    5 معايير = 5 نجوم:
+    - Grade A
+    - Trending / Top-volume
+    - سيولة > 20M
+    - MTF مؤكد
+    - حيتان تؤكد
+    """
+    score = 0
+    details = []
+
+    # 1. Grade
+    if res["grade"] == "A":
+        score += 1; details.append("grade_A")
+    elif res["grade"] == "B":
+        score += 0.5; details.append("grade_B")
+
+    # 2. سيولة
+    try:
+        if check_liquidity(res["sym"], min_usd=20_000_000):
+            score += 1; details.append("liq_high")
+        elif check_liquidity(res["sym"], min_usd=5_000_000):
+            score += 0.5; details.append("liq_ok")
+    except Exception: pass
+
+    # 3. MTF
+    try:
+        mc, mt = mtf_score(res["sym"], res["side"])
+        if mt >= 2 and mc >= mt - 1:
+            score += 1; details.append("mtf_ok")
+        elif mt >= 2 and mc >= 1:
+            score += 0.5; details.append("mtf_partial")
+    except Exception: pass
+
+    # 4. حيتان
+    try:
+        w, largest, bv, sv = whale_radar(res["sym"])
+        if w and w >= 1:
+            total = bv + sv
+            if total > 0:
+                buy_pct = bv / total * 100
+                if res["side"] == 1 and buy_pct >= 55:
+                    score += 1; details.append("whales_long")
+                elif res["side"] == -1 and buy_pct <= 45:
+                    score += 1; details.append("whales_short")
+    except Exception: pass
+
+    # 5. Trending proxy — حجم 24h عالي
+    try:
+        ex = get_ex("binance")
+        with _ex_lock["binance"]:
+            t = ex.fetch_ticker(f"{res['sym']}/USDT")
+        qv = float(t.get("quoteVolume") or 0)
+        if qv >= 100_000_000:
+            score += 1; details.append("vol_100M")
+        elif qv >= 50_000_000:
+            score += 0.5; details.append("vol_50M")
+    except Exception: pass
+
+    stars = max(1, min(5, round(score)))
+    return stars, details
+
+def _format_daily_card(res, side_label, stars):
+    """بطاقة صفقة اليوم - منسقة للنسخ المباشر"""
+    lv = res["lv"]
+    lines = []
+    lines.append(f"{side_label}")
+    lines.append("")
+    lines.append(f"{res['sym']}USDT")
+    lines.append(f"➡️ Entry: {fmt(lv['entry'])}")
+    for i, tp in enumerate(lv["tps"][:DAILY_TP_COUNT], 1):
+        lines.append(f"🎯 Target {i}: {fmt(tp['px'])}")
+    lines.append(f"🛑 Stop loss: {fmt(lv['sl'])}")
+    lines.append("")
+    lines.append(_stars(stars) + f" {stars}/5")
+    return "\n".join(lines)
+
+def _build_daily_lists(symbols):
+    """
+    يُرجع قائمتين: longs و shorts
+    كل صفقة: dict(res, stars, details)
+    """
+    results = scan_sync(symbols)
+    longs, shorts = [], []
+    used = set()
+
+    # ترتيب أولي: Grade أعلى أولاً
+    results = [r for r in results if r["rank"] >= 0 and r["sym"] not in WEAK_COINS]
+    results.sort(key=lambda r: (-r["rank"], -r.get("ok", 0)))
+
+    # معالجة كل عملة
+    for r in results:
+        if r["sym"] in used: continue
+        stars, details = _score_setup(r)
+        if stars < DAILY_MIN_STARS: continue
+
+        item = dict(res=r, stars=stars, details=details)
+        if r["side"] == 1:
+            longs.append(item)
+        else:
+            shorts.append(item)
+        used.add(r["sym"])
+
+        # كفى؟
+        if len(longs) >= DAILY_LONGS and len(shorts) >= DAILY_SHORTS:
+            break
+
+    # ترتيب نهائي حسب النجوم
+    longs.sort(key=lambda x: -x["stars"])
+    shorts.sort(key=lambda x: -x["stars"])
+
+    return longs[:DAILY_LONGS], shorts[:DAILY_SHORTS]
+
+# ============================================================
 #                    الإشعارات
 # ============================================================
 async def notify_both(bot, text, protect=True):
@@ -1448,9 +1576,7 @@ def keyboard(sym, tf, tier):
     if tier == "vip": return keyboard_vip(sym, tf)
     return keyboard_free(sym, tf)
 
-# ============================================================
-#              ✅ قائمة VIP الكاملة (12 زر مستقل)
-# ============================================================
+# ✅ قائمة VIP — 12 زر مستقل
 def keyboard_vip_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔮 التنبؤ بالانفجارات", callback_data="vip_cmd:/predict")],
@@ -1463,6 +1589,7 @@ def keyboard_vip_menu():
         [InlineKeyboardButton("💧 رادار السيولة", callback_data="vip_cmd_args:liquidity")],
         [InlineKeyboardButton("📊 بيانات الفيوتشر", callback_data="vip_cmd_args:futures")],
         [InlineKeyboardButton("📈 الصفقات النشطة", callback_data="vip_cmd:/active")],
+        [InlineKeyboardButton("🎯 صفقة اليوم", callback_data="vip_cmd:/daily")],
         [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
         [InlineKeyboardButton("❌ إغلاق القائمة", callback_data="close_menu")],
     ])
@@ -1476,6 +1603,7 @@ def build_vip_menu_text():
         "📌 ملاحظات:\n"
         "• 💧 السيولة و 📊 الفيوتشر يطلبوا منك كتابة الرمز\n"
         "• 📈 الصفقات النشطة تعرض كل صفقاتك الآن\n"
+        "• 🎯 صفقة اليوم = 2 LONG + 2 SHORT بنجوم الثقة\n"
         "• 📢 قناة التوصيات للتنبيهات الفورية\n\n"
         "╰━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
     )
@@ -1498,14 +1626,11 @@ def build_vip_page():
         "🔥 💥 رادار الانفجارات\n"
         "🔥 📉 رادار القيعان\n"
         "🔥 🔻 رادار الفرص الشورت\n"
-        "🔥 ⭐ رادار عملات Alpha\n\n"
-        "╭━━━ 💎 الباقات 💎 ━━━╮\n\n"
-        "🌙 شهر: 50$\n"
-        "⭐ 3 أشهر: 100$\n"
-        "👑 سنة: 300$\n\n"
-        "╰━━━━━━━━━━━━━━━━━━━━╯\n\n"
-        "💳 Binance Pay: 905142395\n"
-        f"📞 {CONTACT_LINK}\n\n"
+        "🔥 ⭐ رادار عملات Alpha\n"
+        "🔥 🎯 صفقة اليوم (2 LONG + 2 SHORT)\n\n"
+        "💎 3 باقات VIP متاحة\n"
+        "💰 الأسعار عند الطلب\n\n"
+        f"📞 للاستفسار والاشتراك: {CONTACT_LINK}\n\n"
         "👇 اضغط للانضمام"
     )
 
@@ -1669,7 +1794,6 @@ async def run_autopost(bot):
     a_candidates = [r for r in cands if r["grade"] == "A"]
     b_candidates = [r for r in cands if r["grade"] == "B"]
     vip_pool = a_candidates if a_candidates else b_candidates
-    log.info(f"run_autopost: VIP pool={len(vip_pool)} (A={len(a_candidates)}, B={len(b_candidates)})")
     act_now = active_signals()
     if len(act_now) >= MAX_OPEN:
         log.warning(f"run_autopost: MAX_OPEN {len(act_now)}/{MAX_OPEN} — تخطي")
@@ -1689,7 +1813,6 @@ async def run_autopost(bot):
             mtf_c, mtf_t = mtf_score(r["sym"], r["side"])
             if mtf_t >= 2 and mtf_c < mtf_t: vip_mtf_ok = False
         if not (vip_liq_ok and vip_mtf_ok):
-            log.info(f"run_autopost: {r['sym']} استُبعد من VIP")
             continue
         try:
             sent = await publish(bot, r, vip=True, free=False, admin_copy=True)
@@ -2078,7 +2201,7 @@ async def cmd_start(update, ctx):
             "📋 الأوامر الإدارية:\n"
             "/dashboard /users /viplist /stats /history\n"
             "/scan /short /bt /bt50 /post /testchannels /forcepost /clearsignals /debug\n"
-            "/whales /liquidity /explosions /pump /bottom /alpha /shortsradar /futures /why /active",
+            "/whales /liquidity /explosions /pump /bottom /alpha /shortsradar /futures /why /active /daily",
             reply_markup=kb)
         return
     u = update.effective_user; rec = touch_user(u, "/start")
@@ -2086,6 +2209,7 @@ async def cmd_start(update, ctx):
     if st == "vip":
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("📋 قائمة VIP الكاملة", callback_data="vip_menu")],
+            [InlineKeyboardButton("🎯 صفقة اليوم", callback_data="vip_cmd:/daily")],
             [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
         ])
         await update.message.reply_text(
@@ -2114,6 +2238,7 @@ async def cmd_help(update, ctx):
             "ℹ️ <b>مساعدة VIP</b>\n\n"
             "📝 أرسل رمز عملة → تحليل + 4 أهداف\n"
             "📋 /menu — قائمة VIP الكاملة\n"
+            "🎯 /daily — صفقة اليوم (2 LONG + 2 SHORT)\n"
             "🔮 /predict — التنبؤ\n🐋 /whales — الحيتان\n"
             "💧 /liquidity BTC — السيولة\n💥 /explosions — الانفجارات\n"
             "🚀 /pump — الصعود\n📉 /bottom — القيعان\n"
@@ -2159,6 +2284,63 @@ async def cmd_menu(update, ctx):
         ])
         await update.message.reply_text("🔒 القائمة لمشتركي VIP فقط", reply_markup=kb); return
     await update.message.reply_text(build_vip_menu_text(), reply_markup=keyboard_vip_menu())
+
+# ============================================================
+#              ✅ /daily — صفقة اليوم (2 LONG + 2 SHORT)
+# ============================================================
+async def cmd_daily(update, ctx):
+    """صفقة اليوم — كل مرة يحلل جديد، لا يخزن ولا ينشر"""
+    u = update.effective_user
+    touch_user(u, "/daily")
+
+    wait = await update.message.reply_text(
+        "🎯 جارٍ تحليل السوق...\n"
+        "⏳ قد يستغرق 30-90 ثانية\n\n"
+        "🔍 نبحث عن أفضل فرص LONG و SHORT"
+    )
+
+    try:
+        syms = await asyncio.to_thread(top_symbols, 60)
+        longs, shorts = await asyncio.to_thread(_build_daily_lists, syms[:40])
+
+        if not longs and not shorts:
+            await wait.edit_text(
+                "🎯 لا توجد صفقات قوية الآن\n\n"
+                "📊 السوق هادي أو الإشارات ضعيفة\n"
+                "⏳ جرّب بعد قليل"
+            )
+            return
+
+        await wait.delete()
+
+        # إرسال كل صفقة في رسالة منفصلة
+        count = 1
+
+        for idx, item in enumerate(longs, 1):
+            label = f"🟢 LONG {idx}"
+            txt = _format_daily_card(item["res"], label, item["stars"])
+            await update.message.reply_text(txt)
+            await asyncio.sleep(0.7)
+
+        for idx, item in enumerate(shorts, 1):
+            label = f"🔴 SHORT {idx}"
+            txt = _format_daily_card(item["res"], label, item["stars"])
+            await update.message.reply_text(txt)
+            await asyncio.sleep(0.7)
+
+        # ملاحظة نهاية
+        n_l, n_s = len(longs), len(shorts)
+        footer = (
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 النتيجة: {n_l} LONG + {n_s} SHORT\n"
+            f"⏰ {dt.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+            f"💡 انسخ الصفقات اللي تعجبك وانشرها يدوياً"
+        )
+        await update.message.reply_text(footer)
+
+    except Exception as e:
+        log.exception("daily")
+        await wait.edit_text(f"⚠️ حدث خطأ: {str(e)[:200]}")
 
 # ============================================================
 #                    أوامر VIP (رادارات)
@@ -2623,6 +2805,7 @@ ADMIN_CMD_MAP = {
     "/clearsignals": cmd_clearsignals,
     "/smartcleanup": cmd_smartcleanup,
     "/debug": cmd_debug,
+    "/daily": cmd_daily,
     "/predict": cmd_predict, "/whales": cmd_whales, "/explosions": cmd_explosions,
     "/pump": cmd_pump, "/bottom": cmd_bottoms, "/shortsradar": cmd_shorts_radar,
     "/alpha": cmd_alpha, "/scan": cmd_scan, "/short": cmd_short,
@@ -2650,7 +2833,6 @@ async def cb_handler(update, ctx):
     try: await q.answer()
     except Exception: pass
 
-    # ══════════ قائمة الأدمن ══════════
     if q.data == "admin_menu":
         if q.from_user.id != ADMIN_ID: return
         try:
@@ -2660,13 +2842,11 @@ async def cb_handler(update, ctx):
         except Exception: pass
         return
 
-    # ══════════ إغلاق القائمة ══════════
     if q.data == "close_menu":
         try: await q.message.delete()
         except Exception: pass
         return
 
-    # ══════════ وسائط الأدمن ══════════
     if q.data.startswith("adm_args:"):
         if q.from_user.id != ADMIN_ID: return
         key = q.data.split(":", 1)[1]
@@ -2674,7 +2854,6 @@ async def cb_handler(update, ctx):
         await q.message.reply_text(f"✏️ {hint}")
         return
 
-    # ══════════ أوامر الأدمن ══════════
     if q.data.startswith("adm:"):
         if q.from_user.id != ADMIN_ID: return
         cmd_name = q.data.split(":", 1)[1]
@@ -2688,7 +2867,6 @@ async def cb_handler(update, ctx):
             except Exception: pass
         return
 
-    # ══════════ صفحة VIP ══════════
     if q.data == "vip" or q.data == "vip_page":
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("💎 انضم لقناة VIP ✨", url=VIP_INVITE_LINK)],
@@ -2700,7 +2878,6 @@ async def cb_handler(update, ctx):
         except Exception: pass
         return
 
-    # ══════════ تجربة VIP يوم ══════════
     if q.data == "vip_trial":
         u = q.from_user
         uid = str(u.id)
@@ -2722,14 +2899,14 @@ async def cb_handler(update, ctx):
             "💎 استمتع بكل الميزات:\n"
             "• 4 أهداف كاملة\n"
             "• كل الرادارات\n"
-            "• تتبع لحظي للصفقات\n\n"
+            "• تتبع لحظي للصفقات\n"
+            "• صفقة اليوم (2 LONG + 2 SHORT)\n\n"
             "⏳ تنتهي بعد 24 ساعة",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📋 ابدأ الآن", callback_data="vip_menu")],
             ]))
         return
 
-    # ══════════ قائمة VIP الكاملة ══════════
     if q.data == "vip_menu":
         u = q.from_user
         rec = store.data["users"].get(str(u.id), {})
@@ -2740,7 +2917,6 @@ async def cb_handler(update, ctx):
         await q.message.reply_text(build_vip_menu_text(), reply_markup=keyboard_vip_menu())
         return
 
-    # ══════════ أوامر VIP التي تحتاج وسيط ══════════
     if q.data.startswith("vip_cmd_args:"):
         key = q.data.split(":", 1)[1]
         u = q.from_user
@@ -2756,7 +2932,6 @@ async def cb_handler(update, ctx):
         await q.message.reply_text(f"✏️ {hint}")
         return
 
-    # ══════════ أوامر VIP المباشرة ══════════
     if q.data.startswith("vip_cmd:"):
         cmd = q.data.split(":",1)[1]
         u = q.from_user
@@ -2773,11 +2948,11 @@ async def cb_handler(update, ctx):
             elif cmd == "/shortsradar": await cmd_shorts_radar(update, ctx)
             elif cmd == "/alpha": await cmd_alpha(update, ctx)
             elif cmd == "/active": await cmd_active(update, ctx)
+            elif cmd == "/daily": await cmd_daily(update, ctx)
         except Exception as e:
             await q.message.reply_text(f"⚠️ {str(e)[:150]}")
         return
 
-    # ══════════ أزرار الأدمن (من الصورة) ══════════
     if q.data.startswith("ind:"):
         if q.from_user.id != ADMIN_ID: return
         try:
@@ -2848,7 +3023,7 @@ async def on_text(update, ctx):
         await handle_symbol(update, update.message.text.split()[0])
 
 PUBLIC_COMMANDS = [("start","ابدأ"),("help","المساعدة"),("myid","رقمي"),
-                   ("vip","VIP"),("menu","قائمتي 📋")]
+                   ("vip","VIP"),("menu","قائمتي 📋"),("daily","🎯 صفقة اليوم")]
 
 async def post_init(app):
     try: await app.bot.set_my_commands([BotCommand(c,d) for c,d in PUBLIC_COMMANDS])
@@ -2867,8 +3042,8 @@ async def post_init(app):
         asyncio.create_task(alpha_summary_loop(app)),
         asyncio.create_task(bottoms_auto_loop(app)),
     ]
-    log.info("ryma v48 | max_open=%d | fast=%d | all=%d",
-             MAX_OPEN, len(FAST_EXCHANGES), len(EXCHANGES))
+    log.info("ryma v49 | max_open=%d | daily=%dL+%dS | fast=%d",
+             MAX_OPEN, DAILY_LONGS, DAILY_SHORTS, len(FAST_EXCHANGES))
 
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
@@ -2883,6 +3058,7 @@ def main():
     handlers = [
         ("start",cmd_start),("help",cmd_help),("myid",cmd_myid),("vip",cmd_vip),
         ("menu",cmd_menu),
+        ("daily",cmd_daily),
         ("predict",cmd_predict),
         ("forcepost",cmd_forcepost),
         ("clearsignals",cmd_clearsignals),
