@@ -31,7 +31,6 @@ CONTACT_LINK = _e("CONTACT_LINK", "@rym_rima1")
 CHANNEL_LINK = _e("CHANNEL_LINK", "https://t.me/rym_rima16")
 VIP_INVITE_LINK = _e("VIP_INVITE_LINK", "https://t.me/+gTMJiBiiC_IyZjZk")
 PAYMENT_INFO = _e("PAYMENT_INFO", "Binance Pay: 905142395")
-# ✅ حماية كل الرسائل دائماً
 PROTECT = _e("PROTECT_CONTENT", "1") == "1"
 MAINTENANCE = _e("MAINTENANCE", "0") == "1"
 
@@ -50,7 +49,6 @@ ALPHA_COINS = ["ETH","BNB","SOL","SUI","NEAR","INJ","TIA","FLOKI","APT","ARB"]
 COINS = CORE_COINS + MEME_COINS
 WEAK_COINS = set()
 
-# ✅ استبعاد الكبار من /daily
 DAILY_EXCLUDE = {"BTC","ETH","BNB","SOL","XRP","DOGE","ADA","TRX","LTC",
                  "DOT","LINK","AVAX","TON","SHIB","PEPE","USDC","FDUSD","TUSD"}
 
@@ -143,7 +141,7 @@ MACD_FAST, MACD_SLOW, MACD_SIGNAL = 12, 26, 9
 
 DAILY_LONGS = 2
 DAILY_SHORTS = 2
-DAILY_MIN_STARS = 3
+DAILY_MIN_STARS = 2   # ✅ خُفّض من 3 → 2
 DAILY_TP_COUNT = 3
 DAILY_TOP_N = 10
 
@@ -402,20 +400,16 @@ def ticker_change(sym):
     return price, change_24h, change_7d
 
 # ============================================================
-#        ✅ Top Gainers / Losers من Binance API (v2)
+#        ✅ Top Gainers / Losers من Binance API
 # ============================================================
 _top_movers_cache = [0, [], []]
 
 def get_top_movers(force=False):
-    """
-    يجلب Top Gainers و Top Losers من Binance (نفس اللي في المنصة)
-    """
     if not force and time.time() - _top_movers_cache[0] < 60:
         return _top_movers_cache[1], _top_movers_cache[2]
 
     gainers, losers = [], []
 
-    # المحاولة 1: endpoint الرسمي للـ top-movers
     try:
         r = requests.get(
             "https://www.binance.com/bapi/asset/v1/public/asset/friendly/asset-rank/top-movers",
@@ -454,7 +448,7 @@ def get_top_movers(force=False):
     except Exception as e:
         log.warning(f"top_movers endpoint1: {e}")
 
-    # المحاولة 2: ترتيب يدوي من fetch_tickers
+    # Fallback
     if not gainers and not losers:
         try:
             ex = get_ex("binance")
@@ -1382,7 +1376,7 @@ def event_text(coin, tf, side, e, R, tier="free", trade=None):
     return None
 
 # ============================================================
-#              ✅ /daily — للأدمن فقط
+#              ✅ /daily — للأدمن فقط (v52)
 # ============================================================
 def _stars_str(n):
     n = max(1, min(5, int(n)))
@@ -1421,40 +1415,64 @@ def _score_setup(res):
     return max(1, min(5, round(score)))
 
 def _build_daily_lists(force_side=None):
+    """يجلب Top Movers ويختار أفضل الصفقات — بدون شروط صارمة"""
     gainers, losers = get_top_movers(force=True)
-    # استبعد الكبار
     gainers = [g for g in gainers if g["symbol"] not in DAILY_EXCLUDE]
     losers  = [l for l in losers  if l["symbol"] not in DAILY_EXCLUDE]
+
+    log.info(f"daily: gainers={[g['symbol'] for g in gainers[:10]]}")
+    log.info(f"daily: losers={[l['symbol'] for l in losers[:10]]}")
 
     longs, shorts = [], []
     used = set()
 
     def process(sym, expected_side):
-        if sym in used: return
-        if sym in STABLES or sym in DAILY_EXCLUDE: return
+        if sym in used: return None
+        if sym in STABLES or sym in DAILY_EXCLUDE: return None
         try:
             res = get_analysis(sym, force=True)
-        except Exception:
-            return
-        if res["sym"] in WEAK_COINS: return
-        if expected_side == 1 and res["side"] != 1: return
-        if expected_side == -1 and res["side"] != -1: return
+        except Exception as e:
+            log.warning(f"daily analyze {sym}: {e}")
+            return None
+        if res["sym"] in WEAK_COINS: return None
         stars = _score_setup(res)
-        item = dict(res=res, stars=stars)
-        if expected_side == 1: longs.append(item)
-        else: shorts.append(item)
-        used.add(sym)
+        return dict(res=res, stars=stars, expected=expected_side)
 
+    # 1) LONG من Gainers
     for g in gainers:
         if len(longs) >= DAILY_LONGS: break
-        process(g["symbol"], 1)
+        item = process(g["symbol"], 1)
+        if not item: continue
+        # ✅ لو الاتجاه عكس — اعكسه
+        if item["res"]["side"] != 1:
+            res = item["res"]
+            res["side"] = 1
+            try:
+                lv = compute_core_levels(res["df"], len(res["df"])-1, 1, res["price"])
+                if lv: res["lv"] = lv
+            except Exception: pass
+        longs.append(item)
+        used.add(g["symbol"])
 
+    # 2) SHORT من Losers
     for l in losers:
         if len(shorts) >= DAILY_SHORTS: break
-        process(l["symbol"], -1)
+        item = process(l["symbol"], -1)
+        if not item: continue
+        # ✅ لو الاتجاه عكس — اعكسه
+        if item["res"]["side"] != -1:
+            res = item["res"]
+            res["side"] = -1
+            try:
+                lv = compute_core_levels(res["df"], len(res["df"])-1, -1, res["price"])
+                if lv: res["lv"] = lv
+            except Exception: pass
+        shorts.append(item)
+        used.add(l["symbol"])
 
     longs.sort(key=lambda x: -x["stars"])
     shorts.sort(key=lambda x: -x["stars"])
+    log.info(f"daily: FINAL longs={len(longs)}, shorts={len(shorts)}")
     return longs[:DAILY_LONGS], shorts[:DAILY_SHORTS]
 
 def _format_daily_card(res, side_label, stars):
@@ -1469,10 +1487,9 @@ def _format_daily_card(res, side_label, stars):
     return "\n".join(lines)
 
 # ============================================================
-#              ✅ الإشعارات — كلها مع حماية
+#              ✅ الإشعارات — مع حماية
 # ============================================================
 async def notify_both(bot, text, protect=True):
-    """يُرسل VIP + الأدمن — كلها مع حماية نسخ"""
     for chat in (VIP_CHANNEL_ID, ADMIN_ID or None):
         if not chat: continue
         try:
@@ -1485,13 +1502,12 @@ async def notify_both(bot, text, protect=True):
             log.warning(f"notify_both {chat}: {str(e)[:80]}")
 
 async def notify_free(bot, text):
-    """يُرسل للمجانية — مع حماية نسخ"""
     if CHANNEL_ID:
         try:
             await bot.send_message(
                 CHANNEL_ID, text,
                 parse_mode=ParseMode.HTML,
-                protect_content=PROTECT  # ✅ حماية
+                protect_content=PROTECT
             )
         except Exception as e:
             log.warning(f"notify_free: {str(e)[:80]}")
@@ -1644,7 +1660,6 @@ def keyboard(sym, tf, tier):
     return keyboard_free(sym, tf)
 
 def keyboard_vip_menu():
-    # ✅ لا يوجد "صفقة اليوم" هنا — خاصة بالأدمن
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔮 التنبؤ بالانفجارات", callback_data="vip_cmd:/predict")],
         [InlineKeyboardButton("🐋 رادار الحيتان", callback_data="vip_cmd:/whales")],
@@ -1783,7 +1798,7 @@ def track_signal(res):
     return p
 
 # ============================================================
-#                    publish — مع حماية
+#                    publish
 # ============================================================
 async def publish(bot, res, vip=True, free=False, admin_copy=False):
     sent = []
@@ -1793,17 +1808,16 @@ async def publish(bot, res, vip=True, free=False, admin_copy=False):
             img = await asyncio.to_thread(render_chart, res, "vip", True)
             await bot.send_photo(VIP_CHANNEL_ID, img, caption=caption_vip(res),
                                  parse_mode=ParseMode.HTML,
-                                 protect_content=PROTECT)  # ✅ حماية
+                                 protect_content=PROTECT)
             sent.append("VIP")
         if free and CHANNEL_ID:
             img = await asyncio.to_thread(render_chart, res, "free", True)
             await bot.send_photo(CHANNEL_ID, img, caption=caption_free(res),
                                  parse_mode=ParseMode.HTML,
-                                 protect_content=PROTECT,  # ✅ حماية
+                                 protect_content=PROTECT,
                                  reply_markup=keyboard_free(res["sym"], res["tf"]))
             sent.append("FREE")
         if admin_copy and ADMIN_ID:
-            # ✅ الأدمن بدون حماية — يقدر ينسخ
             try: await bot.send_message(ADMIN_ID, copy_text)
             except Exception: pass
     except Exception as e:
@@ -1811,7 +1825,7 @@ async def publish(bot, res, vip=True, free=False, admin_copy=False):
     return sent
 
 # ============================================================
-#                    market summary — مع حماية
+#                    market summary
 # ============================================================
 def build_market_summary(symbols):
     now_ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1984,7 +1998,7 @@ async def short_free_loop(app):
                     try:
                         await app.bot.send_message(
                             CHANNEL_ID, "\n".join(lines),
-                            protect_content=PROTECT  # ✅ حماية
+                            protect_content=PROTECT
                         )
                     except Exception: pass
         except asyncio.CancelledError: raise
@@ -2002,7 +2016,7 @@ async def market_summary_loop(app):
                     try:
                         await app.bot.send_message(
                             CHANNEL_ID, txt,
-                            protect_content=PROTECT  # ✅ حماية
+                            protect_content=PROTECT
                         )
                     except Exception: pass
             if VIP_CHANNEL_ID:
@@ -2011,7 +2025,7 @@ async def market_summary_loop(app):
                     try:
                         await app.bot.send_message(
                             VIP_CHANNEL_ID, txt,
-                            protect_content=PROTECT  # ✅ حماية
+                            protect_content=PROTECT
                         )
                     except Exception: pass
         except asyncio.CancelledError: raise
@@ -2034,7 +2048,7 @@ async def predict_loop(app):
                         lines.append(f"   {reasons}")
                     await app.bot.send_message(
                         VIP_CHANNEL_ID, "\n".join(lines),
-                        protect_content=PROTECT  # ✅ حماية
+                        protect_content=PROTECT
                     )
         except asyncio.CancelledError: raise
         except Exception: log.exception("predict")
@@ -2060,7 +2074,7 @@ async def alpha_summary_loop(app):
                         lines.append(f"   RSI {r['rsi']}")
                     await app.bot.send_message(
                         VIP_CHANNEL_ID, "\n".join(lines),
-                        protect_content=PROTECT  # ✅ حماية
+                        protect_content=PROTECT
                     )
         except asyncio.CancelledError: raise
         except Exception: log.exception("alpha_summary")
@@ -2088,7 +2102,7 @@ async def bottoms_auto_loop(app):
                         lines.append(f"   💵 {fmt(r['price'])}")
                     await app.bot.send_message(
                         VIP_CHANNEL_ID, "\n".join(lines),
-                        protect_content=PROTECT  # ✅ حماية
+                        protect_content=PROTECT
                     )
         except asyncio.CancelledError: raise
         except Exception: log.exception("bottoms_auto")
@@ -2254,7 +2268,7 @@ async def handle_symbol(update, raw, to_channel=False):
         await update.message.reply_photo(
             photo=img, caption=cap,
             parse_mode=ParseMode.HTML,
-            protect_content=(st!="admin" and PROTECT),  # ✅ حماية للمستخدم العادي
+            protect_content=(st!="admin" and PROTECT),
             reply_markup=kb)
         if st == "admin":
             try: await update.message.reply_text(build_copy_post(res))
@@ -2395,7 +2409,6 @@ async def cmd_daily(update, ctx):
 
         await wait.delete()
 
-        # إرسال كل صفقة منفصلة — للأدمن فقط (بدون حماية)
         for idx, item in enumerate(longs, 1):
             txt = _format_daily_card(item["res"], f"🟢 LONG {idx}", item["stars"])
             await update.message.reply_text(txt)
@@ -3028,7 +3041,6 @@ async def cb_handler(update, ctx):
             elif cmd == "/shortsradar": await cmd_shorts_radar(update, ctx)
             elif cmd == "/alpha": await cmd_alpha(update, ctx)
             elif cmd == "/active": await cmd_active(update, ctx)
-            # ✅ لا يوجد /daily هنا — خاص بالأدمن
         except Exception as e:
             await q.message.reply_text(f"⚠️ {str(e)[:150]}")
         return
@@ -3092,7 +3104,7 @@ async def cb_handler(update, ctx):
             cap = caption_vip(res) if tier in ("admin","vip") else caption_free(res)
             await ctx.bot.send_photo(
                 q.message.chat.id, photo=img, caption=cap,
-                protect_content=(st!="admin" and PROTECT),  # ✅ حماية
+                protect_content=(st!="admin" and PROTECT),
                 reply_markup=kb
             )
         except Exception: pass
@@ -3106,7 +3118,6 @@ async def on_text(update, ctx):
     if update.message and update.message.text:
         await handle_symbol(update, update.message.text.split()[0])
 
-# ✅ لا يوجد /daily في الأوامر العامة — خاص بالأدمن
 PUBLIC_COMMANDS = [("start","ابدأ"),("help","المساعدة"),("myid","رقمي"),
                    ("vip","VIP"),("menu","قائمتي 📋")]
 
@@ -3127,7 +3138,7 @@ async def post_init(app):
         asyncio.create_task(alpha_summary_loop(app)),
         asyncio.create_task(bottoms_auto_loop(app)),
     ]
-    log.info("ryma v51 | max_open=%d | daily(ADMIN only) | protect=%s",
+    log.info("ryma v52 | max_open=%d | daily(ADMIN only) | protect=%s",
              MAX_OPEN, PROTECT)
 
 async def post_shutdown(app):
@@ -3143,7 +3154,7 @@ def main():
     handlers = [
         ("start",cmd_start),("help",cmd_help),("myid",cmd_myid),("vip",cmd_vip),
         ("menu",cmd_menu),
-        ("daily",cmd_daily),  # ← للأدمن فقط (يوجد admin_only)
+        ("daily",cmd_daily),
         ("predict",cmd_predict),
         ("forcepost",cmd_forcepost),
         ("clearsignals",cmd_clearsignals),
