@@ -1112,7 +1112,7 @@ def fmt(x):
     return f"{x:.8f}"
 
 # ============================================================
-#              ✅ Smart Cleanup
+#              Smart Cleanup
 # ============================================================
 def smart_cleanup_trades():
     now_ms = int(time.time()*1000)
@@ -1204,19 +1204,16 @@ def _archive(p):
         store.save("signals","history")
 
 # ============================================================
-#              ✅ format_trade_card + event_text
+#              format_trade_card + event_text
 # ============================================================
 def format_trade_card(p, event_kind=None, event_data=None):
-    """بطاقة الصفقة — وقف خسارة واحد فقط"""
     lines = [f"{p['coin']}USDT"]
     lines.append("")
     lines.append(f"➡️ Entry: {fmt(p['fill'])}")
-
     lines.append("")
     for i, tp in enumerate(p["tps"], 1):
         check = "✅" if tp["hit"] else ""
         lines.append(f"🎯 Target {i}: {fmt(tp['px'])} {check}".rstrip())
-
     lines.append("")
     if p.get("be") and p.get("trail_on"):
         label = "🛑 Trail SL"
@@ -1225,12 +1222,10 @@ def format_trade_card(p, event_kind=None, event_data=None):
     else:
         label = "🛑 Stop loss"
     lines.append(f"{label}: {fmt(p['sl'])}")
-
     cur_r = p.get("realized", 0.0)
     tp_hits = sum(1 for t in p["tps"] if t["hit"])
     lines.append("")
     lines.append(f"📊 R: {cur_r:+.2f} | TP: {tp_hits}/4")
-
     if p.get("state") == "closed":
         result = p.get("result", "")
         lines.append("")
@@ -1252,14 +1247,10 @@ def format_trade_card(p, event_kind=None, event_data=None):
             lines.append(f"📅 <b>انتهاء العمر</b> | {p.get('R', 0):+.2f}R")
         else:
             lines.append(f"🏁 <b>انتهت</b> | {p.get('R', 0):+.2f}R")
-
     return "\n".join(lines)
 
 def event_text(coin, tf, side, e, R, tier="free", trade=None):
-    """رسالة التتبع — نص بسيط أو بطاقة كاملة حسب trade"""
     k = e["kind"]
-
-    # إذا مررنا trade object → استخدم البطاقة الكاملة
     if trade is not None:
         card = format_trade_card(trade, k, e)
         header = ""
@@ -1278,25 +1269,17 @@ def event_text(coin, tf, side, e, R, tier="free", trade=None):
         elif k == "ENTRY":
             header = "✅ <b>تفعّل الدخول</b>\n\n"
         return header + card
-
-    # fallback نصي
     side_word = "🟢 شراء" if side == 1 else "🔴 بيع"
     head = f"📌 #{coin}/USDT | {side_word} | {tf.upper()}"
-    if k == "ENTRY":
-        return f"{head}\n\n✅ <b>تفعّل الدخول</b> عند {fmt(e['px'])}"
+    if k == "ENTRY": return f"{head}\n\n✅ <b>تفعّل الدخول</b> عند {fmt(e['px'])}"
     if k == "TP":
         emoji = "🎯" if e["j"] <= 2 else "🏆"
         return f"{head}\n\n{emoji} <b>تحقق الهدف {e['j']}</b> عند {fmt(e['px'])}\n📈 ربح: {e['pct']:+.2f}%"
-    if k == "BE_MOVED":
-        return f"{head}\n\n🔒 <b>نُقل الوقف إلى التعادل</b>"
-    if k == "SL":
-        return f"{head}\n\n🛑 <b>ضرب وقف الخسارة</b>" + (f"\n📊 ({R:+.2f}R)" if R else "")
-    if k == "BE":
-        return f"{head}\n\n🔒 <b>خروج على التعادل</b>" + (f"\n📊 ({R:+.2f}R)" if R else "")
-    if k == "TRAIL":
-        return f"{head}\n\n🔁 <b>خروج بالوقف المتحرك</b>" + (f"\n📊 ({R:+.2f}R)" if R else "")
-    if k == "TIME":
-        return f"{head}\n\n⏱ <b>انتهت المدة</b>" + (f"\n📊 ({R:+.2f}R)" if R else "")
+    if k == "BE_MOVED": return f"{head}\n\n🔒 <b>نُقل الوقف إلى التعادل</b>"
+    if k == "SL": return f"{head}\n\n🛑 <b>ضرب وقف الخسارة</b>" + (f"\n📊 ({R:+.2f}R)" if R else "")
+    if k == "BE": return f"{head}\n\n🔒 <b>خروج على التعادل</b>" + (f"\n📊 ({R:+.2f}R)" if R else "")
+    if k == "TRAIL": return f"{head}\n\n🔁 <b>خروج بالوقف المتحرك</b>" + (f"\n📊 ({R:+.2f}R)" if R else "")
+    if k == "TIME": return f"{head}\n\n⏱ <b>انتهت المدة</b>" + (f"\n📊 ({R:+.2f}R)" if R else "")
     return None
 
 # ============================================================
@@ -1434,7 +1417,7 @@ def build_copy_post(res):
     return "\n".join(lines)
 
 # ============================================================
-#                    الأزرار
+#                    Keyboards
 # ============================================================
 def keyboard_free(sym, tf):
     return InlineKeyboardMarkup([
@@ -1465,6 +1448,38 @@ def keyboard(sym, tf, tier):
     if tier == "vip": return keyboard_vip(sym, tf)
     return keyboard_free(sym, tf)
 
+# ============================================================
+#              ✅ قائمة VIP الكاملة (12 زر مستقل)
+# ============================================================
+def keyboard_vip_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔮 التنبؤ بالانفجارات", callback_data="vip_cmd:/predict")],
+        [InlineKeyboardButton("🐋 رادار الحيتان", callback_data="vip_cmd:/whales")],
+        [InlineKeyboardButton("💥 رادار الانفجارات", callback_data="vip_cmd:/explosions")],
+        [InlineKeyboardButton("🚀 عملات صاعدة", callback_data="vip_cmd:/pump")],
+        [InlineKeyboardButton("📉 رادار القيعان الذكي", callback_data="vip_cmd:/bottom")],
+        [InlineKeyboardButton("🔻 رادار فرص الشورت", callback_data="vip_cmd:/shortsradar")],
+        [InlineKeyboardButton("⭐ رادار Alpha الأسبوعي", callback_data="vip_cmd:/alpha")],
+        [InlineKeyboardButton("💧 رادار السيولة", callback_data="vip_cmd_args:liquidity")],
+        [InlineKeyboardButton("📊 بيانات الفيوتشر", callback_data="vip_cmd_args:futures")],
+        [InlineKeyboardButton("📈 الصفقات النشطة", callback_data="vip_cmd:/active")],
+        [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
+        [InlineKeyboardButton("❌ إغلاق القائمة", callback_data="close_menu")],
+    ])
+
+def build_vip_menu_text():
+    return (
+        "╭━━━ 💎 قائمة VIP الكاملة 💎 ━━━╮\n"
+        "┃ 🔥 كل الخدمات في متناول يدك 🔥\n"
+        "╰━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+        "🎯 اضغط على أي زر للوصول للخدمة مباشرة\n\n"
+        "📌 ملاحظات:\n"
+        "• 💧 السيولة و 📊 الفيوتشر يطلبوا منك كتابة الرمز\n"
+        "• 📈 الصفقات النشطة تعرض كل صفقاتك الآن\n"
+        "• 📢 قناة التوصيات للتنبيهات الفورية\n\n"
+        "╰━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
+    )
+
 def build_vip_page():
     return (
         "╭━━━ 💎 RYMA CRYPTO VIP 💎 ━━━╮\n"
@@ -1492,25 +1507,6 @@ def build_vip_page():
         "💳 Binance Pay: 905142395\n"
         f"📞 {CONTACT_LINK}\n\n"
         "👇 اضغط للانضمام"
-    )
-
-def build_vip_menu_text():
-    return (
-        "╭━━━ 💎 قائمة VIP 💎 ━━━╮\n\n"
-        "📊 التحليل:\n"
-        "• أرسل رمز عملة → 4 أهداف\n\n"
-        "🔮 الرادارات:\n"
-        "• /predict — التنبؤ بالانفجارات\n"
-        "• /whales — رادار الحيتان\n"
-        "• /liquidity BTC — السيولة\n"
-        "• /explosions — الانفجارات\n"
-        "• /pump — عملات صاعدة\n"
-        "• /bottom — رادار القيعان\n"
-        "• /shortsradar — فرص الشورت\n"
-        "• /alpha — عملات Alpha\n"
-        "• /futures BTC — بيانات الفيوتشر\n"
-        "• /active — الصفقات النشطة\n\n"
-        "╰━━━━━━━━━━━━━━━━━━━━╯"
     )
 
 def build_admin_menu_text():
@@ -1622,7 +1618,7 @@ async def publish(bot, res, vip=True, free=False, admin_copy=False):
     return sent
 
 # ============================================================
-#                    ملخص السوق
+#                    market summary
 # ============================================================
 def build_market_summary(symbols):
     now_ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1733,104 +1729,7 @@ async def run_autopost(bot):
     log.info(f"run_autopost: انتهى — VIP {vip_n}, FREE {free_n}")
 
 # ============================================================
-#                    Alpha Summary
-# ============================================================
-async def alpha_summary_loop(app):
-    await asyncio.sleep(240)
-    while True:
-        try:
-            if VIP_CHANNEL_ID:
-                syms = await asyncio.to_thread(top_symbols, 60)
-                rows = []
-                for s in syms[:50]:
-                    r = await asyncio.to_thread(alpha_radar, s)
-                    if r: rows.append((s, r))
-                if rows:
-                    rows.sort(key=lambda x: -x[1]["change_7d"])
-                    lines = ["⭐ رادار عملات Alpha", f"🕐 {dt.datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                             "━━━━━━━━━━━━━━━━", ""]
-                    for s, r in rows[:10]:
-                        lines.append(f"⭐ #{s}")
-                        lines.append(f"   7ي {r['change_7d']:+.2f}% | 30ي {r['change_30d']:+.2f}%")
-                        lines.append(f"   RSI {r['rsi']}")
-                    await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines),
-                                               protect_content=PROTECT)
-        except asyncio.CancelledError: raise
-        except Exception: log.exception("alpha_summary")
-        await asyncio.sleep(CYCLE_ALPHA_SUMMARY)
-
-# ============================================================
-#                    Bottoms Auto
-# ============================================================
-async def bottoms_auto_loop(app):
-    await asyncio.sleep(300)
-    while True:
-        try:
-            if VIP_CHANNEL_ID:
-                syms = await asyncio.to_thread(top_symbols, 70)
-                rows = []
-                for s in syms[:55]:
-                    r = await asyncio.to_thread(bottom_radar, s)
-                    if r: rows.append((s, r))
-                if rows:
-                    rows.sort(key=lambda x: x[1]["diff"])
-                    lines = ["📉 رادار القيعان الذكي",
-                             f"🕐 {dt.datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                             "━━━━━━━━━━━━━━━━", ""]
-                    for s, r in rows[:10]:
-                        lines.append(f"{r['severity']} #{s}")
-                        lines.append(f"   📊 {r['diff']}% تحت EMA200 | RSI {r['rsi']}")
-                        lines.append(f"   🔄 تعافي: +{r['rebound']}% | 📊 حجم: x{r['vol_ratio']}")
-                        lines.append(f"   💵 {fmt(r['price'])}")
-                    await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines),
-                                               protect_content=PROTECT)
-        except asyncio.CancelledError: raise
-        except Exception: log.exception("bottoms_auto")
-        await asyncio.sleep(CYCLE_BOTTOMS_AUTO)
-
-# ============================================================
-#                    ✅ tracker_loop (بطاقات كاملة)
-# ============================================================
-async def tracker_loop(app):
-    await asyncio.sleep(30)
-    cycle = 0
-    while True:
-        try:
-            cycle += 1
-            if cycle % CLEANUP_EVERY_CYCLES == 0:
-                await asyncio.to_thread(smart_cleanup_trades)
-
-            notes = await asyncio.to_thread(check_signals_sync)
-            log.info(f"tracker: {len(notes)} ملاحظة")
-
-            for coin, tf, side, e, R in notes:
-                # البحث عن الصفقة الكاملة
-                trade_obj = None
-                with store.lock:
-                    for p in store.data["signals"]:
-                        if p["coin"] == coin and p["tf"] == tf and p["side"] == side:
-                            trade_obj = p
-                            break
-                if not trade_obj:
-                    with store.lock:
-                        for p in reversed(store.data["history"]):
-                            if p.get("coin") == coin and p.get("tf") == tf:
-                                trade_obj = p
-                                break
-
-                if not trade_obj:
-                    continue
-
-                full_msg = event_text(coin, tf, side, e, R, "vip", trade=trade_obj)
-                if full_msg:
-                    await notify_both(app.bot, full_msg, protect=True)
-                    await notify_free(app.bot, full_msg)
-        except asyncio.CancelledError: raise
-        except Exception: log.exception("tracker")
-        await asyncio.sleep(300)
-
-# ============================================================
-#                    حلقات أخرى
+#                    Loops
 # ============================================================
 async def autopost_loop(app):
     await asyncio.sleep(20)
@@ -1843,6 +1742,38 @@ async def autopost_loop(app):
         except asyncio.CancelledError: raise
         except Exception: log.exception("autopost")
         await asyncio.sleep(60)
+
+async def tracker_loop(app):
+    await asyncio.sleep(30)
+    cycle = 0
+    while True:
+        try:
+            cycle += 1
+            if cycle % CLEANUP_EVERY_CYCLES == 0:
+                await asyncio.to_thread(smart_cleanup_trades)
+            notes = await asyncio.to_thread(check_signals_sync)
+            log.info(f"tracker: {len(notes)} ملاحظة")
+            for coin, tf, side, e, R in notes:
+                trade_obj = None
+                with store.lock:
+                    for p in store.data["signals"]:
+                        if p["coin"] == coin and p["tf"] == tf and p["side"] == side:
+                            trade_obj = p
+                            break
+                if not trade_obj:
+                    with store.lock:
+                        for p in reversed(store.data["history"]):
+                            if p.get("coin") == coin and p.get("tf") == tf:
+                                trade_obj = p
+                                break
+                if not trade_obj: continue
+                full_msg = event_text(coin, tf, side, e, R, "vip", trade=trade_obj)
+                if full_msg:
+                    await notify_both(app.bot, full_msg, protect=True)
+                    await notify_free(app.bot, full_msg)
+        except asyncio.CancelledError: raise
+        except Exception: log.exception("tracker")
+        await asyncio.sleep(300)
 
 async def short_free_loop(app):
     await asyncio.sleep(300)
@@ -1905,6 +1836,56 @@ async def predict_loop(app):
         except asyncio.CancelledError: raise
         except Exception: log.exception("predict")
         await asyncio.sleep(CYCLE_PREDICT)
+
+async def alpha_summary_loop(app):
+    await asyncio.sleep(240)
+    while True:
+        try:
+            if VIP_CHANNEL_ID:
+                syms = await asyncio.to_thread(top_symbols, 60)
+                rows = []
+                for s in syms[:50]:
+                    r = await asyncio.to_thread(alpha_radar, s)
+                    if r: rows.append((s, r))
+                if rows:
+                    rows.sort(key=lambda x: -x[1]["change_7d"])
+                    lines = ["⭐ رادار عملات Alpha", f"🕐 {dt.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                             "━━━━━━━━━━━━━━━━", ""]
+                    for s, r in rows[:10]:
+                        lines.append(f"⭐ #{s}")
+                        lines.append(f"   7ي {r['change_7d']:+.2f}% | 30ي {r['change_30d']:+.2f}%")
+                        lines.append(f"   RSI {r['rsi']}")
+                    await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines),
+                                               protect_content=PROTECT)
+        except asyncio.CancelledError: raise
+        except Exception: log.exception("alpha_summary")
+        await asyncio.sleep(CYCLE_ALPHA_SUMMARY)
+
+async def bottoms_auto_loop(app):
+    await asyncio.sleep(300)
+    while True:
+        try:
+            if VIP_CHANNEL_ID:
+                syms = await asyncio.to_thread(top_symbols, 70)
+                rows = []
+                for s in syms[:55]:
+                    r = await asyncio.to_thread(bottom_radar, s)
+                    if r: rows.append((s, r))
+                if rows:
+                    rows.sort(key=lambda x: x[1]["diff"])
+                    lines = ["📉 رادار القيعان الذكي",
+                             f"🕐 {dt.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                             "━━━━━━━━━━━━━━━━", ""]
+                    for s, r in rows[:10]:
+                        lines.append(f"{r['severity']} #{s}")
+                        lines.append(f"   📊 {r['diff']}% تحت EMA200 | RSI {r['rsi']}")
+                        lines.append(f"   🔄 تعافي: +{r['rebound']}% | 📊 حجم: x{r['vol_ratio']}")
+                        lines.append(f"   💵 {fmt(r['price'])}")
+                    await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines),
+                                               protect_content=PROTECT)
+        except asyncio.CancelledError: raise
+        except Exception: log.exception("bottoms_auto")
+        await asyncio.sleep(CYCLE_BOTTOMS_AUTO)
 
 # ============================================================
 #                    Backtest
@@ -2081,7 +2062,7 @@ async def handle_symbol(update, raw, to_channel=False):
         except Exception: pass
 
 # ============================================================
-#                    أوامر
+#                    أوامر عامة
 # ============================================================
 async def cmd_start(update, ctx):
     if MAINTENANCE and update.effective_user.id != ADMIN_ID:
@@ -2104,17 +2085,20 @@ async def cmd_start(update, ctx):
     st, day = user_status(u.id, rec)
     if st == "vip":
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📋 قائمتي", callback_data="vip_menu")],
+            [InlineKeyboardButton("📋 قائمة VIP الكاملة", callback_data="vip_menu")],
             [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
         ])
         await update.message.reply_text(
-            "💎 أهلاً بك عزيزي VIP\n\nأرسل رمز أي عملة للحصول على 4 أهداف كاملة\nأو اضغط 📋 قائمتي",
+            "💎 أهلاً بك عزيزي VIP\n\n"
+            "أرسل رمز أي عملة للحصول على 4 أهداف كاملة\n"
+            "أو اضغط 📋 قائمة VIP الكاملة للوصول لكل الميزات",
             reply_markup=kb)
         return
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("💎 اشترك في VIP ✨", url=VIP_INVITE_LINK)],
         [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
         [InlineKeyboardButton("📞 تواصل معنا", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
+        [InlineKeyboardButton("🎁 تجربة يوم مجاناً", callback_data="vip_trial")],
     ])
     await update.message.reply_text(build_vip_page(), reply_markup=kb)
 
@@ -2129,7 +2113,7 @@ async def cmd_help(update, ctx):
         await update.message.reply_text(
             "ℹ️ <b>مساعدة VIP</b>\n\n"
             "📝 أرسل رمز عملة → تحليل + 4 أهداف\n"
-            "📋 /menu — قائمتي\n"
+            "📋 /menu — قائمة VIP الكاملة\n"
             "🔮 /predict — التنبؤ\n🐋 /whales — الحيتان\n"
             "💧 /liquidity BTC — السيولة\n💥 /explosions — الانفجارات\n"
             "🚀 /pump — الصعود\n📉 /bottom — القيعان\n"
@@ -2155,6 +2139,7 @@ async def cmd_vip(update, ctx):
         [InlineKeyboardButton("💎 اشترك الآن ✨", url=VIP_INVITE_LINK)],
         [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
         [InlineKeyboardButton("📞 تواصل معنا", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
+        [InlineKeyboardButton("🎁 تجربة يوم مجاناً", callback_data="vip_trial")],
     ])
     await update.message.reply_text(build_vip_page(), reply_markup=kb)
 
@@ -2173,8 +2158,11 @@ async def cmd_menu(update, ctx):
             [InlineKeyboardButton("💎 اشترك في VIP", url=VIP_INVITE_LINK)],
         ])
         await update.message.reply_text("🔒 القائمة لمشتركي VIP فقط", reply_markup=kb); return
-    await update.message.reply_text(build_vip_menu_text())
+    await update.message.reply_text(build_vip_menu_text(), reply_markup=keyboard_vip_menu())
 
+# ============================================================
+#                    أوامر VIP (رادارات)
+# ============================================================
 @vip_only
 async def cmd_active(update, ctx):
     touch_user(update.effective_user, "/active")
@@ -2662,6 +2650,7 @@ async def cb_handler(update, ctx):
     try: await q.answer()
     except Exception: pass
 
+    # ══════════ قائمة الأدمن ══════════
     if q.data == "admin_menu":
         if q.from_user.id != ADMIN_ID: return
         try:
@@ -2671,11 +2660,13 @@ async def cb_handler(update, ctx):
         except Exception: pass
         return
 
+    # ══════════ إغلاق القائمة ══════════
     if q.data == "close_menu":
         try: await q.message.delete()
         except Exception: pass
         return
 
+    # ══════════ وسائط الأدمن ══════════
     if q.data.startswith("adm_args:"):
         if q.from_user.id != ADMIN_ID: return
         key = q.data.split(":", 1)[1]
@@ -2683,6 +2674,7 @@ async def cb_handler(update, ctx):
         await q.message.reply_text(f"✏️ {hint}")
         return
 
+    # ══════════ أوامر الأدمن ══════════
     if q.data.startswith("adm:"):
         if q.from_user.id != ADMIN_ID: return
         cmd_name = q.data.split(":", 1)[1]
@@ -2696,16 +2688,48 @@ async def cb_handler(update, ctx):
             except Exception: pass
         return
 
+    # ══════════ صفحة VIP ══════════
     if q.data == "vip" or q.data == "vip_page":
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("💎 انضم لقناة VIP ✨", url=VIP_INVITE_LINK)],
             [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
             [InlineKeyboardButton("📞 تواصل معنا", url=f"https://t.me/{CONTACT_LINK.lstrip('@')}")],
+            [InlineKeyboardButton("🎁 تجربة يوم مجاناً", callback_data="vip_trial")],
         ])
         try: await q.message.reply_text(build_vip_page(), reply_markup=kb)
         except Exception: pass
         return
 
+    # ══════════ تجربة VIP يوم ══════════
+    if q.data == "vip_trial":
+        u = q.from_user
+        uid = str(u.id)
+        with store.lock:
+            u_rec = store.data["users"].get(uid, {})
+            if u_rec.get("trial_used"):
+                await q.message.reply_text(
+                    "⛔ استخدمت تجربتك المجانية من قبل\n\n💎 اشترك الآن للاستمرار",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("💎 اشترك", url=VIP_INVITE_LINK)],
+                    ]))
+                return
+            u_rec["trial_used"] = True
+            store.data["users"][uid] = u_rec
+            store.save("users")
+        add_vip(u.id, 1)
+        await q.message.reply_text(
+            "🎉 تم تفعيل تجربة VIP لمدة 24 ساعة\n\n"
+            "💎 استمتع بكل الميزات:\n"
+            "• 4 أهداف كاملة\n"
+            "• كل الرادارات\n"
+            "• تتبع لحظي للصفقات\n\n"
+            "⏳ تنتهي بعد 24 ساعة",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 ابدأ الآن", callback_data="vip_menu")],
+            ]))
+        return
+
+    # ══════════ قائمة VIP الكاملة ══════════
     if q.data == "vip_menu":
         u = q.from_user
         rec = store.data["users"].get(str(u.id), {})
@@ -2713,19 +2737,26 @@ async def cb_handler(update, ctx):
         if st not in ("admin","vip"):
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("💎 اشترك VIP", url=VIP_INVITE_LINK)]])
             await q.message.reply_text("🔒", reply_markup=kb); return
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔮 التنبؤ", callback_data="vip_cmd:/predict"),
-             InlineKeyboardButton("🐋 الحيتان", callback_data="vip_cmd:/whales")],
-            [InlineKeyboardButton("💥 الانفجارات", callback_data="vip_cmd:/explosions"),
-             InlineKeyboardButton("🚀 الصعود", callback_data="vip_cmd:/pump")],
-            [InlineKeyboardButton("📉 القيعان", callback_data="vip_cmd:/bottom"),
-             InlineKeyboardButton("🔻 شورت", callback_data="vip_cmd:/shortsradar")],
-            [InlineKeyboardButton("⭐ Alpha", callback_data="vip_cmd:/alpha"),
-             InlineKeyboardButton("📈 الصفقات", callback_data="vip_cmd:/active")],
-        ])
-        await q.message.reply_text(build_vip_menu_text(), reply_markup=kb)
+        await q.message.reply_text(build_vip_menu_text(), reply_markup=keyboard_vip_menu())
         return
 
+    # ══════════ أوامر VIP التي تحتاج وسيط ══════════
+    if q.data.startswith("vip_cmd_args:"):
+        key = q.data.split(":", 1)[1]
+        u = q.from_user
+        rec = store.data["users"].get(str(u.id), {})
+        st, _ = user_status(u.id, rec)
+        if st not in ("admin","vip"):
+            await q.message.reply_text("🔒 VIP فقط"); return
+        hints = {
+            "liquidity": "💧 أرسل: /liquidity BTC\n\n(مثال: BTC, ETH, SOL)",
+            "futures": "📊 أرسل: /futures BTC\n\n(مثال: BTC, ETH, SOL)",
+        }
+        hint = hints.get(key, "أرسل الأمر مع الرمز")
+        await q.message.reply_text(f"✏️ {hint}")
+        return
+
+    # ══════════ أوامر VIP المباشرة ══════════
     if q.data.startswith("vip_cmd:"):
         cmd = q.data.split(":",1)[1]
         u = q.from_user
@@ -2746,6 +2777,7 @@ async def cb_handler(update, ctx):
             await q.message.reply_text(f"⚠️ {str(e)[:150]}")
         return
 
+    # ══════════ أزرار الأدمن (من الصورة) ══════════
     if q.data.startswith("ind:"):
         if q.from_user.id != ADMIN_ID: return
         try:
@@ -2826,7 +2858,6 @@ async def post_init(app):
         log.info(f"startup: smart_cleanup نظّفت {n} صفقة")
     except Exception as e:
         log.warning(f"startup cleanup: {e}")
-
     app.bot_data["tasks"] = [
         asyncio.create_task(autopost_loop(app)),
         asyncio.create_task(tracker_loop(app)),
@@ -2836,7 +2867,7 @@ async def post_init(app):
         asyncio.create_task(alpha_summary_loop(app)),
         asyncio.create_task(bottoms_auto_loop(app)),
     ]
-    log.info("ryma v47 | max_open=%d | fast=%d | all=%d",
+    log.info("ryma v48 | max_open=%d | fast=%d | all=%d",
              MAX_OPEN, len(FAST_EXCHANGES), len(EXCHANGES))
 
 async def post_shutdown(app):
