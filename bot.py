@@ -136,11 +136,12 @@ SR_MERGE_PCT = 0.5
 FIB_LEVELS = [0.236, 0.382, 0.5, 0.618, 0.786, 1.272, 1.618]
 MACD_FAST, MACD_SLOW, MACD_SIGNAL = 12, 26, 9
 
-# /daily config
+# ============ /daily Config ============
 DAILY_LONGS = 2
 DAILY_SHORTS = 2
 DAILY_MIN_STARS = 3
 DAILY_TP_COUNT = 3
+DAILY_TOP_N = 10          # ✅ أعلى 10 Gainers + 10 Losers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("ryma")
@@ -395,6 +396,80 @@ def ticker_change(sym):
             change_7d = (float(df["close"].iloc[-1]) / float(df["close"].iloc[-8]) - 1) * 100
     except Exception: pass
     return price, change_24h, change_7d
+
+# ============================================================
+#        ✅ Top Gainers / Losers من Binance API
+# ============================================================
+_top_movers_cache = [0, [], []]
+
+def get_top_movers(force=False):
+    """
+    يجلب Top Gainers و Top Losers من Binance (عملات USDT فقط)
+    يُرجع: (gainers_list, losers_list)
+    كل عنصر: dict(symbol, change, price, volume)
+    """
+    if not force and time.time() - _top_movers_cache[0] < 60:
+        return _top_movers_cache[1], _top_movers_cache[2]
+
+    gainers, losers = [], []
+    try:
+        r = requests.get(
+            "https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products",
+            timeout=10, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if r.status_code == 200:
+            data = r.json().get("data", [])
+            rows = []
+            for it in data:
+                sym = it.get("s", "")
+                if not sym.endswith("USDT"): continue
+                base = sym[:-4]
+                if base in STABLES: continue
+                if len(base) < 2: continue
+                if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S)$", base): continue
+                try:
+                    ch = float(it.get("r", 0))         # نسبة التغير 24h
+                    price = float(it.get("c", 0))      # السعر الحالي
+                    qv = float(it.get("qv", 0))        # حجم 24h
+                except Exception: continue
+                if price <= 0: continue
+                if qv < 5_000_000: continue  # حد أدنى 5M$ حجم
+                rows.append(dict(symbol=base, change=ch, price=price, volume=qv))
+            # ترتيب
+            rows.sort(key=lambda x: -x["change"])
+            gainers = rows[:DAILY_TOP_N]
+            losers = sorted([x for x in rows if x["change"] < 0], key=lambda x: x["change"])[:DAILY_TOP_N]
+    except Exception as e:
+        log.warning(f"get_top_movers: {e}")
+
+    # fallback — إذا فشل API
+    if not gainers and not losers:
+        try:
+            ex = get_ex("binance")
+            with _ex_lock["binance"]:
+                tickers = ex.fetch_tickers()
+            rows = []
+            for s, t in tickers.items():
+                if not s.endswith("/USDT") or ":" in s: continue
+                base = s.split("/")[0]
+                if base in STABLES or len(base) < 2: continue
+                if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S)$", base): continue
+                ch = float(t.get("percentage") or 0)
+                price = float(t.get("last") or 0)
+                qv = float(t.get("quoteVolume") or 0)
+                if price <= 0 or qv < 5_000_000: continue
+                rows.append(dict(symbol=base, change=ch, price=price, volume=qv))
+            rows.sort(key=lambda x: -x["change"])
+            gainers = rows[:DAILY_TOP_N]
+            losers = sorted([x for x in rows if x["change"] < 0], key=lambda x: x["change"])[:DAILY_TOP_N]
+        except Exception as e:
+            log.warning(f"fallback movers: {e}")
+
+    _top_movers_cache[0] = time.time()
+    _top_movers_cache[1] = gainers
+    _top_movers_cache[2] = losers
+    log.info(f"top_movers: {len(gainers)} gainers, {len(losers)} losers")
+    return gainers, losers
 
 # ============================================================
 #                    الرادارات
@@ -1289,126 +1364,98 @@ def event_text(coin, tf, side, e, R, tier="free", trade=None):
     return None
 
 # ============================================================
-#              ✅ /daily — صفقة اليوم
+#              ✅ /daily — صفقة اليوم (Top Movers)
 # ============================================================
-def _stars(score):
-    """تحويل النقاط إلى نجوم"""
-    score = max(1, min(5, int(score)))
-    return "⭐" * score + "☆" * (5 - score)
+def _stars_str(n):
+    n = max(1, min(5, int(n)))
+    return "⭐" * n + "☆" * (5 - n)
 
-def _score_setup(res, trend_ok_cache=None):
-    """
-    5 معايير = 5 نجوم:
-    - Grade A
-    - Trending / Top-volume
-    - سيولة > 20M
-    - MTF مؤكد
-    - حيتان تؤكد
-    """
+def _score_setup(res):
+    """5 معايير = 5 نجوم"""
     score = 0
-    details = []
-
-    # 1. Grade
-    if res["grade"] == "A":
-        score += 1; details.append("grade_A")
-    elif res["grade"] == "B":
-        score += 0.5; details.append("grade_B")
-
-    # 2. سيولة
+    # 1) Grade
+    if res["grade"] == "A": score += 1
+    elif res["grade"] == "B": score += 0.5
+    # 2) سيولة عالية
     try:
-        if check_liquidity(res["sym"], min_usd=20_000_000):
-            score += 1; details.append("liq_high")
-        elif check_liquidity(res["sym"], min_usd=5_000_000):
-            score += 0.5; details.append("liq_ok")
+        if check_liquidity(res["sym"], min_usd=20_000_000): score += 1
+        elif check_liquidity(res["sym"], min_usd=5_000_000): score += 0.5
     except Exception: pass
-
-    # 3. MTF
+    # 3) MTF
     try:
         mc, mt = mtf_score(res["sym"], res["side"])
-        if mt >= 2 and mc >= mt - 1:
-            score += 1; details.append("mtf_ok")
-        elif mt >= 2 and mc >= 1:
-            score += 0.5; details.append("mtf_partial")
+        if mt >= 2 and mc >= mt - 1: score += 1
+        elif mt >= 2 and mc >= 1: score += 0.5
     except Exception: pass
-
-    # 4. حيتان
+    # 4) حيتان
     try:
         w, largest, bv, sv = whale_radar(res["sym"])
         if w and w >= 1:
             total = bv + sv
             if total > 0:
                 buy_pct = bv / total * 100
-                if res["side"] == 1 and buy_pct >= 55:
-                    score += 1; details.append("whales_long")
-                elif res["side"] == -1 and buy_pct <= 45:
-                    score += 1; details.append("whales_short")
+                if res["side"] == 1 and buy_pct >= 55: score += 1
+                elif res["side"] == -1 and buy_pct <= 45: score += 1
     except Exception: pass
-
-    # 5. Trending proxy — حجم 24h عالي
+    # 5) حجم التداول
     try:
         ex = get_ex("binance")
         with _ex_lock["binance"]:
             t = ex.fetch_ticker(f"{res['sym']}/USDT")
         qv = float(t.get("quoteVolume") or 0)
-        if qv >= 100_000_000:
-            score += 1; details.append("vol_100M")
-        elif qv >= 50_000_000:
-            score += 0.5; details.append("vol_50M")
+        if qv >= 100_000_000: score += 1
+        elif qv >= 30_000_000: score += 0.5
     except Exception: pass
+    return max(1, min(5, round(score)))
 
-    stars = max(1, min(5, round(score)))
-    return stars, details
+def _build_daily_lists(force_side=None):
+    """
+    يجلب Top Gainers/Losers من Binance،
+    يحلل كل واحد، ويعيد قوائم LONG و SHORT
+    """
+    gainers, losers = get_top_movers(force=True)
+    longs, shorts = [], []
+    used = set()
+
+    def process(sym, expected_side):
+        if sym in used: return
+        try:
+            res = get_analysis(sym, force=True)
+        except Exception:
+            return
+        if res["sym"] in WEAK_COINS: return
+        if expected_side == 1 and res["side"] != 1: return
+        if expected_side == -1 and res["side"] != -1: return
+        stars = _score_setup(res)
+        item = dict(res=res, stars=stars)
+        if expected_side == 1: longs.append(item)
+        else: shorts.append(item)
+        used.add(sym)
+
+    # LONG من Gainers
+    for g in gainers:
+        if len(longs) >= DAILY_LONGS: break
+        process(g["symbol"], 1)
+
+    # SHORT من Losers
+    for l in losers:
+        if len(shorts) >= DAILY_SHORTS: break
+        process(l["symbol"], -1)
+
+    longs.sort(key=lambda x: -x["stars"])
+    shorts.sort(key=lambda x: -x["stars"])
+    return longs[:DAILY_LONGS], shorts[:DAILY_SHORTS]
 
 def _format_daily_card(res, side_label, stars):
-    """بطاقة صفقة اليوم - منسقة للنسخ المباشر"""
     lv = res["lv"]
-    lines = []
-    lines.append(f"{side_label}")
-    lines.append("")
-    lines.append(f"{res['sym']}USDT")
-    lines.append(f"➡️ Entry: {fmt(lv['entry'])}")
+    lines = [side_label, "", f"{res['sym']}USDT",
+             f"➡️ Entry: {fmt(lv['entry'])}"]
     for i, tp in enumerate(lv["tps"][:DAILY_TP_COUNT], 1):
         lines.append(f"🎯 Target {i}: {fmt(tp['px'])}")
     lines.append(f"🛑 Stop loss: {fmt(lv['sl'])}")
     lines.append("")
-    lines.append(_stars(stars) + f" {stars}/5")
+    lines.append(f"{_stars_str(stars)} {stars}/5")
     return "\n".join(lines)
-
-def _build_daily_lists(symbols):
-    """
-    يُرجع قائمتين: longs و shorts
-    كل صفقة: dict(res, stars, details)
-    """
-    results = scan_sync(symbols)
-    longs, shorts = [], []
-    used = set()
-
-    # ترتيب أولي: Grade أعلى أولاً
-    results = [r for r in results if r["rank"] >= 0 and r["sym"] not in WEAK_COINS]
-    results.sort(key=lambda r: (-r["rank"], -r.get("ok", 0)))
-
-    # معالجة كل عملة
-    for r in results:
-        if r["sym"] in used: continue
-        stars, details = _score_setup(r)
-        if stars < DAILY_MIN_STARS: continue
-
-        item = dict(res=r, stars=stars, details=details)
-        if r["side"] == 1:
-            longs.append(item)
-        else:
-            shorts.append(item)
-        used.add(r["sym"])
-
-        # كفى؟
-        if len(longs) >= DAILY_LONGS and len(shorts) >= DAILY_SHORTS:
-            break
-
-    # ترتيب نهائي حسب النجوم
-    longs.sort(key=lambda x: -x["stars"])
-    shorts.sort(key=lambda x: -x["stars"])
-
-    return longs[:DAILY_LONGS], shorts[:DAILY_SHORTS]
 
 # ============================================================
 #                    الإشعارات
@@ -1576,7 +1623,6 @@ def keyboard(sym, tf, tier):
     if tier == "vip": return keyboard_vip(sym, tf)
     return keyboard_free(sym, tf)
 
-# ✅ قائمة VIP — 12 زر مستقل
 def keyboard_vip_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔮 التنبؤ بالانفجارات", callback_data="vip_cmd:/predict")],
@@ -1603,7 +1649,7 @@ def build_vip_menu_text():
         "📌 ملاحظات:\n"
         "• 💧 السيولة و 📊 الفيوتشر يطلبوا منك كتابة الرمز\n"
         "• 📈 الصفقات النشطة تعرض كل صفقاتك الآن\n"
-        "• 🎯 صفقة اليوم = 2 LONG + 2 SHORT بنجوم الثقة\n"
+        "• 🎯 صفقة اليوم = 2 LONG + 2 SHORT من Top Movers\n"
         "• 📢 قناة التوصيات للتنبيهات الفورية\n\n"
         "╰━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
     )
@@ -1644,16 +1690,17 @@ def keyboard_admin_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ تشغيل النشر", callback_data="adm:/forcepost"),
          InlineKeyboardButton("🧹 تفريغ الصفقات", callback_data="adm:/clearsignals")],
-        [InlineKeyboardButton("🔍 تشخيص", callback_data="adm:/debug"),
-         InlineKeyboardButton("📊 فحص السوق", callback_data="adm:/scan")],
-        [InlineKeyboardButton("🔻 فرص شورت", callback_data="adm:/short"),
-         InlineKeyboardButton("🔮 التنبؤ", callback_data="adm:/predict")],
-        [InlineKeyboardButton("🐋 الحيتان", callback_data="adm:/whales"),
-         InlineKeyboardButton("💥 الانفجارات", callback_data="adm:/explosions")],
-        [InlineKeyboardButton("🚀 الصعود", callback_data="adm:/pump"),
-         InlineKeyboardButton("📉 القيعان", callback_data="adm:/bottom")],
-        [InlineKeyboardButton("🔻 شورت رادار", callback_data="adm:/shortsradar"),
-         InlineKeyboardButton("⭐ Alpha", callback_data="adm:/alpha")],
+        [InlineKeyboardButton("🎯 صفقة اليوم", callback_data="adm:/daily"),
+         InlineKeyboardButton("🔍 تشخيص", callback_data="adm:/debug")],
+        [InlineKeyboardButton("📊 فحص السوق", callback_data="adm:/scan"),
+         InlineKeyboardButton("🔻 فرص شورت", callback_data="adm:/short")],
+        [InlineKeyboardButton("🔮 التنبؤ", callback_data="adm:/predict"),
+         InlineKeyboardButton("🐋 الحيتان", callback_data="adm:/whales")],
+        [InlineKeyboardButton("💥 الانفجارات", callback_data="adm:/explosions"),
+         InlineKeyboardButton("🚀 الصعود", callback_data="adm:/pump")],
+        [InlineKeyboardButton("📉 القيعان", callback_data="adm:/bottom"),
+         InlineKeyboardButton("🔻 شورت رادار", callback_data="adm:/shortsradar")],
+        [InlineKeyboardButton("⭐ Alpha", callback_data="adm:/alpha")],
         [InlineKeyboardButton("🧪 Backtest", callback_data="adm:/bt"),
          InlineKeyboardButton("🧪 Backtest TOP50", callback_data="adm:/bt50")],
         [InlineKeyboardButton("👥 المستخدمون", callback_data="adm:/users"),
@@ -2194,14 +2241,14 @@ async def cmd_start(update, ctx):
     if update.effective_user.id == ADMIN_ID:
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("📋 قائمة الأوامر الكاملة", callback_data="admin_menu")],
-            [InlineKeyboardButton("⚡ تشغيل النشر الفوري", callback_data="adm:/forcepost")],
+            [InlineKeyboardButton("🎯 صفقة اليوم", callback_data="adm:/daily")],
         ])
         await update.message.reply_text(
             "👑 مرحباً أيها الأدمن\n\n"
             "📋 الأوامر الإدارية:\n"
             "/dashboard /users /viplist /stats /history\n"
-            "/scan /short /bt /bt50 /post /testchannels /forcepost /clearsignals /debug\n"
-            "/whales /liquidity /explosions /pump /bottom /alpha /shortsradar /futures /why /active /daily",
+            "/scan /short /bt /bt50 /post /testchannels /forcepost /clearsignals /debug /daily\n"
+            "/whales /liquidity /explosions /pump /bottom /alpha /shortsradar /futures /why /active",
             reply_markup=kb)
         return
     u = update.effective_user; rec = touch_user(u, "/start")
@@ -2286,22 +2333,20 @@ async def cmd_menu(update, ctx):
     await update.message.reply_text(build_vip_menu_text(), reply_markup=keyboard_vip_menu())
 
 # ============================================================
-#              ✅ /daily — صفقة اليوم (2 LONG + 2 SHORT)
+#              ✅ /daily — صفقة اليوم
 # ============================================================
 async def cmd_daily(update, ctx):
-    """صفقة اليوم — كل مرة يحلل جديد، لا يخزن ولا ينشر"""
     u = update.effective_user
     touch_user(u, "/daily")
 
     wait = await update.message.reply_text(
-        "🎯 جارٍ تحليل السوق...\n"
-        "⏳ قد يستغرق 30-90 ثانية\n\n"
+        "🎯 جارٍ جلب Top Movers من Binance...\n"
+        "⏳ ثم تحليل فني دقيق\n"
         "🔍 نبحث عن أفضل فرص LONG و SHORT"
     )
 
     try:
-        syms = await asyncio.to_thread(top_symbols, 60)
-        longs, shorts = await asyncio.to_thread(_build_daily_lists, syms[:40])
+        longs, shorts = await asyncio.to_thread(_build_daily_lists)
 
         if not longs and not shorts:
             await wait.edit_text(
@@ -2313,22 +2358,17 @@ async def cmd_daily(update, ctx):
 
         await wait.delete()
 
-        # إرسال كل صفقة في رسالة منفصلة
-        count = 1
-
+        # إرسال كل صفقة منفصلة
         for idx, item in enumerate(longs, 1):
-            label = f"🟢 LONG {idx}"
-            txt = _format_daily_card(item["res"], label, item["stars"])
+            txt = _format_daily_card(item["res"], f"🟢 LONG {idx}", item["stars"])
             await update.message.reply_text(txt)
             await asyncio.sleep(0.7)
 
         for idx, item in enumerate(shorts, 1):
-            label = f"🔴 SHORT {idx}"
-            txt = _format_daily_card(item["res"], label, item["stars"])
+            txt = _format_daily_card(item["res"], f"🔴 SHORT {idx}", item["stars"])
             await update.message.reply_text(txt)
             await asyncio.sleep(0.7)
 
-        # ملاحظة نهاية
         n_l, n_s = len(longs), len(shorts)
         footer = (
             f"━━━━━━━━━━━━━━━━━━━\n"
@@ -2578,6 +2618,11 @@ async def cmd_debug(update, ctx):
     syms = await asyncio.to_thread(top_symbols, 60)
     lines.append(f"🎯 top_symbols: {len(syms)}")
     if syms: lines.append(f"   {', '.join(syms[:10])}")
+    # Top movers
+    g, l = await asyncio.to_thread(get_top_movers, True)
+    lines.append(f"🟢 Gainers: {len(g)} | 🔴 Losers: {len(l)}")
+    if g: lines.append(f"   🟢 {', '.join([x['symbol'] for x in g[:5]])}")
+    if l: lines.append(f"   🔴 {', '.join([x['symbol'] for x in l[:5]])}")
     await update.message.reply_text("\n".join(lines)[:4000])
 
 @admin_only
@@ -3042,8 +3087,8 @@ async def post_init(app):
         asyncio.create_task(alpha_summary_loop(app)),
         asyncio.create_task(bottoms_auto_loop(app)),
     ]
-    log.info("ryma v49 | max_open=%d | daily=%dL+%dS | fast=%d",
-             MAX_OPEN, DAILY_LONGS, DAILY_SHORTS, len(FAST_EXCHANGES))
+    log.info("ryma v50 | max_open=%d | daily=%dL+%dS | top_movers=%d",
+             MAX_OPEN, DAILY_LONGS, DAILY_SHORTS, DAILY_TOP_N)
 
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
