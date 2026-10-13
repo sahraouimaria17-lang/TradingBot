@@ -49,10 +49,10 @@ ALPHA_COINS = ["ETH","BNB","SOL","SUI","NEAR","INJ","TIA","FLOKI","APT","ARB"]
 COINS = CORE_COINS + MEME_COINS
 WEAK_COINS = set()
 
-# ✅ استبعاد الكبار من قوائم Top Movers
 DAILY_EXCLUDE = {"BTC","ETH","BNB","SOL","XRP","DOGE","ADA","TRX","LTC",
                  "DOT","LINK","AVAX","TON","SHIB","PEPE","USDC","FDUSD","TUSD",
-                 "USDT","DAI","BUSD","USDP","USDD","USDE","PYUSD","EUR","AEUR"}
+                 "USDT","DAI","BUSD","USDP","USDD","USDE","PYUSD","EUR","AEUR",
+                 "USDE","TUSD","USDP"}
 
 LINKED_GROUPS = [
     {"BTC","ETH","BNB"},
@@ -144,7 +144,7 @@ MACD_FAST, MACD_SLOW, MACD_SIGNAL = 12, 26, 9
 DAILY_LONGS = 2
 DAILY_SHORTS = 2
 DAILY_TP_COUNT = 3
-DAILY_TOP_N = 10
+DAILY_TOP_N = 15
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("ryma")
@@ -401,69 +401,153 @@ def ticker_change(sym):
     return price, change_24h, change_7d
 
 # ============================================================
-#        ✅ Top Movers من MEXC/Gate/OKX (بدل Binance)
+#        Top Movers — Binance أولاً (عدة endpoints)
 # ============================================================
 _top_movers_cache = [0, [], []]
 
+def _try_binance_endpoints():
+    """يحاول عدة endpoints من Binance لـ Top Movers الرسمي"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.binance.com/en/markets",
+    }
+
+    endpoints = [
+        "https://www.binance.com/bapi/asset/v1/public/asset/friendly/asset-rank/top-movers",
+        "https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products",
+        "https://www.binance.com/api/v3/ticker/24hr",
+    ]
+
+    for url in endpoints:
+        try:
+            r = requests.get(url, timeout=15, headers=headers)
+            if r.status_code != 200: continue
+            data = r.json()
+
+            rows = []
+
+            if isinstance(data, dict) and "data" in data:
+                d = data["data"]
+                if isinstance(d, dict):
+                    for it in (d.get("gainers") or d.get("topGainers") or []):
+                        sym = (it.get("symbol") or it.get("baseAsset") or "").upper().replace("USDT","")
+                        if not sym: continue
+                        try:
+                            ch = float(it.get("priceChangePercent") or it.get("change") or 0)
+                            price = float(it.get("lastPrice") or it.get("price") or 0)
+                            qv = float(it.get("quoteVolume") or 0)
+                        except: continue
+                        if price > 0:
+                            rows.append(dict(symbol=sym, change=ch, price=price, volume=qv))
+                    for it in (d.get("losers") or d.get("topLosers") or []):
+                        sym = (it.get("symbol") or it.get("baseAsset") or "").upper().replace("USDT","")
+                        if not sym: continue
+                        try:
+                            ch = float(it.get("priceChangePercent") or it.get("change") or 0)
+                            price = float(it.get("lastPrice") or it.get("price") or 0)
+                            qv = float(it.get("quoteVolume") or 0)
+                        except: continue
+                        if price > 0:
+                            rows.append(dict(symbol=sym, change=ch, price=price, volume=qv))
+                elif isinstance(d, list):
+                    for it in d:
+                        sym = (it.get("s") or it.get("symbol") or "").upper()
+                        if not sym.endswith("USDT"): continue
+                        base = sym[:-4]
+                        try:
+                            ch = float(it.get("r") or it.get("priceChangePercent") or 0)
+                            price = float(it.get("c") or it.get("lastPrice") or 0)
+                            qv = float(it.get("qv") or it.get("quoteVolume") or 0)
+                        except: continue
+                        if price > 0:
+                            rows.append(dict(symbol=base, change=ch, price=price, volume=qv))
+            elif isinstance(data, list):
+                for it in data:
+                    sym = (it.get("symbol") or "").upper()
+                    if not sym.endswith("USDT"): continue
+                    base = sym[:-4]
+                    try:
+                        ch = float(it.get("priceChangePercent") or 0)
+                        price = float(it.get("lastPrice") or 0)
+                        qv = float(it.get("quoteVolume") or 0)
+                    except: continue
+                    if price > 0:
+                        rows.append(dict(symbol=base, change=ch, price=price, volume=qv))
+
+            if rows:
+                log.info(f"Binance endpoint OK: {url[:70]} → {len(rows)} symbols")
+                return rows
+        except Exception as e:
+            log.warning(f"endpoint fail {url[:60]}: {str(e)[:80]}")
+            continue
+
+    return []
+
+
 def get_top_movers(force=False):
-    """
-    يجلب Top Gainers/Losers من منصات ما محظورة:
-    MEXC → Gate.io → OKX → Kucoin
-    """
     if not force and time.time() - _top_movers_cache[0] < 60:
         return _top_movers_cache[1], _top_movers_cache[2]
 
-    gainers, losers = [], []
+    rows = _try_binance_endpoints()
 
-    for ex_name in ["mexc", "gateio", "okx", "kucoin", "bitget"]:
-        if _down.get(ex_name, 0) > time.time(): continue
-        try:
-            ex = get_ex(ex_name)
-            with _ex_lock[ex_name]:
-                tickers = ex.fetch_tickers()
-            rows = []
-            for s, t in tickers.items():
-                if not s.endswith("/USDT") or ":" in s: continue
-                base = s.split("/")[0]
-                if base in DAILY_EXCLUDE: continue
-                if len(base) < 2: continue
-                if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S)$", base): continue
-                try:
-                    ch = float(t.get("percentage") or 0)
-                    price = float(t.get("last") or 0)
-                    qv = float(t.get("quoteVolume") or 0)
-                except: continue
-                if price <= 0: continue
-                if qv < 3_000_000: continue
-                if abs(ch) < 3: continue  # تغير 3% على الأقل
-                rows.append(dict(symbol=base, change=ch, price=price, volume=qv))
-            if rows:
-                rows.sort(key=lambda x: -x["change"])
-                gainers = [x for x in rows[:DAILY_TOP_N] if x["change"] > 0]
-                losers = [x for x in rows if x["change"] < 0][:DAILY_TOP_N]
-                log.info(f"top_movers from {ex_name}: {len(gainers)} g, {len(losers)} l")
-                if gainers or losers:
-                    break
-        except Exception as e:
-            log.warning(f"top_movers {ex_name}: {str(e)[:80]}")
-            continue
+    # Fallback — إذا فشلت Binance استخدم MEXC/Gate
+    if not rows:
+        log.info("Binance fail → fallback to MEXC/Gate")
+        for ex_name in ["mexc", "gateio", "okx", "kucoin", "bitget"]:
+            if _down.get(ex_name, 0) > time.time(): continue
+            try:
+                ex = get_ex(ex_name)
+                with _ex_lock[ex_name]:
+                    tickers = ex.fetch_tickers()
+                for s, t in tickers.items():
+                    if not s.endswith("/USDT") or ":" in s: continue
+                    base = s.split("/")[0]
+                    try:
+                        ch = float(t.get("percentage") or 0)
+                        price = float(t.get("last") or 0)
+                        qv = float(t.get("quoteVolume") or 0)
+                    except: continue
+                    if price <= 0: continue
+                    rows.append(dict(symbol=base, change=ch, price=price, volume=qv))
+                if rows: break
+            except Exception: continue
+
+    # الفلترة
+    clean_rows = []
+    for x in rows:
+        sym = x["symbol"]
+        if not sym: continue
+        if sym in DAILY_EXCLUDE: continue
+        if len(sym) < 2: continue
+        if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S|USDT|USDC)$", sym): continue
+        if x["volume"] < 1_000_000: continue
+        if abs(x["change"]) < 2: continue
+        if x["volume"] > 5_000_000_000: continue
+        clean_rows.append(x)
+
+    gainers_all = sorted([x for x in clean_rows if x["change"] > 0],
+                         key=lambda x: -x["change"])[:DAILY_TOP_N]
+    losers_all = sorted([x for x in clean_rows if x["change"] < 0],
+                        key=lambda x: x["change"])[:DAILY_TOP_N]
 
     _top_movers_cache[0] = time.time()
-    _top_movers_cache[1] = gainers
-    _top_movers_cache[2] = losers
-    if gainers: log.info(f"  🟢 {[x['symbol'] for x in gainers[:5]]}")
-    if losers: log.info(f"  🔴 {[x['symbol'] for x in losers[:5]]}")
-    return gainers, losers
+    _top_movers_cache[1] = gainers_all
+    _top_movers_cache[2] = losers_all
+
+    log.info(f"top_movers: {len(gainers_all)} gainers, {len(losers_all)} losers")
+    if gainers_all: log.info(f"  🟢 {[(x['symbol'], round(x['change'],1)) for x in gainers_all[:5]]}")
+    if losers_all: log.info(f"  🔴 {[(x['symbol'], round(x['change'],1)) for x in losers_all[:5]]}")
+    return gainers_all, losers_all
 
 # ============================================================
 #        تأكيدات الفيوتشر (Funding + L/S + OI)
 # ============================================================
 def _futures_confirm(sym, side):
-    """3 تأكيدات: Funding + L/S Ratio + OI"""
     confirmations = 0
     details = []
 
-    # 1) Funding Rate
     try:
         fr = futures_funding_rate(sym)
         if fr is not None:
@@ -473,7 +557,6 @@ def _futures_confirm(sym, side):
                 confirmations += 1; details.append(f"FR{fr:.3f}")
     except Exception: pass
 
-    # 2) Long/Short Ratio
     try:
         ls = futures_long_short_ratio(sym)
         if ls is not None:
@@ -483,7 +566,6 @@ def _futures_confirm(sym, side):
                 confirmations += 1; details.append(f"LS{ls}")
     except Exception: pass
 
-    # 3) Open Interest
     try:
         oi = futures_oi_history(sym, "4h", 20)
         if oi and oi.get("change_pct", 0) > 1.0:
@@ -1393,14 +1475,12 @@ def _stars_str(n):
 
 def _build_daily_lists(force_side=None):
     """
-    🎯 يبني LONG/SHORT من Top Movers:
-    - Gainers → LONG فقط إذا السعر فوق EMA + RSI صحي
-    - Losers  → SHORT فقط إذا السعر تحت EMA + RSI صحي
-    - لا عكس اتجاه — نتخطى المخالف
-    - النجوم: تغير + حجم + تأكيدات فيوتشر
+    يبني LONG/SHORT من Top Movers:
+    - Gainers → LONG فقط إذا السعر فوق EMA
+    - Losers  → SHORT فقط إذا السعر تحت EMA
+    - لا عكس اتجاه
     """
     gainers, losers = get_top_movers(force=True)
-
     log.info(f"daily: gainers={len(gainers)}, losers={len(losers)}")
 
     def build_item(sym, expected_side, mv):
@@ -1416,36 +1496,31 @@ def _build_daily_lists(force_side=None):
         last = df.iloc[-1]
         price = float(last["close"])
 
-        if pd.isna(last["ema50"]) or pd.isna(last["ema200"]): return None
-        ema50 = float(last["ema50"]); ema200 = float(last["ema200"])
+        ema50 = float(last["ema50"]) if not pd.isna(last["ema50"]) else price
+        ema200 = float(last["ema200"]) if not pd.isna(last["ema200"]) else price
         rsi_v = float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0
 
-        # ✅ فلتر الاتجاه — لا عكس
+        # شروط مرنة — EMA50 فقط + RSI واسع
         if expected_side == 1:
-            if not (price > ema50 and price > ema200): return None
-            if not (45 <= rsi_v <= 80): return None
+            if price <= ema50: return None
+            if not (40 <= rsi_v <= 85): return None
         else:
-            if not (price < ema50 and price < ema200): return None
-            if not (20 <= rsi_v <= 55): return None
+            if price >= ema50: return None
+            if not (15 <= rsi_v <= 60): return None
 
-        # ✅ المستويات
         lv = compute_core_levels(df, i, expected_side, price)
         if lv is None: return None
 
-        # ═══════════ حساب النجوم ═══════════
         stars = 0
         details = []
 
-        # 1) قوة التغير (0-2 نجمة)
         ch = abs(mv["change"])
         if ch >= 30: stars += 2; details.append(f"Δ{ch:.0f}%")
         elif ch >= 15: stars += 1; details.append(f"Δ{ch:.0f}%")
 
-        # 2) الحجم (0-1 نجمة)
         if mv.get("volume", 0) >= 50_000_000:
             stars += 1; details.append(f"V{mv['volume']/1e6:.0f}M")
 
-        # 3) تأكيدات الفيوتشر (0-3 نجوم)
         fc, fcd = _futures_confirm(sym, expected_side)
         stars += fc
         if fcd: details.extend(fcd)
@@ -1485,6 +1560,25 @@ def _build_daily_lists(force_side=None):
         item = build_item(l["symbol"], -1, l)
         if item:
             shorts.append(item); used.add(l["symbol"])
+
+    # ✅ Fallback — إذا ما لقى بما فيه الكفاية، استخدم top_symbols
+    if len(longs) < DAILY_LONGS:
+        extra = top_symbols(40)
+        for s in extra:
+            if len(longs) >= DAILY_LONGS: break
+            if s in used or s in DAILY_EXCLUDE: continue
+            item = build_item(s, 1, dict(symbol=s, change=8, price=0, volume=0))
+            if item:
+                longs.append(item); used.add(s)
+
+    if len(shorts) < DAILY_SHORTS:
+        extra = top_symbols(40)
+        for s in extra:
+            if len(shorts) >= DAILY_SHORTS: break
+            if s in used or s in DAILY_EXCLUDE: continue
+            item = build_item(s, -1, dict(symbol=s, change=-8, price=0, volume=0))
+            if item:
+                shorts.append(item); used.add(s)
 
     longs.sort(key=lambda x: -x["stars"])
     shorts.sort(key=lambda x: -x["stars"])
@@ -2409,7 +2503,7 @@ async def cmd_daily(update, ctx):
     touch_user(u, "/daily")
 
     wait = await update.message.reply_text(
-        "🎯 جارٍ جلب Top Movers...\n"
+        "🎯 جارٍ جلب Top Movers من Binance...\n"
         "⏳ فحص Funding + L/S Ratio + OI\n"
         "🔍 ثم نحلّل فنياً\n"
         "⭐ نختار الأقوى"
@@ -2689,8 +2783,8 @@ async def cmd_debug(update, ctx):
     if syms: lines.append(f"   {', '.join(syms[:10])}")
     g, l = await asyncio.to_thread(get_top_movers, True)
     lines.append(f"🟢 Gainers: {len(g)} | 🔴 Losers: {len(l)}")
-    if g: lines.append(f"   🟢 {', '.join([x['symbol'] for x in g[:5]])}")
-    if l: lines.append(f"   🔴 {', '.join([x['symbol'] for x in l[:5]])}")
+    if g: lines.append(f"   🟢 {', '.join([f'{x[chr(115)+chr(121)+chr(109)+chr(98)+chr(111)+chr(108)]}' for x in g[:5]])}")
+    if l: lines.append(f"   🔴 {', '.join([f'{x[chr(115)+chr(121)+chr(109)+chr(98)+chr(111)+chr(108)]}' for x in l[:5]])}")
     await update.message.reply_text("\n".join(lines)[:4000])
 
 @admin_only
@@ -3157,7 +3251,7 @@ async def post_init(app):
         asyncio.create_task(alpha_summary_loop(app)),
         asyncio.create_task(bottoms_auto_loop(app)),
     ]
-    log.info("ryma v54 FINAL | max_open=%d | daily(ADMIN) | protect=%s",
+    log.info("ryma v55 | max_open=%d | daily(ADMIN) | protect=%s",
              MAX_OPEN, PROTECT)
 
 async def post_shutdown(app):
