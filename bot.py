@@ -3099,7 +3099,8 @@ async def cb_handler(update, ctx):
         rec = store.data["users"].get(str(u.id), {})
         st, _ = user_status(u.id, rec)
         if st not in ("admin","vip"):
-            await q.message.reply_text("🔒 VIP فقط"); return        try:
+            await q.message.reply_text("🔒 VIP فقط"); return        
+          try:
             if cmd == "/predict": await cmd_predict(update, ctx)
             elif cmd == "/whales": await cmd_whales(update, ctx)
             elif cmd == "/explosions": await cmd_explosions(update, ctx)
