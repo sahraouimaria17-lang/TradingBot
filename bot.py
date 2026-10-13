@@ -83,6 +83,7 @@ CYCLE_MARKET_SUMMARY = 16200
 CYCLE_PREDICT        = 14400
 CYCLE_ALPHA_SUMMARY  = 14400
 CYCLE_BOTTOMS_AUTO   = 21600
+CROSS_CHECK_INTERVAL = 1800     # ✅ كل 30 دقيقة
 
 SMART_PROFIT_DAYS = 7
 SMART_MAX_AGE_DAYS = 14
@@ -146,9 +147,10 @@ DAILY_SHORTS = 2
 DAILY_TP_COUNT = 3
 DAILY_TOP_N = 20
 
-# ✅ فلاتر قوية للـ Top Movers
-DAILY_MIN_CHANGE = 12.0          # % التغير الأدنى
-DAILY_MIN_VOLUME = 20_000_000    # $ الحجم الأدنى
+DAILY_MIN_CHANGE = 12.0
+DAILY_MIN_VOLUME = 20_000_000
+
+CROSS_EXCLUDE = {"BTC","ETH","BNB"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("ryma")
@@ -405,12 +407,11 @@ def ticker_change(sym):
     return price, change_24h, change_7d
 
 # ============================================================
-#        ✅ Top Movers — متعدد المصادر (OKX/Bybit/Gate/CG)
+#        Top Movers — متعدد المصادر
 # ============================================================
 _top_movers_cache = [0, [], []]
 
 def _movers_from_ccxt(ex_name, min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
-    """يجلب Top Movers من منصة ccxt"""
     try:
         if _down.get(ex_name, 0) > time.time(): return []
         ex = get_ex(ex_name)
@@ -420,8 +421,8 @@ def _movers_from_ccxt(ex_name, min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VO
         for s, t in tickers.items():
             if not s.endswith("/USDT") or ":" in s: continue
             base = s.split("/")[0]
+            # ✅ يسمح بحرف واحد
             if not base or base in DAILY_EXCLUDE: continue
-            if len(base) < 2: continue
             if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S|USDT|USDC)$", base): continue
             try:
                 ch = float(t.get("percentage") or 0)
@@ -438,9 +439,7 @@ def _movers_from_ccxt(ex_name, min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VO
         log.warning(f"movers {ex_name}: {str(e)[:60]}")
         return []
 
-
 def _movers_from_coingecko(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
-    """يجلب Top Movers من CoinGecko"""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0",
@@ -450,7 +449,7 @@ def _movers_from_coingecko(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
             "vs_currency": "usd",
-            "order": "volume_desc",         # ✅ الأكثر حجم
+            "order": "volume_desc",
             "per_page": 200,
             "page": 1,
             "sparkline": "false",
@@ -464,7 +463,8 @@ def _movers_from_coingecko(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME
         rows = []
         for it in data:
             sym = (it.get("symbol") or "").upper()
-            if not sym or len(sym) < 2 or sym in DAILY_EXCLUDE: continue
+            # ✅ يسمح بحرف واحد
+            if not sym or sym in DAILY_EXCLUDE: continue
             try:
                 ch = float(it.get("price_change_percentage_24h") or 0)
                 price = float(it.get("current_price") or 0)
@@ -480,24 +480,16 @@ def _movers_from_coingecko(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME
         log.warning(f"movers coingecko: {str(e)[:60]}")
         return []
 
-
 def get_top_movers(force=False):
-    """يجمع من OKX + Bybit + Gate + CoinGecko"""
     if not force and time.time() - _top_movers_cache[0] < 180:
         return _top_movers_cache[1], _top_movers_cache[2]
 
     log.info("═══ Top Movers Fetch ═══")
-
     all_rows = []
-    # ✅ المنصات أولاً
     for ex_name in ["okx", "bybit", "gateio", "mexc", "kucoin", "bitget"]:
-        rows = _movers_from_ccxt(ex_name)
-        all_rows += rows
-
-    # ✅ CoinGecko دائماً (يضيف عملات عالمية)
+        all_rows += _movers_from_ccxt(ex_name)
     all_rows += _movers_from_coingecko()
 
-    # ✅ إزالة التكرار — نحتفظ بالأعلى تغير لكل رمز
     best_by_sym = {}
     for x in all_rows:
         sym = x["symbol"]
@@ -510,7 +502,6 @@ def get_top_movers(force=False):
     rows = list(best_by_sym.values())
     log.info(f"total unique movers: {len(rows)}")
 
-    # ✅ ترتيب
     gainers = sorted([x for x in rows if x["change"] > 0],
                      key=lambda x: -x["change"])[:DAILY_TOP_N]
     losers = sorted([x for x in rows if x["change"] < 0],
@@ -524,6 +515,36 @@ def get_top_movers(force=False):
     if gainers: log.info(f"  🟢 {[(x['symbol'], round(x['change'],1)) for x in gainers[:5]]}")
     if losers: log.info(f"  🔴 {[(x['symbol'], round(x['change'],1)) for x in losers[:5]]}")
     return gainers, losers
+
+# ============================================================
+#        ✅ detect_cross — التقاطعات
+# ============================================================
+def detect_cross(df):
+    """يكشف التقاطع الذهبي/الموت"""
+    try:
+        if len(df) < 210: return None
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        if pd.isna(last["ema50"]) or pd.isna(last["ema200"]): return None
+        if pd.isna(prev["ema50"]) or pd.isna(prev["ema200"]): return None
+
+        last_ema50 = float(last["ema50"])
+        last_ema200 = float(last["ema200"])
+        prev_ema50 = float(prev["ema50"])
+        prev_ema200 = float(prev["ema200"])
+
+        # Golden Cross
+        if prev_ema50 <= prev_ema200 and last_ema50 > last_ema200:
+            return dict(type="golden", price=float(last["close"]),
+                        ema50=last_ema50, ema200=last_ema200, bar_t=int(last["t"]))
+        # Death Cross
+        if prev_ema50 >= prev_ema200 and last_ema50 < last_ema200:
+            return dict(type="death", price=float(last["close"]),
+                        ema50=last_ema50, ema200=last_ema200, bar_t=int(last["t"]))
+        return None
+    except Exception as e:
+        log.debug(f"detect_cross: {e}")
+        return None
 
 # ============================================================
 #        تأكيدات الفيوتشر
@@ -715,7 +736,8 @@ def top_symbols(n=60):
             for s,t in tk.items():
                 if not s.endswith("/USDT") or ":" in s: continue
                 base = s.split("/")[0]
-                if base in DAILY_EXCLUDE or len(base) < 2: continue
+                # ✅ يسمح بحرف واحد
+                if base in DAILY_EXCLUDE: continue
                 if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S)$", base): continue
                 qv = t.get("quoteVolume") or 0
                 if qv and qv > 2e6: rows.append((qv, base))
@@ -1447,7 +1469,7 @@ def event_text(coin, tf, side, e, R, tier="free", trade=None):
     return None
 
 # ============================================================
-#              ✅ /daily — للأدمن فقط
+#              /daily — للأدمن فقط
 # ============================================================
 def _build_daily_lists(force_side=None):
     gainers, losers = get_top_movers(force=True)
@@ -1468,7 +1490,6 @@ def _build_daily_lists(force_side=None):
         ema50 = float(last["ema50"]) if not pd.isna(last["ema50"]) else price
         rsi_v = float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0
 
-        # ✅ فلتر الاتجاه
         if expected_side == 1:
             if price <= ema50: return None
             if not (40 <= rsi_v <= 85): return None
@@ -1479,7 +1500,6 @@ def _build_daily_lists(force_side=None):
         lv = compute_core_levels(df, i, expected_side, price)
         if lv is None: return None
 
-        # ✅ إحصائيات للعرض
         ch = mv.get("change", 0)
         vol = mv.get("volume", 0)
 
@@ -1511,7 +1531,6 @@ def _build_daily_lists(force_side=None):
         if item:
             shorts.append(item); used.add(l["symbol"])
 
-    # Fallback
     if len(longs) < DAILY_LONGS:
         extra = top_symbols(40)
         for s in extra:
@@ -1530,7 +1549,6 @@ def _build_daily_lists(force_side=None):
             if item:
                 shorts.append(item); used.add(s)
 
-    # ترتيب حسب القوة
     longs.sort(key=lambda x: -(abs(x["change"]) * x["volume"]))
     shorts.sort(key=lambda x: -(abs(x["change"]) * x["volume"]))
 
@@ -1539,7 +1557,6 @@ def _build_daily_lists(force_side=None):
     return longs[:DAILY_LONGS], shorts[:DAILY_SHORTS]
 
 def _format_daily_card(res, side_label, change, volume):
-    """بطاقة الصفقة — بدون نجوم، مع تغير وحجم"""
     lv = res["lv"]
     lines = [side_label, "", f"{res['sym']}USDT",
              f"➡️ Entry: {fmt(lv['entry'])}"]
@@ -1547,14 +1564,13 @@ def _format_daily_card(res, side_label, change, volume):
         lines.append(f"🎯 Target {i}: {fmt(tp['px'])}")
     lines.append(f"🛑 Stop loss: {fmt(lv['sl'])}")
     lines.append("")
-    # ✅ المعلومات المفيدة
     ch_icon = "🔺" if change >= 0 else "🔻"
     vol_m = volume / 1_000_000 if volume else 0
     lines.append(f"📊 {ch_icon} {change:+.1f}% | 💰 ${vol_m:.1f}M")
     return "\n".join(lines)
 
 # ============================================================
-#              الإشعارات — مع حماية
+#              ✅ الإشعارات — مع حماية
 # ============================================================
 async def notify_both(bot, text, protect=True):
     for chat in (VIP_CHANNEL_ID, ADMIN_ID or None):
@@ -1773,7 +1789,8 @@ def build_vip_page():
         "🔥 💥 رادار الانفجارات\n"
         "🔥 📉 رادار القيعان\n"
         "🔥 🔻 رادار الفرص الشورت\n"
-        "🔥 ⭐ رادار عملات Alpha\n\n"
+        "🔥 ⭐ رادار عملات Alpha\n"
+        "🔥 🌟 تنبيهات التقاطع الذهبي\n\n"
         "💎 3 باقات VIP متاحة\n"
         "💰 الأسعار عند الطلب\n\n"
         f"📞 للاستفسار والاشتراك: {CONTACT_LINK}\n\n"
@@ -1791,16 +1808,17 @@ def keyboard_admin_menu():
         [InlineKeyboardButton("⚡ تشغيل النشر", callback_data="adm:/forcepost"),
          InlineKeyboardButton("🧹 تفريغ الصفقات", callback_data="adm:/clearsignals")],
         [InlineKeyboardButton("🎯 صفقة اليوم", callback_data="adm:/daily"),
-         InlineKeyboardButton("🔍 تشخيص", callback_data="adm:/debug")],
-        [InlineKeyboardButton("📊 فحص السوق", callback_data="adm:/scan"),
-         InlineKeyboardButton("🔻 فرص شورت", callback_data="adm:/short")],
-        [InlineKeyboardButton("🔮 التنبؤ", callback_data="adm:/predict"),
-         InlineKeyboardButton("🐋 الحيتان", callback_data="adm:/whales")],
-        [InlineKeyboardButton("💥 الانفجارات", callback_data="adm:/explosions"),
-         InlineKeyboardButton("🚀 الصعود", callback_data="adm:/pump")],
-        [InlineKeyboardButton("📉 القيعان", callback_data="adm:/bottom"),
-         InlineKeyboardButton("🔻 شورت رادار", callback_data="adm:/shortsradar")],
-        [InlineKeyboardButton("⭐ Alpha", callback_data="adm:/alpha")],
+         InlineKeyboardButton("🌟 التقاطعات", callback_data="adm:/cross")],
+        [InlineKeyboardButton("🔍 تشخيص", callback_data="adm:/debug"),
+         InlineKeyboardButton("📊 فحص السوق", callback_data="adm:/scan")],
+        [InlineKeyboardButton("🔻 فرص شورت", callback_data="adm:/short"),
+         InlineKeyboardButton("🔮 التنبؤ", callback_data="adm:/predict")],
+        [InlineKeyboardButton("🐋 الحيتان", callback_data="adm:/whales"),
+         InlineKeyboardButton("💥 الانفجارات", callback_data="adm:/explosions")],
+        [InlineKeyboardButton("🚀 الصعود", callback_data="adm:/pump"),
+         InlineKeyboardButton("📉 القيعان", callback_data="adm:/bottom")],
+        [InlineKeyboardButton("🔻 شورت رادار", callback_data="adm:/shortsradar"),
+         InlineKeyboardButton("⭐ Alpha", callback_data="adm:/alpha")],
         [InlineKeyboardButton("🧪 Backtest", callback_data="adm:/bt"),
          InlineKeyboardButton("🧪 Backtest TOP50", callback_data="adm:/bt50")],
         [InlineKeyboardButton("👥 المستخدمون", callback_data="adm:/users"),
@@ -2046,6 +2064,78 @@ async def tracker_loop(app):
         except asyncio.CancelledError: raise
         except Exception: log.exception("tracker")
         await asyncio.sleep(300)
+
+# ============================================================
+#        ✅ cross_loop — التقاطعات
+# ============================================================
+_cross_posted = {}
+
+async def cross_loop(app):
+    """كل 30 دقيقة — فحص التقاطعات على 4H"""
+    await asyncio.sleep(300)
+    while True:
+        try:
+            log.info("cross_loop: بدء الفحص")
+            syms = await asyncio.to_thread(top_symbols, 60)
+            syms = [s for s in syms if s not in CROSS_EXCLUDE and s not in WEAK_COINS]
+            found = 0
+            for sym in syms[:50]:
+                try:
+                    df = await asyncio.to_thread(get_candles, sym, "4h", 450, 600, 200)
+                    if df.empty or len(df) < 210: continue
+                    df = add_indicators(df, 100)
+                    cross = detect_cross(df)
+                    if not cross: continue
+
+                    key = f"{sym}:{cross['type']}:{cross['bar_t']}"
+                    if key in _cross_posted: continue
+                    _cross_posted[key] = now_s()
+
+                    cut = now_s() - 3*DAY
+                    for k in list(_cross_posted.keys()):
+                        if _cross_posted[k] < cut:
+                            del _cross_posted[k]
+
+                    if cross["type"] == "golden":
+                        emoji = "🌟"
+                        title = "تقاطع ذهبي (Golden Cross)"
+                        side_word = "🟢 إشارة شراء قوية"
+                    else:
+                        emoji = "💀"
+                        title = "تقاطع الموت (Death Cross)"
+                        side_word = "🔴 إشارة بيع قوية"
+
+                    now_ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+                    msg = (
+                        f"{emoji} <b>{title}</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"📌 <b>#{sym}/USDT</b>\n"
+                        f"⏱ الفريم: <b>4H</b>\n\n"
+                        f"💵 السعر الحالي: <code>{fmt(cross['price'])}</code>\n"
+                        f"📈 EMA 50: <code>{fmt(cross['ema50'])}</code>\n"
+                        f"📉 EMA 200: <code>{fmt(cross['ema200'])}</code>\n\n"
+                        f"{side_word}\n\n"
+                        f"💡 <b>التقاطع مؤشر على تغير محتمل في الاتجاه</b>\n"
+                        f"⚠️ اعمل بحثك الخاص قبل الدخول\n\n"
+                        f"📅 {now_ts}\n"
+                        f"👤 {BRAND}"
+                    )
+
+                    try: await notify_both(app.bot, msg, protect=True)
+                    except Exception: pass
+                    try: await notify_free(app.bot, msg)
+                    except Exception: pass
+
+                    found += 1
+                    log.info(f"cross_loop: {cross['type']} #{sym}")
+                    await asyncio.sleep(3)
+                except Exception:
+                    continue
+
+            log.info(f"cross_loop: انتهى — {found} تقاطع جديد")
+        except asyncio.CancelledError: raise
+        except Exception: log.exception("cross_loop")
+        await asyncio.sleep(CROSS_CHECK_INTERVAL)
 
 async def short_free_loop(app):
     await asyncio.sleep(300)
@@ -2296,7 +2386,8 @@ def clean_symbol(text):
     s = (text or "").upper().strip().replace("$","").replace("/","").replace("-","")
     for suf in ("USDT","USDC","PERP","USD"):
         if s.endswith(suf) and len(s)>len(suf): s = s[:-len(suf)]
-    return s if re.fullmatch(r"[A-Z0-9]{2,12}", s) else ""
+    # ✅ يسمح بحرف واحد (Q, X...)
+    return s if re.fullmatch(r"[A-Z0-9]{1,12}", s) else ""
 
 _cooldown = {}
 
@@ -2366,7 +2457,7 @@ async def cmd_start(update, ctx):
             "👑 مرحباً أيها الأدمن\n\n"
             "📋 الأوامر الإدارية:\n"
             "/dashboard /users /viplist /stats /history\n"
-            "/scan /short /bt /bt50 /post /testchannels /forcepost /clearsignals /debug /daily\n"
+            "/scan /short /bt /bt50 /post /testchannels /forcepost /clearsignals /debug /daily /cross\n"
             "/whales /liquidity /explosions /pump /bottom /alpha /shortsradar /futures /why /active",
             reply_markup=kb)
         return
@@ -2450,7 +2541,7 @@ async def cmd_menu(update, ctx):
     await update.message.reply_text(build_vip_menu_text(), reply_markup=keyboard_vip_menu())
 
 # ============================================================
-#              ✅ /daily — للأدمن فقط
+#              /daily — للأدمن فقط
 # ============================================================
 @admin_only
 async def cmd_daily(update, ctx):
@@ -2505,6 +2596,42 @@ async def cmd_daily(update, ctx):
     except Exception as e:
         log.exception("daily")
         await wait.edit_text(f"⚠️ حدث خطأ: {str(e)[:200]}")
+
+# ============================================================
+#              /cross — التقاطعات (للأدمن)
+# ============================================================
+@admin_only
+async def cmd_cross(update, ctx):
+    touch_user(update.effective_user, "/cross")
+    wait = await update.message.reply_text("🌟 جارٍ فحص التقاطعات...")
+    try:
+        syms = await asyncio.to_thread(top_symbols, 60)
+        syms = [s for s in syms if s not in CROSS_EXCLUDE and s not in WEAK_COINS]
+        found = []
+        for sym in syms[:50]:
+            try:
+                df = await asyncio.to_thread(get_candles, sym, "4h", 450, 600, 200)
+                if df.empty or len(df) < 210: continue
+                df = add_indicators(df, 100)
+                cross = detect_cross(df)
+                if cross:
+                    found.append((sym, cross))
+            except Exception: continue
+        if not found:
+            await wait.edit_text("🌟 لا توجد تقاطعات حالياً")
+            return
+        lines = ["🌟 التقاطعات الحالية", "━━━━━━━━━━━━━━━━", ""]
+        for sym, c in found:
+            if c["type"] == "golden":
+                lines.append(f"🌟 #{sym} — تقاطع ذهبي")
+                lines.append(f"   💵 {fmt(c['price'])}")
+            else:
+                lines.append(f"💀 #{sym} — تقاطع الموت")
+                lines.append(f"   💵 {fmt(c['price'])}")
+        await wait.edit_text("\n".join(lines)[:4000])
+    except Exception as e:
+        log.exception("cross")
+        await wait.edit_text(f"⚠️ {str(e)[:200]}")
 
 # ============================================================
 #                    أوامر VIP (رادارات)
@@ -2931,6 +3058,7 @@ async def cmd_dashboard(update, ctx):
            f"💾 {store.remote_msg}\n"
            f"📢 FREE {'✅' if CHANNEL_ID else '—'} | VIP {'✅' if VIP_CHANNEL_ID else '—'}\n\n"
            f"⏱ auto: {CYCLE_AUTOPOST//3600}س | short: {CYCLE_SHORT_FREE//3600}س | summary: {CYCLE_MARKET_SUMMARY//3600}س\n"
+           f"🌟 cross: كل {CROSS_CHECK_INTERVAL//60} دقيقة\n"
            f"🧹 cleanup: كل {CLEANUP_EVERY_CYCLES} دورة")
     await update.message.reply_text(msg)
 
@@ -2975,6 +3103,7 @@ ADMIN_CMD_MAP = {
     "/smartcleanup": cmd_smartcleanup,
     "/debug": cmd_debug,
     "/daily": cmd_daily,
+    "/cross": cmd_cross,
     "/predict": cmd_predict, "/whales": cmd_whales, "/explosions": cmd_explosions,
     "/pump": cmd_pump, "/bottom": cmd_bottoms, "/shortsradar": cmd_shorts_radar,
     "/alpha": cmd_alpha, "/scan": cmd_scan, "/short": cmd_short,
@@ -3226,8 +3355,9 @@ async def post_init(app):
         asyncio.create_task(short_free_loop(app)),
         asyncio.create_task(alpha_summary_loop(app)),
         asyncio.create_task(bottoms_auto_loop(app)),
+        asyncio.create_task(cross_loop(app)),   # ✅ التقاطعات
     ]
-    log.info("ryma v57 | max_open=%d | multi-source movers", MAX_OPEN)
+    log.info("ryma v58 FINAL | max_open=%d | multi-source | cross=OK", MAX_OPEN)
 
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]):
@@ -3246,6 +3376,7 @@ def main():
         ("start",cmd_start),("help",cmd_help),("myid",cmd_myid),("vip",cmd_vip),
         ("menu",cmd_menu),
         ("daily",cmd_daily),
+        ("cross",cmd_cross),
         ("predict",cmd_predict),
         ("forcepost",cmd_forcepost),
         ("clearsignals",cmd_clearsignals),
