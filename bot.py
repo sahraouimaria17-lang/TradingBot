@@ -33,15 +33,13 @@ VIP_INVITE_LINK = _e("VIP_INVITE_LINK", "https://t.me/+gTMJiBiiC_IyZjZk")
 PAYMENT_INFO = _e("PAYMENT_INFO", "Binance Pay: 905142395")
 PROTECT = _e("PROTECT_CONTENT", "1") == "1"
 MAINTENANCE = _e("MAINTENANCE", "0") == "1"
-
-# ✅ CoinGecko API Key
 COINGECKO_KEY = _e("COINGECKO_KEY", "CG-uRcD1QmtoPiQLLTiBBZo7fDN")
 
 BRAND = "💎 Ryma Crypto 💎"
 
-FAST_EXCHANGES = ["mexc", "gateio", "okx", "kucoin", "bitget", "htx", "binance"]
-EXCHANGES = ["mexc", "gateio", "okx", "kucoin", "bitget", "htx",
-             "binance", "bybit", "bingx", "lbank", "bitmart", "poloniex"]
+FAST_EXCHANGES = ["okx", "bybit", "gateio", "mexc", "kucoin", "bitget", "htx", "binance"]
+EXCHANGES = ["okx", "bybit", "gateio", "mexc", "kucoin", "bitget", "htx",
+             "binance", "bingx", "lbank", "bitmart", "poloniex"]
 
 BINANCE_FAPI = "https://fapi.binance.com"
 MAJORS = {"BTC","ETH","BNB","SOL","XRP","ADA","DOGE","AVAX","LINK","DOT","LTC","TRX"}
@@ -146,7 +144,11 @@ MACD_FAST, MACD_SLOW, MACD_SIGNAL = 12, 26, 9
 DAILY_LONGS = 2
 DAILY_SHORTS = 2
 DAILY_TP_COUNT = 3
-DAILY_TOP_N = 15
+DAILY_TOP_N = 20
+
+# ✅ فلاتر قوية للـ Top Movers
+DAILY_MIN_CHANGE = 12.0          # % التغير الأدنى
+DAILY_MIN_VOLUME = 20_000_000    # $ الحجم الأدنى
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("ryma")
@@ -403,12 +405,42 @@ def ticker_change(sym):
     return price, change_24h, change_7d
 
 # ============================================================
-#        ✅ Top Movers — CoinGecko + Fallback
+#        ✅ Top Movers — متعدد المصادر (OKX/Bybit/Gate/CG)
 # ============================================================
 _top_movers_cache = [0, [], []]
 
-def _coingecko_movers():
-    """يجلب Top Gainers/Losers من CoinGecko"""
+def _movers_from_ccxt(ex_name, min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
+    """يجلب Top Movers من منصة ccxt"""
+    try:
+        if _down.get(ex_name, 0) > time.time(): return []
+        ex = get_ex(ex_name)
+        with _ex_lock[ex_name]:
+            tickers = ex.fetch_tickers()
+        rows = []
+        for s, t in tickers.items():
+            if not s.endswith("/USDT") or ":" in s: continue
+            base = s.split("/")[0]
+            if not base or base in DAILY_EXCLUDE: continue
+            if len(base) < 2: continue
+            if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S|USDT|USDC)$", base): continue
+            try:
+                ch = float(t.get("percentage") or 0)
+                price = float(t.get("last") or 0)
+                qv = float(t.get("quoteVolume") or 0)
+            except: continue
+            if price <= 0: continue
+            if qv < min_vol: continue
+            if abs(ch) < min_change: continue
+            rows.append(dict(symbol=base, change=ch, price=price, volume=qv, src=ex_name))
+        log.info(f"movers {ex_name}: {len(rows)}")
+        return rows
+    except Exception as e:
+        log.warning(f"movers {ex_name}: {str(e)[:60]}")
+        return []
+
+
+def _movers_from_coingecko(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
+    """يجلب Top Movers من CoinGecko"""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0",
@@ -418,8 +450,8 @@ def _coingecko_movers():
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
             "vs_currency": "usd",
-            "order": "market_cap_desc",
-            "per_page": 250,
+            "order": "volume_desc",         # ✅ الأكثر حجم
+            "per_page": 200,
             "page": 1,
             "sparkline": "false",
             "price_change_percentage": "24h",
@@ -432,69 +464,56 @@ def _coingecko_movers():
         rows = []
         for it in data:
             sym = (it.get("symbol") or "").upper()
-            if not sym or len(sym) < 2: continue
+            if not sym or len(sym) < 2 or sym in DAILY_EXCLUDE: continue
             try:
                 ch = float(it.get("price_change_percentage_24h") or 0)
                 price = float(it.get("current_price") or 0)
                 vol = float(it.get("total_volume") or 0)
             except: continue
             if price <= 0: continue
-            if vol < 500_000: continue
-            rows.append(dict(symbol=sym, change=ch, price=price, volume=vol))
-        log.info(f"CoinGecko: {len(rows)} symbols fetched")
+            if vol < min_vol: continue
+            if abs(ch) < min_change: continue
+            rows.append(dict(symbol=sym, change=ch, price=price, volume=vol, src="coingecko"))
+        log.info(f"movers coingecko: {len(rows)}")
         return rows
     except Exception as e:
-        log.warning(f"CoinGecko: {str(e)[:80]}")
+        log.warning(f"movers coingecko: {str(e)[:60]}")
         return []
 
 
 def get_top_movers(force=False):
-    """CoinGecko أولاً → ثم MEXC/Gate Fallback"""
-    if not force and time.time() - _top_movers_cache[0] < 120:
+    """يجمع من OKX + Bybit + Gate + CoinGecko"""
+    if not force and time.time() - _top_movers_cache[0] < 180:
         return _top_movers_cache[1], _top_movers_cache[2]
 
-    rows = _coingecko_movers()
+    log.info("═══ Top Movers Fetch ═══")
 
-    # Fallback — MEXC/Gate
-    if not rows:
-        log.info("CoinGecko fail → MEXC/Gate")
-        for ex_name in ["mexc", "gateio", "okx", "kucoin", "bitget"]:
-            if _down.get(ex_name, 0) > time.time(): continue
-            try:
-                ex = get_ex(ex_name)
-                with _ex_lock[ex_name]:
-                    tickers = ex.fetch_tickers()
-                for s, t in tickers.items():
-                    if not s.endswith("/USDT") or ":" in s: continue
-                    base = s.split("/")[0]
-                    try:
-                        ch = float(t.get("percentage") or 0)
-                        price = float(t.get("last") or 0)
-                        qv = float(t.get("quoteVolume") or 0)
-                    except: continue
-                    if price <= 0: continue
-                    rows.append(dict(symbol=base, change=ch, price=price, volume=qv))
-                if rows: break
-            except Exception: continue
+    all_rows = []
+    # ✅ المنصات أولاً
+    for ex_name in ["okx", "bybit", "gateio", "mexc", "kucoin", "bitget"]:
+        rows = _movers_from_ccxt(ex_name)
+        all_rows += rows
 
-    # الفلترة
-    clean = []
-    seen = set()
-    for x in rows:
+    # ✅ CoinGecko دائماً (يضيف عملات عالمية)
+    all_rows += _movers_from_coingecko()
+
+    # ✅ إزالة التكرار — نحتفظ بالأعلى تغير لكل رمز
+    best_by_sym = {}
+    for x in all_rows:
         sym = x["symbol"]
-        if not sym or sym in seen: continue
-        if sym in DAILY_EXCLUDE: continue
-        if len(sym) < 2: continue
-        if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S|USDT|USDC)$", sym): continue
-        if x["volume"] < 500_000: continue
-        if abs(x["change"]) < 5: continue
-        if x["volume"] > 5_000_000_000: continue
-        seen.add(sym)
-        clean.append(x)
+        if sym not in best_by_sym:
+            best_by_sym[sym] = x
+        else:
+            if abs(x["change"]) > abs(best_by_sym[sym]["change"]):
+                best_by_sym[sym] = x
 
-    gainers = sorted([x for x in clean if x["change"] > 0],
+    rows = list(best_by_sym.values())
+    log.info(f"total unique movers: {len(rows)}")
+
+    # ✅ ترتيب
+    gainers = sorted([x for x in rows if x["change"] > 0],
                      key=lambda x: -x["change"])[:DAILY_TOP_N]
-    losers = sorted([x for x in clean if x["change"] < 0],
+    losers = sorted([x for x in rows if x["change"] < 0],
                     key=lambda x: x["change"])[:DAILY_TOP_N]
 
     _top_movers_cache[0] = time.time()
@@ -512,7 +531,6 @@ def get_top_movers(force=False):
 def _futures_confirm(sym, side):
     confirmations = 0
     details = []
-
     try:
         fr = futures_funding_rate(sym)
         if fr is not None:
@@ -521,7 +539,6 @@ def _futures_confirm(sym, side):
             elif side == -1 and fr < -0.01:
                 confirmations += 1; details.append(f"FR{fr:.3f}")
     except Exception: pass
-
     try:
         ls = futures_long_short_ratio(sym)
         if ls is not None:
@@ -530,13 +547,11 @@ def _futures_confirm(sym, side):
             elif side == -1 and ls <= 0.85:
                 confirmations += 1; details.append(f"LS{ls}")
     except Exception: pass
-
     try:
         oi = futures_oi_history(sym, "4h", 20)
         if oi and oi.get("change_pct", 0) > 1.0:
             confirmations += 1; details.append(f"OI+{oi['change_pct']:.1f}%")
     except Exception: pass
-
     return confirmations, details
 
 # ============================================================
@@ -559,7 +574,7 @@ def check_liquidity(sym, min_usd=MIN_DAILY_VOLUME_USD):
 
 def whale_radar(sym):
     try:
-        for ex_name in ["mexc", "okx", "gateio", "kucoin", "bitget"]:
+        for ex_name in ["okx", "bybit", "gateio", "mexc", "kucoin"]:
             try:
                 ex = get_ex(ex_name)
                 with _ex_lock[ex_name]:
@@ -583,7 +598,7 @@ def whale_radar(sym):
 
 def liquidity_radar(sym):
     try:
-        for ex_name in ["mexc", "okx", "gateio", "kucoin", "bitget"]:
+        for ex_name in ["okx", "bybit", "gateio", "mexc", "kucoin"]:
             try:
                 ex = get_ex(ex_name)
                 with _ex_lock[ex_name]:
@@ -1434,10 +1449,6 @@ def event_text(coin, tf, side, e, R, tier="free", trade=None):
 # ============================================================
 #              ✅ /daily — للأدمن فقط
 # ============================================================
-def _stars_str(n):
-    n = max(1, min(5, int(n)))
-    return "⭐" * n + "☆" * (5 - n)
-
 def _build_daily_lists(force_side=None):
     gainers, losers = get_top_movers(force=True)
     log.info(f"daily: gainers={len(gainers)}, losers={len(losers)}")
@@ -1454,10 +1465,10 @@ def _build_daily_lists(force_side=None):
         i = len(df) - 1
         last = df.iloc[-1]
         price = float(last["close"])
-
         ema50 = float(last["ema50"]) if not pd.isna(last["ema50"]) else price
         rsi_v = float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0
 
+        # ✅ فلتر الاتجاه
         if expected_side == 1:
             if price <= ema50: return None
             if not (40 <= rsi_v <= 85): return None
@@ -1468,60 +1479,45 @@ def _build_daily_lists(force_side=None):
         lv = compute_core_levels(df, i, expected_side, price)
         if lv is None: return None
 
-        stars = 0
-        details = []
+        # ✅ إحصائيات للعرض
+        ch = mv.get("change", 0)
+        vol = mv.get("volume", 0)
 
-        ch = abs(mv["change"])
-        if ch >= 30: stars += 2; details.append(f"Δ{ch:.0f}%")
-        elif ch >= 15: stars += 1; details.append(f"Δ{ch:.0f}%")
-
-        if mv.get("volume", 0) >= 50_000_000:
-            stars += 1; details.append(f"V{mv['volume']/1e6:.0f}M")
-
-        fc, fcd = _futures_confirm(sym, expected_side)
-        stars += fc
-        if fcd: details.extend(fcd)
-
-        grade = "A" if stars >= 5 else ("B" if stars >= 3 else "C")
-        stars = max(1, min(5, stars))
-
-        res = dict(
+        return dict(res=dict(
             sym=sym, tf="1h", df=df, side=expected_side, strategy="Futures",
-            rank={"A":2,"B":1,"C":0}.get(grade, 0),
-            grade=grade, setup="Futures",
-            ok=1 if grade in ("A","B") else 0, total=4,
-            lv=lv, price=price, degraded=False, source="coingecko",
+            rank=2, grade="A", setup="Futures", ok=1, total=4,
+            lv=lv, price=price, degraded=False, source=mv.get("src", "?"),
             bar_t=int(last["t"]),
             rsi=rsi_v,
             macd=float(last["macd"]) if not pd.isna(last["macd"]) else 0.0,
             candle=None, trend=detect_trend(df, i), trend_d="range",
             sr_high=[], sr_low=[], fibs=[]
-        )
-        return dict(res=res, stars=stars, details=details, mv=mv)
+        ), change=ch, volume=vol)
 
     longs, shorts = [], []
     used = set()
 
     for g in gainers:
-        if len(longs) >= DAILY_LONGS * 2: break
+        if len(longs) >= DAILY_LONGS * 3: break
         if g["symbol"] in used: continue
         item = build_item(g["symbol"], 1, g)
         if item:
             longs.append(item); used.add(g["symbol"])
 
     for l in losers:
-        if len(shorts) >= DAILY_SHORTS * 2: break
+        if len(shorts) >= DAILY_SHORTS * 3: break
         if l["symbol"] in used: continue
         item = build_item(l["symbol"], -1, l)
         if item:
             shorts.append(item); used.add(l["symbol"])
 
+    # Fallback
     if len(longs) < DAILY_LONGS:
         extra = top_symbols(40)
         for s in extra:
             if len(longs) >= DAILY_LONGS: break
             if s in used or s in DAILY_EXCLUDE: continue
-            item = build_item(s, 1, dict(symbol=s, change=8, price=0, volume=0))
+            item = build_item(s, 1, dict(symbol=s, change=8, price=0, volume=0, src="top"))
             if item:
                 longs.append(item); used.add(s)
 
@@ -1530,18 +1526,20 @@ def _build_daily_lists(force_side=None):
         for s in extra:
             if len(shorts) >= DAILY_SHORTS: break
             if s in used or s in DAILY_EXCLUDE: continue
-            item = build_item(s, -1, dict(symbol=s, change=-8, price=0, volume=0))
+            item = build_item(s, -1, dict(symbol=s, change=-8, price=0, volume=0, src="top"))
             if item:
                 shorts.append(item); used.add(s)
 
-    longs.sort(key=lambda x: -x["stars"])
-    shorts.sort(key=lambda x: -x["stars"])
+    # ترتيب حسب القوة
+    longs.sort(key=lambda x: -(abs(x["change"]) * x["volume"]))
+    shorts.sort(key=lambda x: -(abs(x["change"]) * x["volume"]))
 
-    log.info(f"daily: FINAL longs={[(x['res']['sym'], x['stars']) for x in longs[:2]]}")
-    log.info(f"daily: FINAL shorts={[(x['res']['sym'], x['stars']) for x in shorts[:2]]}")
+    log.info(f"daily: FINAL longs={[(x['res']['sym'], round(x['change'],1)) for x in longs[:2]]}")
+    log.info(f"daily: FINAL shorts={[(x['res']['sym'], round(x['change'],1)) for x in shorts[:2]]}")
     return longs[:DAILY_LONGS], shorts[:DAILY_SHORTS]
 
-def _format_daily_card(res, side_label, stars):
+def _format_daily_card(res, side_label, change, volume):
+    """بطاقة الصفقة — بدون نجوم، مع تغير وحجم"""
     lv = res["lv"]
     lines = [side_label, "", f"{res['sym']}USDT",
              f"➡️ Entry: {fmt(lv['entry'])}"]
@@ -1549,7 +1547,10 @@ def _format_daily_card(res, side_label, stars):
         lines.append(f"🎯 Target {i}: {fmt(tp['px'])}")
     lines.append(f"🛑 Stop loss: {fmt(lv['sl'])}")
     lines.append("")
-    lines.append(f"{_stars_str(stars)} {stars}/5")
+    # ✅ المعلومات المفيدة
+    ch_icon = "🔺" if change >= 0 else "🔻"
+    vol_m = volume / 1_000_000 if volume else 0
+    lines.append(f"📊 {ch_icon} {change:+.1f}% | 💰 ${vol_m:.1f}M")
     return "\n".join(lines)
 
 # ============================================================
@@ -2457,10 +2458,10 @@ async def cmd_daily(update, ctx):
     touch_user(u, "/daily")
 
     wait = await update.message.reply_text(
-        "🎯 جارٍ جلب Top Movers من CoinGecko...\n"
-        "⏳ فحص Funding + L/S Ratio + OI\n"
-        "🔍 ثم نحلّل فنياً\n"
-        "⭐ نختار الأقوى"
+        "🎯 جارٍ جلب Top Movers من منصات متعددة...\n"
+        "⏳ OKX + Bybit + Gate + CoinGecko\n"
+        "🔍 فلترة قوية\n"
+        "⭐ اختبار جودة"
     )
 
     try:
@@ -2469,7 +2470,7 @@ async def cmd_daily(update, ctx):
         if not longs and not shorts:
             await wait.edit_text(
                 "🎯 لا توجد صفقات مطابقة للمعايير\n\n"
-                "📊 العملات النشطة حالياً ليست في اتجاه واضح\n"
+                "📊 لم نجد عملات بتغير 12%+ وحجم 20M$+\n"
                 "⏳ جرّب بعد قليل"
             )
             return
@@ -2477,12 +2478,18 @@ async def cmd_daily(update, ctx):
         await wait.delete()
 
         for idx, item in enumerate(longs, 1):
-            txt = _format_daily_card(item["res"], f"🟢 LONG {idx}", item["stars"])
+            txt = _format_daily_card(
+                item["res"], f"🟢 LONG {idx}",
+                item.get("change", 0), item.get("volume", 0)
+            )
             await update.message.reply_text(txt)
             await asyncio.sleep(0.7)
 
         for idx, item in enumerate(shorts, 1):
-            txt = _format_daily_card(item["res"], f"🔴 SHORT {idx}", item["stars"])
+            txt = _format_daily_card(
+                item["res"], f"🔴 SHORT {idx}",
+                item.get("change", 0), item.get("volume", 0)
+            )
             await update.message.reply_text(txt)
             await asyncio.sleep(0.7)
 
@@ -2738,8 +2745,8 @@ async def cmd_debug(update, ctx):
     if syms: lines.append(f"   {', '.join(syms[:10])}")
     g, l = await asyncio.to_thread(get_top_movers, True)
     lines.append(f"🟢 Gainers: {len(g)} | 🔴 Losers: {len(l)}")
-    if g: lines.append(f"   🟢 {', '.join([x['symbol'] for x in g[:5]])}")
-    if l: lines.append(f"   🔴 {', '.join([x['symbol'] for x in l[:5]])}")
+    if g: lines.append(f"   🟢 {', '.join([f'{x[chr(115)+chr(121)+chr(109)+chr(98)+chr(111)+chr(108)]}({x[chr(99)+chr(104)+chr(97)+chr(110)+chr(103)+chr(101)]:+.0f}%)' for x in g[:5]])}")
+    if l: lines.append(f"   🔴 {', '.join([f'{x[chr(115)+chr(121)+chr(109)+chr(98)+chr(111)+chr(108)]}({x[chr(99)+chr(104)+chr(97)+chr(110)+chr(103)+chr(101)]:+.0f}%)' for x in l[:5]])}")
     await update.message.reply_text("\n".join(lines)[:4000])
 
 @admin_only
@@ -3074,7 +3081,8 @@ async def cb_handler(update, ctx):
         st, _ = user_status(u.id, rec)
         if st not in ("admin","vip"):
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("💎 اشترك VIP", url=VIP_INVITE_LINK)]])
-            await q.message.reply_text("🔒", reply_markup=kb); return
+            await q.message.reply_text("🔒", reply_markup=kb)
+            return
         await q.message.reply_text(build_vip_menu_text(), reply_markup=keyboard_vip_menu())
         return
 
@@ -3084,7 +3092,8 @@ async def cb_handler(update, ctx):
         rec = store.data["users"].get(str(u.id), {})
         st, _ = user_status(u.id, rec)
         if st not in ("admin","vip"):
-            await q.message.reply_text("🔒 VIP فقط"); return
+            await q.message.reply_text("🔒 VIP فقط")
+            return
         hints = {
             "liquidity": "💧 أرسل: /liquidity BTC\n\n(مثال: BTC, ETH, SOL)",
             "futures": "📊 أرسل: /futures BTC\n\n(مثال: BTC, ETH, SOL)",
@@ -3099,7 +3108,8 @@ async def cb_handler(update, ctx):
         rec = store.data["users"].get(str(u.id), {})
         st, _ = user_status(u.id, rec)
         if st not in ("admin","vip"):
-              await q.message.reply_text("🔒 VIP فقط"); return
+            await q.message.reply_text("🔒 VIP فقط")
+            return
         try:
             if cmd == "/predict": await cmd_predict(update, ctx)
             elif cmd == "/whales": await cmd_whales(update, ctx)
@@ -3119,7 +3129,8 @@ async def cb_handler(update, ctx):
             sym = q.data.split(":")[1]
             res = await asyncio.to_thread(get_analysis, sym)
             await q.message.reply_text(build_admin_extras(res))
-        except Exception as e: await q.message.reply_text(f"⚠️ {str(e)[:200]}")
+        except Exception as e:
+            await q.message.reply_text(f"⚠️ {str(e)[:200]}")
         return
 
     if q.data.startswith("liq:"):
@@ -3127,7 +3138,9 @@ async def cb_handler(update, ctx):
         try:
             sym = q.data.split(":")[1]
             liq = await asyncio.to_thread(liquidity_radar, sym)
-            if not liq: await q.message.reply_text("لا بيانات"); return
+            if not liq:
+                await q.message.reply_text("لا بيانات")
+                return
             bias = "🟢" if liq["ratio"] > 0.55 else ("🔴" if liq["ratio"] < 0.45 else "⚖️")
             await q.message.reply_text(
                 f"💧 {sym}\n🟢 ${liq['bids']:,.0f}\n🔴 ${liq['asks']:,.0f}\n{liq['ratio']*100:.1f}% | {bias}")
@@ -3139,7 +3152,9 @@ async def cb_handler(update, ctx):
         try:
             sym = q.data.split(":")[1]
             w, largest, bv, sv = await asyncio.to_thread(whale_radar, sym)
-            if w is None: await q.message.reply_text("لا بيانات"); return
+            if w is None:
+                await q.message.reply_text("لا بيانات")
+                return
             total = bv + sv
             buy_pct = (bv / total * 100) if total > 0 else 0
             direction = "🟢" if buy_pct > 55 else ("🔴" if buy_pct < 45 else "⚖️")
@@ -3153,18 +3168,22 @@ async def cb_handler(update, ctx):
         sym = q.data.split(":")[1]
         try:
             per, a, b = await asyncio.to_thread(backtest_many, [sym], 3.0)
-            if not per: await q.message.reply_text("لا بيانات"); return
+            if not per:
+                await q.message.reply_text("لا بيانات")
+                return
             text, _ = bt_report(per, a, b, sym)
             await q.message.reply_text(text[:4000])
         except Exception: pass
         return
 
     if q.data.startswith("tf:"):
-        parts = q.data.split(":"); sym, tf = parts[1], parts[2]
+        parts = q.data.split(":")
+        sym, tf = parts[1], parts[2]
         user = touch_user(q.from_user, "refresh")
         st, _ = user_status(q.from_user.id, user)
         tier = "admin" if st=="admin" else ("vip" if st=="vip" else "free")
-        _candle_cache.pop((sym, tf, 450, 215), None); _analysis_cache.pop(sym, None)
+        _candle_cache.pop((sym, tf, 450, 215), None)
+        _analysis_cache.pop(sym, None)
         try:
             res = await asyncio.to_thread(get_analysis, sym)
             kb = keyboard(sym, res["tf"], tier)
@@ -3180,7 +3199,8 @@ async def cb_handler(update, ctx):
 # ============================================================
 #                    عام
 # ============================================================
-async def on_error(update, ctx): log.error("err: %s", ctx.error, exc_info=ctx.error)
+async def on_error(update, ctx):
+    log.error("err: %s", ctx.error, exc_info=ctx.error)
 
 async def on_text(update, ctx):
     if update.message and update.message.text:
@@ -3190,7 +3210,8 @@ PUBLIC_COMMANDS = [("start","ابدأ"),("help","المساعدة"),("myid","ر�
                    ("vip","VIP"),("menu","قائمتي 📋")]
 
 async def post_init(app):
-    try: await app.bot.set_my_commands([BotCommand(c,d) for c,d in PUBLIC_COMMANDS])
+    try:
+        await app.bot.set_my_commands([BotCommand(c,d) for c,d in PUBLIC_COMMANDS])
     except Exception: pass
     try:
         n = await asyncio.to_thread(smart_cleanup_trades)
@@ -3206,16 +3227,18 @@ async def post_init(app):
         asyncio.create_task(alpha_summary_loop(app)),
         asyncio.create_task(bottoms_auto_loop(app)),
     ]
-    log.info("ryma v56 | max_open=%d | daily(ADMIN) | coingecko=✅",
-             MAX_OPEN)
+    log.info("ryma v57 | max_open=%d | multi-source movers", MAX_OPEN)
 
 async def post_shutdown(app):
-    for t in app.bot_data.get("tasks",[]): t.cancel()
-    try: store.flush()
+    for t in app.bot_data.get("tasks",[]):
+        t.cancel()
+    try:
+        store.flush()
     except Exception: pass
 
 def main():
-    if not BOT_TOKEN: raise SystemExit("BOT_TOKEN not set")
+    if not BOT_TOKEN:
+        raise SystemExit("BOT_TOKEN not set")
     store.start_flusher()
     app = (ApplicationBuilder().token(BOT_TOKEN)
            .post_init(post_init).post_shutdown(post_shutdown).build())
