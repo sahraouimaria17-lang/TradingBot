@@ -36,9 +36,9 @@ MAINTENANCE = _e("MAINTENANCE", "0") == "1"
 
 BRAND = "💎 Ryma Crypto 💎"
 
-FAST_EXCHANGES = ["binance", "mexc", "gateio", "bitget", "okx", "kucoin", "htx"]
-EXCHANGES = ["binance", "mexc", "gateio", "bitget", "okx", "kucoin",
-             "bybit", "htx", "bingx", "lbank", "bitmart", "poloniex"]
+FAST_EXCHANGES = ["mexc", "gateio", "okx", "kucoin", "bitget", "htx", "binance"]
+EXCHANGES = ["mexc", "gateio", "okx", "kucoin", "bitget", "htx",
+             "binance", "bybit", "bingx", "lbank", "bitmart", "poloniex"]
 
 BINANCE_FAPI = "https://fapi.binance.com"
 MAJORS = {"BTC","ETH","BNB","SOL","XRP","ADA","DOGE","AVAX","LINK","DOT","LTC","TRX"}
@@ -49,8 +49,10 @@ ALPHA_COINS = ["ETH","BNB","SOL","SUI","NEAR","INJ","TIA","FLOKI","APT","ARB"]
 COINS = CORE_COINS + MEME_COINS
 WEAK_COINS = set()
 
+# ✅ استبعاد الكبار من قوائم Top Movers
 DAILY_EXCLUDE = {"BTC","ETH","BNB","SOL","XRP","DOGE","ADA","TRX","LTC",
-                 "DOT","LINK","AVAX","TON","SHIB","PEPE","USDC","FDUSD","TUSD"}
+                 "DOT","LINK","AVAX","TON","SHIB","PEPE","USDC","FDUSD","TUSD",
+                 "USDT","DAI","BUSD","USDP","USDD","USDE","PYUSD","EUR","AEUR"}
 
 LINKED_GROUPS = [
     {"BTC","ETH","BNB"},
@@ -59,7 +61,7 @@ LINKED_GROUPS = [
     {"TIA","INJ","DOT","ATOM"},
 ]
 
-STABLES = {"USDT","USDC","FDUSD","TUSD","DAI","BUSD","USDP","USDD","USDE","PYUSD","EUR","AEUR"}
+STABLES = DAILY_EXCLUDE
 
 TRIAL_DAYS = 7
 VIP_FORCE_DAY = 13
@@ -399,64 +401,32 @@ def ticker_change(sym):
     return price, change_24h, change_7d
 
 # ============================================================
-#        Top Gainers / Losers من Binance API
+#        ✅ Top Movers من MEXC/Gate/OKX (بدل Binance)
 # ============================================================
 _top_movers_cache = [0, [], []]
 
 def get_top_movers(force=False):
+    """
+    يجلب Top Gainers/Losers من منصات ما محظورة:
+    MEXC → Gate.io → OKX → Kucoin
+    """
     if not force and time.time() - _top_movers_cache[0] < 60:
         return _top_movers_cache[1], _top_movers_cache[2]
 
     gainers, losers = [], []
 
-    try:
-        r = requests.get(
-            "https://www.binance.com/bapi/asset/v1/public/asset/friendly/asset-rank/top-movers",
-            params={"quoteAsset": "USDT"},
-            timeout=12,
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-        )
-        if r.status_code == 200:
-            data = r.json().get("data", {})
-            gl = data.get("gainers") or data.get("topGainers") or []
-            ll = data.get("losers") or data.get("topLosers") or []
-            for it in gl:
-                sym = (it.get("symbol") or it.get("baseAsset") or "").upper().replace("USDT","")
-                if not sym or sym in STABLES or sym in DAILY_EXCLUDE: continue
-                try: ch = float(it.get("priceChangePercent") or it.get("change") or 0)
-                except: ch = 0
-                try: price = float(it.get("lastPrice") or it.get("price") or 0)
-                except: price = 0
-                try: qv = float(it.get("quoteVolume") or 0)
-                except: qv = 0
-                if price <= 0: continue
-                gainers.append(dict(symbol=sym, change=ch, price=price, volume=qv))
-            for it in ll:
-                sym = (it.get("symbol") or it.get("baseAsset") or "").upper().replace("USDT","")
-                if not sym or sym in STABLES or sym in DAILY_EXCLUDE: continue
-                try: ch = float(it.get("priceChangePercent") or it.get("change") or 0)
-                except: ch = 0
-                try: price = float(it.get("lastPrice") or it.get("price") or 0)
-                except: price = 0
-                try: qv = float(it.get("quoteVolume") or 0)
-                except: qv = 0
-                if price <= 0: continue
-                losers.append(dict(symbol=sym, change=ch, price=price, volume=qv))
-    except Exception as e:
-        log.warning(f"top_movers endpoint1: {e}")
-
-    # Fallback — من fetch_tickers
-    if not gainers and not losers:
+    for ex_name in ["mexc", "gateio", "okx", "kucoin", "bitget"]:
+        if _down.get(ex_name, 0) > time.time(): continue
         try:
-            ex = get_ex("binance")
-            with _ex_lock["binance"]:
+            ex = get_ex(ex_name)
+            with _ex_lock[ex_name]:
                 tickers = ex.fetch_tickers()
             rows = []
             for s, t in tickers.items():
                 if not s.endswith("/USDT") or ":" in s: continue
                 base = s.split("/")[0]
-                if base in STABLES or len(base) < 2: continue
                 if base in DAILY_EXCLUDE: continue
+                if len(base) < 2: continue
                 if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S)$", base): continue
                 try:
                     ch = float(t.get("percentage") or 0)
@@ -465,32 +435,31 @@ def get_top_movers(force=False):
                 except: continue
                 if price <= 0: continue
                 if qv < 3_000_000: continue
+                if abs(ch) < 3: continue  # تغير 3% على الأقل
                 rows.append(dict(symbol=base, change=ch, price=price, volume=qv))
-            rows.sort(key=lambda x: -x["change"])
-            gainers = [x for x in rows[:DAILY_TOP_N] if x["change"] > 0]
-            losers = [x for x in rows if x["change"] < 0][:DAILY_TOP_N]
+            if rows:
+                rows.sort(key=lambda x: -x["change"])
+                gainers = [x for x in rows[:DAILY_TOP_N] if x["change"] > 0]
+                losers = [x for x in rows if x["change"] < 0][:DAILY_TOP_N]
+                log.info(f"top_movers from {ex_name}: {len(gainers)} g, {len(losers)} l")
+                if gainers or losers:
+                    break
         except Exception as e:
-            log.warning(f"top_movers fallback: {e}")
+            log.warning(f"top_movers {ex_name}: {str(e)[:80]}")
+            continue
 
     _top_movers_cache[0] = time.time()
     _top_movers_cache[1] = gainers
     _top_movers_cache[2] = losers
-    log.info(f"top_movers: {len(gainers)} gainers, {len(losers)} losers")
     if gainers: log.info(f"  🟢 {[x['symbol'] for x in gainers[:5]]}")
     if losers: log.info(f"  🔴 {[x['symbol'] for x in losers[:5]]}")
     return gainers, losers
 
 # ============================================================
-#              تأكيدات الفيوتشر (Funding + L/S + OI)
+#        تأكيدات الفيوتشر (Funding + L/S + OI)
 # ============================================================
 def _futures_confirm(sym, side):
-    """
-    يفحص 3 تأكيدات فيوتشر:
-    - Funding Rate
-    - Long/Short Ratio
-    - Open Interest
-    يرجع: (عدد التأكيدات، قائمة التفاصيل)
-    """
+    """3 تأكيدات: Funding + L/S Ratio + OI"""
     confirmations = 0
     details = []
 
@@ -543,7 +512,7 @@ def check_liquidity(sym, min_usd=MIN_DAILY_VOLUME_USD):
 
 def whale_radar(sym):
     try:
-        for ex_name in ["binance", "mexc", "okx", "bybit", "gateio", "bitget"]:
+        for ex_name in ["mexc", "okx", "gateio", "kucoin", "bitget"]:
             try:
                 ex = get_ex(ex_name)
                 with _ex_lock[ex_name]:
@@ -567,7 +536,7 @@ def whale_radar(sym):
 
 def liquidity_radar(sym):
     try:
-        for ex_name in ["binance", "mexc", "okx", "bybit", "gateio", "bitget"]:
+        for ex_name in ["mexc", "okx", "gateio", "kucoin", "bitget"]:
             try:
                 ex = get_ex(ex_name)
                 with _ex_lock[ex_name]:
@@ -684,7 +653,7 @@ def top_symbols(n=60):
             for s,t in tk.items():
                 if not s.endswith("/USDT") or ":" in s: continue
                 base = s.split("/")[0]
-                if base in STABLES or len(base) < 2: continue
+                if base in DAILY_EXCLUDE or len(base) < 2: continue
                 if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S)$", base): continue
                 qv = t.get("quoteVolume") or 0
                 if qv and qv > 2e6: rows.append((qv, base))
@@ -1416,7 +1385,7 @@ def event_text(coin, tf, side, e, R, tier="free", trade=None):
     return None
 
 # ============================================================
-#              ✅ /daily — للأدمن فقط (Top Movers + Fut Confirm)
+#              ✅ /daily — للأدمن فقط
 # ============================================================
 def _stars_str(n):
     n = max(1, min(5, int(n)))
@@ -1424,14 +1393,15 @@ def _stars_str(n):
 
 def _build_daily_lists(force_side=None):
     """
-    🎯 يبني LONG/SHORT من Top Movers مع تأكيدات الفيوتشر
+    🎯 يبني LONG/SHORT من Top Movers:
+    - Gainers → LONG فقط إذا السعر فوق EMA + RSI صحي
+    - Losers  → SHORT فقط إذا السعر تحت EMA + RSI صحي
+    - لا عكس اتجاه — نتخطى المخالف
+    - النجوم: تغير + حجم + تأكيدات فيوتشر
     """
     gainers, losers = get_top_movers(force=True)
-    gainers = [g for g in gainers if g["symbol"] not in DAILY_EXCLUDE]
-    losers  = [l for l in losers  if l["symbol"] not in DAILY_EXCLUDE]
 
-    log.info(f"daily: gainers={[g['symbol'] for g in gainers[:10]]}")
-    log.info(f"daily: losers={[l['symbol'] for l in losers[:10]]}")
+    log.info(f"daily: gainers={len(gainers)}, losers={len(losers)}")
 
     def build_item(sym, expected_side, mv):
         try:
@@ -1450,7 +1420,7 @@ def _build_daily_lists(force_side=None):
         ema50 = float(last["ema50"]); ema200 = float(last["ema200"])
         rsi_v = float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0
 
-        # ✅ فلتر الاتجاه
+        # ✅ فلتر الاتجاه — لا عكس
         if expected_side == 1:
             if not (price > ema50 and price > ema200): return None
             if not (45 <= rsi_v <= 80): return None
@@ -1466,7 +1436,7 @@ def _build_daily_lists(force_side=None):
         stars = 0
         details = []
 
-        # 1) قوة التغير (1-2 نجوم)
+        # 1) قوة التغير (0-2 نجمة)
         ch = abs(mv["change"])
         if ch >= 30: stars += 2; details.append(f"Δ{ch:.0f}%")
         elif ch >= 15: stars += 1; details.append(f"Δ{ch:.0f}%")
@@ -2439,7 +2409,7 @@ async def cmd_daily(update, ctx):
     touch_user(u, "/daily")
 
     wait = await update.message.reply_text(
-        "🎯 جارٍ جلب Top Movers من Binance...\n"
+        "🎯 جارٍ جلب Top Movers...\n"
         "⏳ فحص Funding + L/S Ratio + OI\n"
         "🔍 ثم نحلّل فنياً\n"
         "⭐ نختار الأقوى"
@@ -3187,7 +3157,7 @@ async def post_init(app):
         asyncio.create_task(alpha_summary_loop(app)),
         asyncio.create_task(bottoms_auto_loop(app)),
     ]
-    log.info("ryma v53 FINAL | max_open=%d | daily(ADMIN) | protect=%s",
+    log.info("ryma v54 FINAL | max_open=%d | daily(ADMIN) | protect=%s",
              MAX_OPEN, PROTECT)
 
 async def post_shutdown(app):
