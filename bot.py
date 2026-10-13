@@ -10,7 +10,7 @@ from telegram.ext import (ApplicationBuilder, CommandHandler, MessageHandler,
                           ContextTypes, filters, CallbackQueryHandler)
 
 # ============================================================
-#                    الإعدادات
+#                    الإعدادات الأساسية
 # ============================================================
 def _e(k, d=""): return (os.getenv(k, d) or d).strip()
 def _int(k, d=0):
@@ -141,7 +141,6 @@ MACD_FAST, MACD_SLOW, MACD_SIGNAL = 12, 26, 9
 
 DAILY_LONGS = 2
 DAILY_SHORTS = 2
-DAILY_MIN_STARS = 2   # ✅ خُفّض من 3 → 2
 DAILY_TP_COUNT = 3
 DAILY_TOP_N = 10
 
@@ -336,7 +335,7 @@ def get_candles(sym, tf, bars=450, ttl=CANDLE_TTL, min_bars=MIN_BARS):
             df.attrs.update(source=name, degraded=False)
             _candle_cache[key] = (time.time(), df)
             return df
-        if len(df) >= 40 and (best is None or len(df) > len(best)):
+        if len(df) >= 30 and (best is None or len(df) > len(best)):
             df.attrs.update(source=name, degraded=True)
             best = df
     if best is not None:
@@ -400,7 +399,7 @@ def ticker_change(sym):
     return price, change_24h, change_7d
 
 # ============================================================
-#        ✅ Top Gainers / Losers من Binance API
+#        Top Gainers / Losers من Binance API
 # ============================================================
 _top_movers_cache = [0, [], []]
 
@@ -422,8 +421,7 @@ def get_top_movers(force=False):
             gl = data.get("gainers") or data.get("topGainers") or []
             ll = data.get("losers") or data.get("topLosers") or []
             for it in gl:
-                sym = (it.get("symbol") or it.get("baseAsset") or "").upper()
-                sym = sym.replace("USDT","")
+                sym = (it.get("symbol") or it.get("baseAsset") or "").upper().replace("USDT","")
                 if not sym or sym in STABLES or sym in DAILY_EXCLUDE: continue
                 try: ch = float(it.get("priceChangePercent") or it.get("change") or 0)
                 except: ch = 0
@@ -434,8 +432,7 @@ def get_top_movers(force=False):
                 if price <= 0: continue
                 gainers.append(dict(symbol=sym, change=ch, price=price, volume=qv))
             for it in ll:
-                sym = (it.get("symbol") or it.get("baseAsset") or "").upper()
-                sym = sym.replace("USDT","")
+                sym = (it.get("symbol") or it.get("baseAsset") or "").upper().replace("USDT","")
                 if not sym or sym in STABLES or sym in DAILY_EXCLUDE: continue
                 try: ch = float(it.get("priceChangePercent") or it.get("change") or 0)
                 except: ch = 0
@@ -448,7 +445,7 @@ def get_top_movers(force=False):
     except Exception as e:
         log.warning(f"top_movers endpoint1: {e}")
 
-    # Fallback
+    # Fallback — من fetch_tickers
     if not gainers and not losers:
         try:
             ex = get_ex("binance")
@@ -479,9 +476,52 @@ def get_top_movers(force=False):
     _top_movers_cache[1] = gainers
     _top_movers_cache[2] = losers
     log.info(f"top_movers: {len(gainers)} gainers, {len(losers)} losers")
-    if gainers: log.info(f"  🟢 Gainers: {[x['symbol'] for x in gainers[:5]]}")
-    if losers: log.info(f"  🔴 Losers: {[x['symbol'] for x in losers[:5]]}")
+    if gainers: log.info(f"  🟢 {[x['symbol'] for x in gainers[:5]]}")
+    if losers: log.info(f"  🔴 {[x['symbol'] for x in losers[:5]]}")
     return gainers, losers
+
+# ============================================================
+#              تأكيدات الفيوتشر (Funding + L/S + OI)
+# ============================================================
+def _futures_confirm(sym, side):
+    """
+    يفحص 3 تأكيدات فيوتشر:
+    - Funding Rate
+    - Long/Short Ratio
+    - Open Interest
+    يرجع: (عدد التأكيدات، قائمة التفاصيل)
+    """
+    confirmations = 0
+    details = []
+
+    # 1) Funding Rate
+    try:
+        fr = futures_funding_rate(sym)
+        if fr is not None:
+            if side == 1 and fr > 0.01:
+                confirmations += 1; details.append(f"FR+{fr:.3f}")
+            elif side == -1 and fr < -0.01:
+                confirmations += 1; details.append(f"FR{fr:.3f}")
+    except Exception: pass
+
+    # 2) Long/Short Ratio
+    try:
+        ls = futures_long_short_ratio(sym)
+        if ls is not None:
+            if side == 1 and ls >= 1.2:
+                confirmations += 1; details.append(f"LS{ls}")
+            elif side == -1 and ls <= 0.85:
+                confirmations += 1; details.append(f"LS{ls}")
+    except Exception: pass
+
+    # 3) Open Interest
+    try:
+        oi = futures_oi_history(sym, "4h", 20)
+        if oi and oi.get("change_pct", 0) > 1.0:
+            confirmations += 1; details.append(f"OI+{oi['change_pct']:.1f}%")
+    except Exception: pass
+
+    return confirmations, details
 
 # ============================================================
 #                    الرادارات
@@ -1376,46 +1416,16 @@ def event_text(coin, tf, side, e, R, tier="free", trade=None):
     return None
 
 # ============================================================
-#              ✅ /daily — للأدمن فقط (v52)
+#              ✅ /daily — للأدمن فقط (Top Movers + Fut Confirm)
 # ============================================================
 def _stars_str(n):
     n = max(1, min(5, int(n)))
     return "⭐" * n + "☆" * (5 - n)
 
-def _score_setup(res):
-    score = 0
-    if res["grade"] == "A": score += 1
-    elif res["grade"] == "B": score += 0.5
-    try:
-        if check_liquidity(res["sym"], min_usd=20_000_000): score += 1
-        elif check_liquidity(res["sym"], min_usd=5_000_000): score += 0.5
-    except Exception: pass
-    try:
-        mc, mt = mtf_score(res["sym"], res["side"])
-        if mt >= 2 and mc >= mt - 1: score += 1
-        elif mt >= 2 and mc >= 1: score += 0.5
-    except Exception: pass
-    try:
-        w, largest, bv, sv = whale_radar(res["sym"])
-        if w and w >= 1:
-            total = bv + sv
-            if total > 0:
-                buy_pct = bv / total * 100
-                if res["side"] == 1 and buy_pct >= 55: score += 1
-                elif res["side"] == -1 and buy_pct <= 45: score += 1
-    except Exception: pass
-    try:
-        ex = get_ex("binance")
-        with _ex_lock["binance"]:
-            t = ex.fetch_ticker(f"{res['sym']}/USDT")
-        qv = float(t.get("quoteVolume") or 0)
-        if qv >= 100_000_000: score += 1
-        elif qv >= 30_000_000: score += 0.5
-    except Exception: pass
-    return max(1, min(5, round(score)))
-
 def _build_daily_lists(force_side=None):
-    """يجلب Top Movers ويختار أفضل الصفقات — بدون شروط صارمة"""
+    """
+    🎯 يبني LONG/SHORT من Top Movers مع تأكيدات الفيوتشر
+    """
     gainers, losers = get_top_movers(force=True)
     gainers = [g for g in gainers if g["symbol"] not in DAILY_EXCLUDE]
     losers  = [l for l in losers  if l["symbol"] not in DAILY_EXCLUDE]
@@ -1423,56 +1433,94 @@ def _build_daily_lists(force_side=None):
     log.info(f"daily: gainers={[g['symbol'] for g in gainers[:10]]}")
     log.info(f"daily: losers={[l['symbol'] for l in losers[:10]]}")
 
+    def build_item(sym, expected_side, mv):
+        try:
+            df = get_candles(sym, "1h", 200, ttl=300, min_bars=50)
+        except Exception as e:
+            log.warning(f"daily {sym}: {type(e).__name__}")
+            return None
+        if df.empty or len(df) < 50: return None
+
+        df = add_indicators(df, 50)
+        i = len(df) - 1
+        last = df.iloc[-1]
+        price = float(last["close"])
+
+        if pd.isna(last["ema50"]) or pd.isna(last["ema200"]): return None
+        ema50 = float(last["ema50"]); ema200 = float(last["ema200"])
+        rsi_v = float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0
+
+        # ✅ فلتر الاتجاه
+        if expected_side == 1:
+            if not (price > ema50 and price > ema200): return None
+            if not (45 <= rsi_v <= 80): return None
+        else:
+            if not (price < ema50 and price < ema200): return None
+            if not (20 <= rsi_v <= 55): return None
+
+        # ✅ المستويات
+        lv = compute_core_levels(df, i, expected_side, price)
+        if lv is None: return None
+
+        # ═══════════ حساب النجوم ═══════════
+        stars = 0
+        details = []
+
+        # 1) قوة التغير (1-2 نجوم)
+        ch = abs(mv["change"])
+        if ch >= 30: stars += 2; details.append(f"Δ{ch:.0f}%")
+        elif ch >= 15: stars += 1; details.append(f"Δ{ch:.0f}%")
+
+        # 2) الحجم (0-1 نجمة)
+        if mv.get("volume", 0) >= 50_000_000:
+            stars += 1; details.append(f"V{mv['volume']/1e6:.0f}M")
+
+        # 3) تأكيدات الفيوتشر (0-3 نجوم)
+        fc, fcd = _futures_confirm(sym, expected_side)
+        stars += fc
+        if fcd: details.extend(fcd)
+
+        grade = "A" if stars >= 5 else ("B" if stars >= 3 else "C")
+        stars = max(1, min(5, stars))
+
+        res = dict(
+            sym=sym, tf="1h", df=df, side=expected_side, strategy="Futures",
+            rank={"A":2,"B":1,"C":0}.get(grade, 0),
+            grade=grade, setup="Futures",
+            ok=1 if grade in ("A","B") else 0, total=4,
+            lv=lv, price=price, degraded=False, source="binance",
+            bar_t=int(last["t"]),
+            rsi=rsi_v,
+            macd=float(last["macd"]) if not pd.isna(last["macd"]) else 0.0,
+            candle=None, trend=detect_trend(df, i), trend_d="range",
+            sr_high=[], sr_low=[], fibs=[]
+        )
+        return dict(res=res, stars=stars, details=details, mv=mv)
+
     longs, shorts = [], []
     used = set()
 
-    def process(sym, expected_side):
-        if sym in used: return None
-        if sym in STABLES or sym in DAILY_EXCLUDE: return None
-        try:
-            res = get_analysis(sym, force=True)
-        except Exception as e:
-            log.warning(f"daily analyze {sym}: {e}")
-            return None
-        if res["sym"] in WEAK_COINS: return None
-        stars = _score_setup(res)
-        return dict(res=res, stars=stars, expected=expected_side)
-
-    # 1) LONG من Gainers
+    # LONG من Gainers
     for g in gainers:
-        if len(longs) >= DAILY_LONGS: break
-        item = process(g["symbol"], 1)
-        if not item: continue
-        # ✅ لو الاتجاه عكس — اعكسه
-        if item["res"]["side"] != 1:
-            res = item["res"]
-            res["side"] = 1
-            try:
-                lv = compute_core_levels(res["df"], len(res["df"])-1, 1, res["price"])
-                if lv: res["lv"] = lv
-            except Exception: pass
-        longs.append(item)
-        used.add(g["symbol"])
+        if len(longs) >= DAILY_LONGS * 2: break
+        if g["symbol"] in used: continue
+        item = build_item(g["symbol"], 1, g)
+        if item:
+            longs.append(item); used.add(g["symbol"])
 
-    # 2) SHORT من Losers
+    # SHORT من Losers
     for l in losers:
-        if len(shorts) >= DAILY_SHORTS: break
-        item = process(l["symbol"], -1)
-        if not item: continue
-        # ✅ لو الاتجاه عكس — اعكسه
-        if item["res"]["side"] != -1:
-            res = item["res"]
-            res["side"] = -1
-            try:
-                lv = compute_core_levels(res["df"], len(res["df"])-1, -1, res["price"])
-                if lv: res["lv"] = lv
-            except Exception: pass
-        shorts.append(item)
-        used.add(l["symbol"])
+        if len(shorts) >= DAILY_SHORTS * 2: break
+        if l["symbol"] in used: continue
+        item = build_item(l["symbol"], -1, l)
+        if item:
+            shorts.append(item); used.add(l["symbol"])
 
     longs.sort(key=lambda x: -x["stars"])
     shorts.sort(key=lambda x: -x["stars"])
-    log.info(f"daily: FINAL longs={len(longs)}, shorts={len(shorts)}")
+
+    log.info(f"daily: FINAL longs={[(x['res']['sym'], x['stars']) for x in longs[:2]]}")
+    log.info(f"daily: FINAL shorts={[(x['res']['sym'], x['stars']) for x in shorts[:2]]}")
     return longs[:DAILY_LONGS], shorts[:DAILY_SHORTS]
 
 def _format_daily_card(res, side_label, stars):
@@ -1487,7 +1535,7 @@ def _format_daily_card(res, side_label, stars):
     return "\n".join(lines)
 
 # ============================================================
-#              ✅ الإشعارات — مع حماية
+#              الإشعارات — مع حماية
 # ============================================================
 async def notify_both(bot, text, protect=True):
     for chat in (VIP_CHANNEL_ID, ADMIN_ID or None):
@@ -2392,8 +2440,9 @@ async def cmd_daily(update, ctx):
 
     wait = await update.message.reply_text(
         "🎯 جارٍ جلب Top Movers من Binance...\n"
-        "⏳ ثم تحليل فني دقيق\n"
-        "🔍 نبحث عن أفضل فرص LONG و SHORT"
+        "⏳ فحص Funding + L/S Ratio + OI\n"
+        "🔍 ثم نحلّل فنياً\n"
+        "⭐ نختار الأقوى"
     )
 
     try:
@@ -2401,8 +2450,8 @@ async def cmd_daily(update, ctx):
 
         if not longs and not shorts:
             await wait.edit_text(
-                "🎯 لا توجد صفقات قوية الآن\n\n"
-                "📊 السوق هادي أو الإشارات ضعيفة\n"
+                "🎯 لا توجد صفقات مطابقة للمعايير\n\n"
+                "📊 العملات النشطة حالياً ليست في اتجاه واضح\n"
                 "⏳ جرّب بعد قليل"
             )
             return
@@ -3138,7 +3187,7 @@ async def post_init(app):
         asyncio.create_task(alpha_summary_loop(app)),
         asyncio.create_task(bottoms_auto_loop(app)),
     ]
-    log.info("ryma v52 | max_open=%d | daily(ADMIN only) | protect=%s",
+    log.info("ryma v53 FINAL | max_open=%d | daily(ADMIN) | protect=%s",
              MAX_OPEN, PROTECT)
 
 async def post_shutdown(app):
