@@ -148,7 +148,8 @@ DAILY_TP_COUNT = 3
 DAILY_TOP_N = 20
 
 DAILY_MIN_CHANGE = 12.0
-DAILY_MIN_VOLUME = 20_000_000
+# ✅ تم تخفيض الحجم ليتناسب مع المصادر البديلة
+DAILY_MIN_VOLUME = 5_000_000
 
 CROSS_EXCLUDE = {"BTC","ETH","BNB"}
 
@@ -439,6 +440,89 @@ def _movers_from_ccxt(ex_name, min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VO
         log.warning(f"movers {ex_name}: {str(e)[:60]}")
         return []
 
+# ✅ إضافة KuCoin
+def _movers_from_kucoin(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
+    try:
+        url = "https://api.kucoin.com/api/v1/market/allTickers"
+        r = requests.get(url, timeout=15)
+        if r.status_code != 200: return []
+        data = r.json()
+        rows = []
+        for item in data['data']['ticker']:
+            sym = item['symbol']
+            if not sym.endswith('-USDT'): continue
+            base = sym.replace('-USDT', '')
+            if base in DAILY_EXCLUDE: continue
+            try:
+                ch = float(item['changeRate']) * 100
+                price = float(item['last'])
+                qv = float(item['volValue'])
+            except: continue
+            if price <= 0: continue
+            if qv < min_vol: continue
+            if abs(ch) < min_change: continue
+            rows.append(dict(symbol=base, change=ch, price=price, volume=qv, src="kucoin"))
+        log.info(f"movers kucoin: {len(rows)}")
+        return rows
+    except Exception as e:
+        log.warning(f"movers kucoin: {str(e)[:60]}")
+        return []
+
+# ✅ إضافة Bitget
+def _movers_from_bitget(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
+    try:
+        url = "https://api.bitget.com/api/v2/spot/market/tickers"
+        r = requests.get(url, timeout=15)
+        if r.status_code != 200: return []
+        data = r.json()
+        rows = []
+        for item in data['data']:
+            sym = item['symbol']
+            if not sym.endswith('USDT'): continue
+            base = sym.replace('USDT', '')
+            if base in DAILY_EXCLUDE: continue
+            try:
+                ch = float(item['change24h']) * 100
+                price = float(item['lastPr'])
+                qv = float(item['usdtVolume'])
+            except: continue
+            if price <= 0: continue
+            if qv < min_vol: continue
+            if abs(ch) < min_change: continue
+            rows.append(dict(symbol=base, change=ch, price=price, volume=qv, src="bitget"))
+        log.info(f"movers bitget: {len(rows)}")
+        return rows
+    except Exception as e:
+        log.warning(f"movers bitget: {str(e)[:60]}")
+        return []
+
+# ✅ إضافة WhiteBIT
+def _movers_from_whitebit(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
+    try:
+        url = "https://whitebit.com/api/v4/public/ticker"
+        r = requests.get(url, timeout=15)
+        if r.status_code != 200: return []
+        data = r.json()
+        rows = []
+        for sym, info in data.items():
+            if not sym.endswith('_USDT'): continue
+            base = sym.replace('_USDT', '')
+            if base in DAILY_EXCLUDE: continue
+            try:
+                ch = float(info['change']) * 100
+                price = float(info['last'])
+                qv = float(info['quoteVolume'])
+            except: continue
+            if price <= 0: continue
+            if qv < min_vol: continue
+            if abs(ch) < min_change: continue
+            rows.append(dict(symbol=base, change=ch, price=price, volume=qv, src="whitebit"))
+        log.info(f"movers whitebit: {len(rows)}")
+        return rows
+    except Exception as e:
+        log.warning(f"movers whitebit: {str(e)[:60]}")
+        return []
+
 def _movers_from_coingecko(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
     try:
         headers = {
@@ -463,7 +547,6 @@ def _movers_from_coingecko(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME
         rows = []
         for it in data:
             sym = (it.get("symbol") or "").upper()
-            # ✅ يسمح بحرف واحد
             if not sym or sym in DAILY_EXCLUDE: continue
             try:
                 ch = float(it.get("price_change_percentage_24h") or 0)
@@ -488,6 +571,9 @@ def get_top_movers(force=False):
     all_rows = []
     for ex_name in ["okx", "bybit", "gateio", "mexc", "kucoin", "bitget"]:
         all_rows += _movers_from_ccxt(ex_name)
+    all_rows += _movers_from_kucoin()
+    all_rows += _movers_from_bitget()
+    all_rows += _movers_from_whitebit()
     all_rows += _movers_from_coingecko()
 
     best_by_sym = {}
@@ -1866,7 +1952,7 @@ def active_signals():
                 if p.get("state", "open") in ("pending","open")]
 
 def can_track(res):
-    if res["rank"] < 0: return False
+    # ✅ إصلاح: السماح بالدرجات A, B, C
     if res["sym"] in WEAK_COINS: return False
     act = active_signals()
     if len(act) >= MAX_OPEN: return False
@@ -1967,19 +2053,26 @@ async def run_autopost(bot):
         return
     vip_n = free_n = 0
     used = set()
+    
+    # ✅ إصلاح: تسجيل تفصيلي
     for r in vip_pool:
         if vip_n >= VIP_POSTS_PER_CYCLE: break
         key = f"{r['sym']}:{r['tf']}:{r['bar_t']}"
-        if key in store.data["posted"]: continue
+        if key in store.data["posted"]:
+            log.info(f"⏭️ تخطي {r['sym']}: منشور مسبقاً")
+            continue
         act = active_signals()
         if len(act) >= MAX_OPEN: return
-        if any(p["coin"]==r["sym"] and p["tf"]==r["tf"] for p in act): continue
+        if any(p["coin"]==r["sym"] and p["tf"]==r["tf"] for p in act):
+            log.info(f"⏭️ تخطي {r['sym']}: موجود في الصفقات النشطة")
+            continue
         vip_liq_ok = check_liquidity(r["sym"], min_usd=VIP_MIN_LIQUIDITY)
         vip_mtf_ok = True
         if REQUIRE_MTF_FOR_SMALL and r["sym"] not in MAJORS and r["sym"] not in MEME_COINS:
             mtf_c, mtf_t = mtf_score(r["sym"], r["side"])
             if mtf_t >= 2 and mtf_c < mtf_t: vip_mtf_ok = False
         if not (vip_liq_ok and vip_mtf_ok):
+            log.info(f"⏭️ تخطي {r['sym']}: سيولة={vip_liq_ok}, MTF={vip_mtf_ok}")
             continue
         try:
             sent = await publish(bot, r, vip=True, free=False, admin_copy=True)
@@ -1994,15 +2087,20 @@ async def run_autopost(bot):
                 store.save("posted")
             vip_n += 1; used.add(r["sym"])
             await asyncio.sleep(2)
+    
     free_pool = [r for r in cands if r["grade"] in ("B","C") and r["sym"] not in used]
     for r in free_pool:
         if free_n >= FREE_POSTS_PER_CYCLE: break
         if _free_day["n"] >= FREE_MAX_PER_DAY: break
         key = f"{r['sym']}:{r['tf']}:{r['bar_t']}"
-        if key in store.data["posted"]: continue
+        if key in store.data["posted"]:
+            log.info(f"⏭️ تخطي {r['sym']}: منشور مسبقاً (free)")
+            continue
         act = active_signals()
         if len(act) >= MAX_OPEN: return
-        if any(p["coin"]==r["sym"] and p["tf"]==r["tf"] for p in act): continue
+        if any(p["coin"]==r["sym"] and p["tf"]==r["tf"] for p in act):
+            log.info(f"⏭️ تخطي {r['sym']}: موجود في الصفقات النشطة (free)")
+            continue
         try:
             sent = await publish(bot, r, vip=False, free=True, admin_copy=False)
         except Exception:
@@ -2550,7 +2648,7 @@ async def cmd_daily(update, ctx):
 
     wait = await update.message.reply_text(
         "🎯 جارٍ جلب Top Movers من منصات متعددة...\n"
-        "⏳ OKX + Bybit + Gate + CoinGecko\n"
+        "⏳ OKX + Bybit + Gate + CoinGecko + KuCoin + Bitget + WhiteBIT\n"
         "🔍 فلترة قوية\n"
         "⭐ اختبار جودة"
     )
@@ -2561,7 +2659,7 @@ async def cmd_daily(update, ctx):
         if not longs and not shorts:
             await wait.edit_text(
                 "🎯 لا توجد صفقات مطابقة للمعايير\n\n"
-                "📊 لم نجد عملات بتغير 12%+ وحجم 20M$+\n"
+                "📊 لم نجد عملات بتغير 12%+ وحجم 5M$+\n"
                 "⏳ جرّب بعد قليل"
             )
             return
@@ -3357,7 +3455,7 @@ async def post_init(app):
         asyncio.create_task(bottoms_auto_loop(app)),
         asyncio.create_task(cross_loop(app)),   # ✅ التقاطعات
     ]
-    log.info("ryma v58 FINAL | max_open=%d | multi-source | cross=OK", MAX_OPEN)
+    log.info("ryma v59 FINAL | max_open=%d | multi-source | cross=OK", MAX_OPEN)
 
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]):
