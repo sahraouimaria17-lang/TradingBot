@@ -42,6 +42,15 @@ EXCHANGES = ["okx", "bybit", "gateio", "mexc", "kucoin", "bitget", "htx",
              "binance", "bingx", "lbank", "bitmart", "poloniex"]
 
 BINANCE_FAPI = "https://fapi.binance.com"
+
+# ✅ مرايا Binance العامة الرسمية (بدون API key، وغالباً غير محظورة)
+BINANCE_SPOT_MIRRORS = [
+    "https://data-api.binance.vision",   # ← الأفضل، بيانات عامة فقط
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+]
+
 MAJORS = {"BTC","ETH","BNB","SOL","XRP","ADA","DOGE","AVAX","LINK","DOT","LTC","TRX"}
 CORE_COINS = ["BTC","ETH","BNB","XRP","ADA","DOGE","AVAX","LTC",
               "NEAR","SUI","ATOM","TRX","BONK","OP"]
@@ -83,7 +92,7 @@ CYCLE_MARKET_SUMMARY = 16200
 CYCLE_PREDICT        = 14400
 CYCLE_ALPHA_SUMMARY  = 14400
 CYCLE_BOTTOMS_AUTO   = 21600
-CROSS_CHECK_INTERVAL = 1800     # ✅ كل 30 دقيقة
+CROSS_CHECK_INTERVAL = 1800
 
 SMART_PROFIT_DAYS = 7
 SMART_MAX_AGE_DAYS = 14
@@ -106,7 +115,9 @@ CORE_RSI_SHORT = (50, 80)
 EXT_MAX_ATR = 3.5
 
 MIN_DAILY_VOLUME_USD = 5_000_000
-VIP_MIN_LIQUIDITY = 10_000_000
+
+# ✅ تم تخفيض حد السيولة للـ VIP من 10M إلى 3M
+VIP_MIN_LIQUIDITY = 3_000_000
 REQUIRE_MTF_FOR_SMALL = True
 
 MEME_TP_PCTS = [3.0, 6.0, 10.0, 15.0]
@@ -148,7 +159,6 @@ DAILY_TP_COUNT = 3
 DAILY_TOP_N = 20
 
 DAILY_MIN_CHANGE = 12.0
-# ✅ تم تخفيض الحجم ليتناسب مع المصادر البديلة
 DAILY_MIN_VOLUME = 5_000_000
 
 CROSS_EXCLUDE = {"BTC","ETH","BNB"}
@@ -422,7 +432,6 @@ def _movers_from_ccxt(ex_name, min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VO
         for s, t in tickers.items():
             if not s.endswith("/USDT") or ":" in s: continue
             base = s.split("/")[0]
-            # ✅ يسمح بحرف واحد
             if not base or base in DAILY_EXCLUDE: continue
             if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S|USDT|USDC)$", base): continue
             try:
@@ -440,7 +449,44 @@ def _movers_from_ccxt(ex_name, min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VO
         log.warning(f"movers {ex_name}: {str(e)[:60]}")
         return []
 
-# ✅ إضافة KuCoin
+# ✅ دالة جديدة: جلب بيانات Binance من المرايا العامة
+def _movers_from_binance_mirror(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
+    """جلب بيانات Binance من المرايا العامة (بدون API key)"""
+    for base in BINANCE_SPOT_MIRRORS:
+        try:
+            url = f"{base}/api/v3/ticker/24hr"
+            r = requests.get(url, timeout=12)
+            if r.status_code != 200:
+                log.debug(f"binance mirror {base}: status={r.status_code}")
+                continue
+            data = r.json()
+            if not isinstance(data, list):
+                continue
+            rows = []
+            for t in data:
+                sym = t.get("symbol", "")
+                if not sym.endswith("USDT"): continue
+                base_sym = sym.replace("USDT", "")
+                if not base_sym or base_sym in DAILY_EXCLUDE: continue
+                if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S|USDT|USDC)$", base_sym): continue
+                try:
+                    ch = float(t.get("priceChangePercent", 0))
+                    price = float(t.get("lastPrice", 0))
+                    qv = float(t.get("quoteVolume", 0))
+                except: continue
+                if price <= 0: continue
+                if qv < min_vol: continue
+                if abs(ch) < min_change: continue
+                rows.append(dict(symbol=base_sym, change=ch, price=price, volume=qv, src="binance"))
+            log.info(f"✅ movers binance_mirror ({base}): {len(rows)}")
+            if rows:
+                return rows
+        except Exception as e:
+            log.debug(f"binance mirror {base} fail: {str(e)[:60]}")
+            continue
+    log.warning("⚠️ كل مرايا Binance فشلت")
+    return []
+
 def _movers_from_kucoin(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
     try:
         url = "https://api.kucoin.com/api/v1/market/allTickers"
@@ -468,7 +514,6 @@ def _movers_from_kucoin(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
         log.warning(f"movers kucoin: {str(e)[:60]}")
         return []
 
-# ✅ إضافة Bitget
 def _movers_from_bitget(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
     try:
         url = "https://api.bitget.com/api/v2/spot/market/tickers"
@@ -496,7 +541,6 @@ def _movers_from_bitget(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
         log.warning(f"movers bitget: {str(e)[:60]}")
         return []
 
-# ✅ إضافة WhiteBIT
 def _movers_from_whitebit(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
     try:
         url = "https://whitebit.com/api/v4/public/ticker"
@@ -569,6 +613,9 @@ def get_top_movers(force=False):
 
     log.info("═══ Top Movers Fetch ═══")
     all_rows = []
+    # ✅ Binance Mirror أولاً (المصدر الأهم والأدق)
+    all_rows += _movers_from_binance_mirror()
+    # ثم باقي المصادر
     for ex_name in ["okx", "bybit", "gateio", "mexc", "kucoin", "bitget"]:
         all_rows += _movers_from_ccxt(ex_name)
     all_rows += _movers_from_kucoin()
@@ -603,10 +650,9 @@ def get_top_movers(force=False):
     return gainers, losers
 
 # ============================================================
-#        ✅ detect_cross — التقاطعات
+#        detect_cross
 # ============================================================
 def detect_cross(df):
-    """يكشف التقاطع الذهبي/الموت"""
     try:
         if len(df) < 210: return None
         last = df.iloc[-1]
@@ -619,11 +665,9 @@ def detect_cross(df):
         prev_ema50 = float(prev["ema50"])
         prev_ema200 = float(prev["ema200"])
 
-        # Golden Cross
         if prev_ema50 <= prev_ema200 and last_ema50 > last_ema200:
             return dict(type="golden", price=float(last["close"]),
                         ema50=last_ema50, ema200=last_ema200, bar_t=int(last["t"]))
-        # Death Cross
         if prev_ema50 >= prev_ema200 and last_ema50 < last_ema200:
             return dict(type="death", price=float(last["close"]),
                         ema50=last_ema50, ema200=last_ema200, bar_t=int(last["t"]))
@@ -822,7 +866,6 @@ def top_symbols(n=60):
             for s,t in tk.items():
                 if not s.endswith("/USDT") or ":" in s: continue
                 base = s.split("/")[0]
-                # ✅ يسمح بحرف واحد
                 if base in DAILY_EXCLUDE: continue
                 if re.search(r"(UP|DOWN|BULL|BEAR|3L|3S)$", base): continue
                 qv = t.get("quoteVolume") or 0
@@ -1476,10 +1519,13 @@ def _archive(p):
         store.save("signals","history")
 
 # ============================================================
-#              format_trade_card + event_text
+#              format_trade_card — ✅ محدّث مع المصدر
 # ============================================================
 def format_trade_card(p, event_kind=None, event_data=None):
-    lines = [f"{p['coin']}USDT"]
+    lines = [f"📌 {p['coin']}USDT"]
+    lines.append("")
+    source = (p.get("source") or "BINANCE").upper()
+    lines.append(f"📡 المصدر: <b>{source}</b>")
     lines.append("")
     lines.append(f"➡️ Entry: {fmt(p['fill'])}")
     lines.append("")
@@ -1498,6 +1544,8 @@ def format_trade_card(p, event_kind=None, event_data=None):
     tp_hits = sum(1 for t in p["tps"] if t["hit"])
     lines.append("")
     lines.append(f"📊 R: {cur_r:+.2f} | TP: {tp_hits}/4")
+    lines.append("")
+    lines.append(f"⚠️ <i>تحقق من الأسعار على منصة {source}</i>")
     if p.get("state") == "closed":
         result = p.get("result", "")
         lines.append("")
@@ -1656,7 +1704,7 @@ def _format_daily_card(res, side_label, change, volume):
     return "\n".join(lines)
 
 # ============================================================
-#              ✅ الإشعارات — مع حماية
+#              ✅ الإشعارات
 # ============================================================
 async def notify_both(bot, text, protect=True):
     for chat in (VIP_CHANNEL_ID, ADMIN_ID or None):
@@ -1750,10 +1798,12 @@ def caption_core(res, tier="free"):
     side, lv, sym = res["side"], res["lv"], res["sym"]
     side_word = "🟢 شراء (LONG)" if side == 1 else "🔴 بيع (SHORT)"
     now_ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    source = (res.get("source") or "BINANCE").upper()
     lines = [
         f"╭━━━ 💎 RYMA CRYPTO 💎 ━━━╮",
         f"┃ 🎯 التوصية: {side_word}",
         f"┃ 📌 #{sym}/USDT",
+        f"┃ 📡 المصدر: {source}",
         f"╰━━━━━━━━━━━━━━━━━━━━━━━╯",
         "",
         f"💵 الدخول: {fmt(lv['entry'])}",
@@ -1952,17 +2002,18 @@ def active_signals():
                 if p.get("state", "open") in ("pending","open")]
 
 def can_track(res):
-    # ✅ إصلاح: السماح بالدرجات A, B, C
     if res["sym"] in WEAK_COINS: return False
     act = active_signals()
     if len(act) >= MAX_OPEN: return False
     if any(p["coin"]==res["sym"] and p["tf"]==res["tf"] for p in act): return False
     return True
 
+# ✅ track_signal محدّث: يخزّن المصدر في الصفقة
 def track_signal(res):
     sz = RISK_SIZE.get(res["grade"], 0.02)
     p = new_trade(res["sym"], res["tf"], res["side"], res["lv"], res["bar_t"],
                   res["grade"], res["setup"], size_pct=sz)
+    p["source"] = res.get("source", "binance")
     with store.lock:
         store.data["signals"].append(p)
         store.save("signals")
@@ -2031,7 +2082,7 @@ def pick_short_opportunities(n=5):
     return rows[:n]
 
 # ============================================================
-#                    Autopost
+#                    Autopost — ✅ محدّث بالخطة البديلة
 # ============================================================
 _free_day = {"d":"","n":0}
 
@@ -2054,7 +2105,7 @@ async def run_autopost(bot):
     vip_n = free_n = 0
     used = set()
     
-    # ✅ إصلاح: تسجيل تفصيلي
+    # المرحلة 1: الفلتر الصارم
     for r in vip_pool:
         if vip_n >= VIP_POSTS_PER_CYCLE: break
         key = f"{r['sym']}:{r['tf']}:{r['bar_t']}"
@@ -2088,6 +2139,33 @@ async def run_autopost(bot):
             vip_n += 1; used.add(r["sym"])
             await asyncio.sleep(2)
     
+    # ✅ المرحلة 2: الخطة البديلة — لو VIP ما لقى شي
+    if vip_n == 0:
+        log.warning("⚠️ VIP ما لقى صفقات بالفلتر الصارم — نفعّل الخطة البديلة")
+        fallback_pool = [r for r in cands if r["grade"] in ("B","C") and r["sym"] not in used]
+        for r in fallback_pool:
+            if vip_n >= 2: break
+            key = f"{r['sym']}:{r['tf']}:{r['bar_t']}"
+            if key in store.data["posted"]: continue
+            act = active_signals()
+            if len(act) >= MAX_OPEN: break
+            if any(p["coin"]==r["sym"] and p["tf"]==r["tf"] for p in act): continue
+            try:
+                sent = await publish(bot, r, vip=True, free=False, admin_copy=False)
+            except Exception:
+                log.exception(f"publish VIP fallback {r['sym']}"); continue
+            if sent and not any(s.startswith("err") for s in sent):
+                track_signal(r)
+                with store.lock:
+                    store.data["posted"][key] = now_s()
+                    cut = now_s() - 14*DAY
+                    store.data["posted"] = {k:v for k,v in store.data["posted"].items() if v > cut}
+                    store.save("posted")
+                vip_n += 1; used.add(r["sym"])
+                log.info(f"✅ VIP (بديل): {r['sym']}")
+                await asyncio.sleep(2)
+    
+    # المرحلة 3: المجانية
     free_pool = [r for r in cands if r["grade"] in ("B","C") and r["sym"] not in used]
     for r in free_pool:
         if free_n >= FREE_POSTS_PER_CYCLE: break
@@ -2164,12 +2242,11 @@ async def tracker_loop(app):
         await asyncio.sleep(300)
 
 # ============================================================
-#        ✅ cross_loop — التقاطعات
+#        cross_loop
 # ============================================================
 _cross_posted = {}
 
 async def cross_loop(app):
-    """كل 30 دقيقة — فحص التقاطعات على 4H"""
     await asyncio.sleep(300)
     while True:
         try:
@@ -2484,7 +2561,6 @@ def clean_symbol(text):
     s = (text or "").upper().strip().replace("$","").replace("/","").replace("-","")
     for suf in ("USDT","USDC","PERP","USD"):
         if s.endswith(suf) and len(s)>len(suf): s = s[:-len(suf)]
-    # ✅ يسمح بحرف واحد (Q, X...)
     return s if re.fullmatch(r"[A-Z0-9]{1,12}", s) else ""
 
 _cooldown = {}
@@ -2648,7 +2724,7 @@ async def cmd_daily(update, ctx):
 
     wait = await update.message.reply_text(
         "🎯 جارٍ جلب Top Movers من منصات متعددة...\n"
-        "⏳ OKX + Bybit + Gate + CoinGecko + KuCoin + Bitget + WhiteBIT\n"
+        "⏳ Binance Mirror + OKX + Bybit + Gate + CoinGecko + KuCoin + Bitget + WhiteBIT\n"
         "🔍 فلترة قوية\n"
         "⭐ اختبار جودة"
     )
@@ -2962,6 +3038,7 @@ async def cmd_debug(update, ctx):
     lines.append(f"📊 MAX_OPEN: {MAX_OPEN} | نشطة: {len(act)}")
     lines.append(f"📝 posted: {len(store.data['posted'])}")
     lines.append(f"💎 CoinGecko: {'✅' if COINGECKO_KEY else '❌'}")
+    lines.append(f"📡 Binance Mirrors: {len(BINANCE_SPOT_MIRRORS)}")
     now = time.time()
     down = [n for n, t in _down.items() if t > now]
     lines.append(f"⛔ منصات محظورة: {len(down)} {down[:5]}")
@@ -3154,10 +3231,12 @@ async def cmd_dashboard(update, ctx):
            f"👥 {nu} | 💎 VIP: {nv}\n"
            f"📊 نشطة: {len(act)}/{MAX_OPEN}\n"
            f"💾 {store.remote_msg}\n"
+           f"📡 Binance Mirrors: {len(BINANCE_SPOT_MIRRORS)}\n"
            f"📢 FREE {'✅' if CHANNEL_ID else '—'} | VIP {'✅' if VIP_CHANNEL_ID else '—'}\n\n"
            f"⏱ auto: {CYCLE_AUTOPOST//3600}س | short: {CYCLE_SHORT_FREE//3600}س | summary: {CYCLE_MARKET_SUMMARY//3600}س\n"
            f"🌟 cross: كل {CROSS_CHECK_INTERVAL//60} دقيقة\n"
-           f"🧹 cleanup: كل {CLEANUP_EVERY_CYCLES} دورة")
+           f"🧹 cleanup: كل {CLEANUP_EVERY_CYCLES} دورة\n"
+           f"💎 VIP_MIN_LIQUIDITY: {VIP_MIN_LIQUIDITY:,}$")
     await update.message.reply_text(msg)
 
 @admin_only
@@ -3453,9 +3532,10 @@ async def post_init(app):
         asyncio.create_task(short_free_loop(app)),
         asyncio.create_task(alpha_summary_loop(app)),
         asyncio.create_task(bottoms_auto_loop(app)),
-        asyncio.create_task(cross_loop(app)),   # ✅ التقاطعات
+        asyncio.create_task(cross_loop(app)),
     ]
-    log.info("ryma v59 FINAL | max_open=%d | multi-source | cross=OK", MAX_OPEN)
+    log.info("ryma v60 FINAL | max_open=%d | mirrors=%d | vip_liq=%d",
+             MAX_OPEN, len(BINANCE_SPOT_MIRRORS), VIP_MIN_LIQUIDITY)
 
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]):
