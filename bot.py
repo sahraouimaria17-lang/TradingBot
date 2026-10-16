@@ -628,7 +628,6 @@ def get_top_movers(force=False):
 #        ✅ دوال الفيوتشر (OKX + KuCoin)
 # ============================================================
 def futures_oi_history(sym, period="4h", limit=20):
-    """OI: OKX أولاً، ثم KuCoin"""
     try:
         period_map = {"15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
         okx_period = period_map.get(period, "4H")
@@ -2426,7 +2425,6 @@ async def gate(update):
         _cooldown[user.id] = time.time()
     return st, True
 
-# ✅ handle_symbol — بدون تتبع تلقائي
 async def handle_symbol(update, raw, to_channel=False):
     st, ok = await gate(update)
     if not ok: return
@@ -2641,7 +2639,6 @@ async def cmd_liquidity(update, ctx):
     await wait.edit_text(f"💧 {sym}\n🟢 ${liq['bids']:,.0f}\n🔴 ${liq['asks']:,.0f}\n"
                          f"📊 {liq['ratio']*100:.1f}% | {bias}")
 
-# ✅ cmd_futures الجديد — رسالتان (تحليل + صفقة قابلة للنسخ)
 @vip_only
 async def cmd_futures(update, ctx):
     if not ctx.args: await update.message.reply_text("مثال: /futures BTC"); return
@@ -3149,6 +3146,7 @@ async def cb_handler(update, ctx):
         await q.message.reply_text(f"✏️ {hints.get(key, 'أرسل الأمر مع الرمز')}")
         return
 
+    # ✅ الإصلاح: استخدام FakeUpdate لأزرار VIP
     if q.data.startswith("vip_cmd:"):
         cmd = q.data.split(":",1)[1]
         u = q.from_user
@@ -3157,16 +3155,18 @@ async def cb_handler(update, ctx):
         if st not in ("admin","vip"):
             await q.message.reply_text("🔒 VIP فقط"); return
         try:
-            if cmd == "/predict": await cmd_predict(update, ctx)
-            elif cmd == "/whales": await cmd_whales(update, ctx)
-            elif cmd == "/explosions": await cmd_explosions(update, ctx)
-            elif cmd == "/pump": await cmd_pump(update, ctx)
-            elif cmd == "/bottom": await cmd_bottoms(update, ctx)
-            elif cmd == "/shortsradar": await cmd_shorts_radar(update, ctx)
-            elif cmd == "/alpha": await cmd_alpha(update, ctx)
-            elif cmd == "/active": await cmd_active(update, ctx)
+            fake = _FakeUpdate(q.message, q.from_user)
+            if cmd == "/predict": await cmd_predict(fake, ctx)
+            elif cmd == "/whales": await cmd_whales(fake, ctx)
+            elif cmd == "/explosions": await cmd_explosions(fake, ctx)
+            elif cmd == "/pump": await cmd_pump(fake, ctx)
+            elif cmd == "/bottom": await cmd_bottoms(fake, ctx)
+            elif cmd == "/shortsradar": await cmd_shorts_radar(fake, ctx)
+            elif cmd == "/alpha": await cmd_alpha(fake, ctx)
+            elif cmd == "/active": await cmd_active(fake, ctx)
         except Exception as e:
-            await q.message.reply_text(f"⚠️ {str(e)[:150]}")
+            try: await q.message.reply_text(f"⚠️ {str(e)[:150]}")
+            except Exception: pass
         return
 
     if q.data.startswith("ind:"):
@@ -3266,7 +3266,7 @@ async def post_init(app):
         asyncio.create_task(bottoms_auto_loop(app)),
         asyncio.create_task(cross_loop(app)),
     ]
-    log.info("ryma v62 FINAL | max_open=%d | mirrors=%d | vip_liq=%d | maintenance=%s",
+    log.info("ryma v63 FINAL | max_open=%d | mirrors=%d | vip_liq=%d | maintenance=%s",
              MAX_OPEN, len(BINANCE_SPOT_MIRRORS), VIP_MIN_LIQUIDITY, is_maintenance())
 
 async def post_shutdown(app):
