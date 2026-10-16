@@ -45,7 +45,7 @@ BINANCE_FAPI = "https://fapi.binance.com"
 
 # ✅ مرايا Binance العامة الرسمية (بدون API key، وغالباً غير محظورة)
 BINANCE_SPOT_MIRRORS = [
-    "https://data-api.binance.vision",   # ← الأفضل، بيانات عامة فقط
+    "https://data-api.binance.vision",
     "https://api1.binance.com",
     "https://api2.binance.com",
     "https://api3.binance.com",
@@ -115,8 +115,6 @@ CORE_RSI_SHORT = (50, 80)
 EXT_MAX_ATR = 3.5
 
 MIN_DAILY_VOLUME_USD = 5_000_000
-
-# ✅ تم تخفيض حد السيولة للـ VIP من 10M إلى 3M
 VIP_MIN_LIQUIDITY = 3_000_000
 REQUIRE_MTF_FOR_SMALL = True
 
@@ -172,8 +170,9 @@ def now_s(): return int(time.time())
 # ============================================================
 #                    التخزين
 # ============================================================
-KEYS = ["users","vip","signals","history","posted"]
-DEFAULTS = {"users":{},"vip":{},"signals":[],"history":[],"posted":{}}
+KEYS = ["users","vip","signals","history","posted","settings"]
+DEFAULTS = {"users":{},"vip":{},"signals":[],"history":[],"posted":{},
+            "settings":{"maintenance": _e("MAINTENANCE","0")=="1"}}
 
 class Store:
     def __init__(self, local_path="data_local.json"):
@@ -234,6 +233,17 @@ class Store:
                 except Exception: pass
         threading.Thread(target=loop, daemon=True).start()
 store = Store()
+
+# ✅ دوال الصيانة الديناميكية
+def is_maintenance():
+    with store.lock:
+        return bool(store.data.get("settings", {}).get("maintenance", False))
+
+def set_maintenance(flag):
+    with store.lock:
+        store.data.setdefault("settings", {})["maintenance"] = bool(flag)
+        store.save("settings")
+    return bool(flag)
 
 # ============================================================
 #                    المستخدمون
@@ -449,9 +459,7 @@ def _movers_from_ccxt(ex_name, min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VO
         log.warning(f"movers {ex_name}: {str(e)[:60]}")
         return []
 
-# ✅ دالة جديدة: جلب بيانات Binance من المرايا العامة
 def _movers_from_binance_mirror(min_change=DAILY_MIN_CHANGE, min_vol=DAILY_MIN_VOLUME):
-    """جلب بيانات Binance من المرايا العامة (بدون API key)"""
     for base in BINANCE_SPOT_MIRRORS:
         try:
             url = f"{base}/api/v3/ticker/24hr"
@@ -613,9 +621,7 @@ def get_top_movers(force=False):
 
     log.info("═══ Top Movers Fetch ═══")
     all_rows = []
-    # ✅ Binance Mirror أولاً (المصدر الأهم والأدق)
     all_rows += _movers_from_binance_mirror()
-    # ثم باقي المصادر
     for ex_name in ["okx", "bybit", "gateio", "mexc", "kucoin", "bitget"]:
         all_rows += _movers_from_ccxt(ex_name)
     all_rows += _movers_from_kucoin()
@@ -1519,7 +1525,7 @@ def _archive(p):
         store.save("signals","history")
 
 # ============================================================
-#              format_trade_card — ✅ محدّث مع المصدر
+#              format_trade_card — مع المصدر
 # ============================================================
 def format_trade_card(p, event_kind=None, event_data=None):
     lines = [f"📌 {p['coin']}USDT"]
@@ -1943,6 +1949,7 @@ def keyboard_admin_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ تشغيل النشر", callback_data="adm:/forcepost"),
          InlineKeyboardButton("🧹 تفريغ الصفقات", callback_data="adm:/clearsignals")],
+        [InlineKeyboardButton("🛠 وضع الصيانة (إيقاف/تفعيل)", callback_data="toggle_maintenance")],
         [InlineKeyboardButton("🎯 صفقة اليوم", callback_data="adm:/daily"),
          InlineKeyboardButton("🌟 التقاطعات", callback_data="adm:/cross")],
         [InlineKeyboardButton("🔍 تشخيص", callback_data="adm:/debug"),
@@ -2008,7 +2015,6 @@ def can_track(res):
     if any(p["coin"]==res["sym"] and p["tf"]==res["tf"] for p in act): return False
     return True
 
-# ✅ track_signal محدّث: يخزّن المصدر في الصفقة
 def track_signal(res):
     sz = RISK_SIZE.get(res["grade"], 0.02)
     p = new_trade(res["sym"], res["tf"], res["side"], res["lv"], res["bar_t"],
@@ -2082,7 +2088,7 @@ def pick_short_opportunities(n=5):
     return rows[:n]
 
 # ============================================================
-#                    Autopost — ✅ محدّث بالخطة البديلة
+#                    Autopost
 # ============================================================
 _free_day = {"d":"","n":0}
 
@@ -2104,8 +2110,7 @@ async def run_autopost(bot):
         return
     vip_n = free_n = 0
     used = set()
-    
-    # المرحلة 1: الفلتر الصارم
+
     for r in vip_pool:
         if vip_n >= VIP_POSTS_PER_CYCLE: break
         key = f"{r['sym']}:{r['tf']}:{r['bar_t']}"
@@ -2138,8 +2143,8 @@ async def run_autopost(bot):
                 store.save("posted")
             vip_n += 1; used.add(r["sym"])
             await asyncio.sleep(2)
-    
-    # ✅ المرحلة 2: الخطة البديلة — لو VIP ما لقى شي
+
+    # ✅ الخطة البديلة: لو VIP ما لقى شي
     if vip_n == 0:
         log.warning("⚠️ VIP ما لقى صفقات بالفلتر الصارم — نفعّل الخطة البديلة")
         fallback_pool = [r for r in cands if r["grade"] in ("B","C") and r["sym"] not in used]
@@ -2164,8 +2169,7 @@ async def run_autopost(bot):
                 vip_n += 1; used.add(r["sym"])
                 log.info(f"✅ VIP (بديل): {r['sym']}")
                 await asyncio.sleep(2)
-    
-    # المرحلة 3: المجانية
+
     free_pool = [r for r in cands if r["grade"] in ("B","C") and r["sym"] not in used]
     for r in free_pool:
         if free_n >= FREE_POSTS_PER_CYCLE: break
@@ -2567,7 +2571,7 @@ _cooldown = {}
 
 async def gate(update):
     user = update.effective_user
-    if MAINTENANCE and user.id != ADMIN_ID:
+    if is_maintenance() and user.id != ADMIN_ID:
         await update.message.reply_text(f"🔧 صيانة.\n📞 {CONTACT_LINK}")
         return "maintenance", False
     rec = touch_user(user)
@@ -2584,6 +2588,7 @@ async def gate(update):
         _cooldown[user.id] = time.time()
     return st, True
 
+# ✅ handle_symbol — إصلاح النشر الوهمي (حذف التتبع التلقائي)
 async def handle_symbol(update, raw, to_channel=False):
     st, ok = await gate(update)
     if not ok: return
@@ -2605,9 +2610,7 @@ async def handle_symbol(update, raw, to_channel=False):
         if st == "admin":
             try: await update.message.reply_text(build_copy_post(res))
             except Exception: pass
-        if res["rank"] >= 0 and can_track(res):
-            try: await asyncio.to_thread(track_signal, res)
-            except Exception: pass
+        # ✅ لا تتبع تلقائي — التتبع فقط للصفقات المنشورة في القنوات
     except PairNotFound: await update.message.reply_text(f"❌ لم أجد العملة: {sym}")
     except NoData: await update.message.reply_text("⚠️ البيانات غير متوفرة")
     except Exception: log.exception("handle"); await update.message.reply_text("⚠️ حدث خطأ")
@@ -2619,7 +2622,7 @@ async def handle_symbol(update, raw, to_channel=False):
 #                    أوامر عامة
 # ============================================================
 async def cmd_start(update, ctx):
-    if MAINTENANCE and update.effective_user.id != ADMIN_ID:
+    if is_maintenance() and update.effective_user.id != ADMIN_ID:
         await update.message.reply_text(f"🔧 صيانة.\n📞 {CONTACT_LINK}"); return
     touch_user(update.effective_user, "/start")
     if update.effective_user.id == ADMIN_ID:
@@ -2657,7 +2660,7 @@ async def cmd_start(update, ctx):
     await update.message.reply_text(build_vip_page(), reply_markup=kb)
 
 async def cmd_help(update, ctx):
-    if MAINTENANCE and update.effective_user.id != ADMIN_ID:
+    if is_maintenance() and update.effective_user.id != ADMIN_ID:
         await update.message.reply_text(f"🔧 صيانة.\n📞 {CONTACT_LINK}"); return
     touch_user(update.effective_user, "/help")
     u = update.effective_user
@@ -2686,7 +2689,7 @@ async def cmd_myid(update, ctx):
     await update.message.reply_text(f"🆔 رقمك: {update.effective_user.id}")
 
 async def cmd_vip(update, ctx):
-    if MAINTENANCE and update.effective_user.id != ADMIN_ID:
+    if is_maintenance() and update.effective_user.id != ADMIN_ID:
         await update.message.reply_text(f"🔧 صيانة.\n📞 {CONTACT_LINK}"); return
     u = update.effective_user; touch_user(u, "/vip")
     kb = InlineKeyboardMarkup([
@@ -3033,6 +3036,7 @@ async def cmd_debug(update, ctx):
     touch_user(update.effective_user, "/debug")
     lines = ["🔍 تشخيص", ""]
     lines.append(f"💾 Storage: {store.remote_msg}")
+    lines.append(f"🔧 Maintenance: {'ON' if is_maintenance() else 'OFF'}")
     lines.append(f"📢 FREE: {'✅' if CHANNEL_ID else '❌'} | VIP: {'✅' if VIP_CHANNEL_ID else '❌'}")
     act = active_signals()
     lines.append(f"📊 MAX_OPEN: {MAX_OPEN} | نشطة: {len(act)}")
@@ -3226,7 +3230,7 @@ async def cmd_dashboard(update, ctx):
     with store.lock:
         nu = len(store.data["users"])
         nv = sum(1 for k in store.data["vip"] if is_vip(int(k)))
-    maint = "🔧" if MAINTENANCE else "✅"
+    maint = "🔧 صيانة" if is_maintenance() else "✅ يعمل"
     msg = (f"🎛 لوحة التحكم — {maint}\n\n"
            f"👥 {nu} | 💎 VIP: {nv}\n"
            f"📊 نشطة: {len(act)}/{MAX_OPEN}\n"
@@ -3307,6 +3311,27 @@ async def cb_handler(update, ctx):
     q = update.callback_query
     try: await q.answer()
     except Exception: pass
+
+    # ✅ زر الصيانة
+    if q.data == "toggle_maintenance":
+        if q.from_user.id != ADMIN_ID:
+            await q.message.reply_text("⛔ للأدمن فقط")
+            return
+        current = is_maintenance()
+        new_state = set_maintenance(not current)
+        if new_state:
+            await q.message.reply_text(
+                "🔧 <b>تم تفعيل وضع الصيانة</b>\n\n"
+                "البوت الآن متوقف لكل المستخدمين.\n"
+                "أنتِ فقط (الأدمن) تقدرين تستخدمينه.\n\n"
+                "لإعادة التفعيل، اضغطي على الزر مرة أخرى.",
+                parse_mode=ParseMode.HTML)
+        else:
+            await q.message.reply_text(
+                "✅ <b>تم تعطيل وضع الصيانة</b>\n\n"
+                "البوت الآن شغال بشكل طبيعي لكل المستخدمين.",
+                parse_mode=ParseMode.HTML)
+        return
 
     if q.data == "admin_menu":
         if q.from_user.id != ADMIN_ID: return
@@ -3534,8 +3559,8 @@ async def post_init(app):
         asyncio.create_task(bottoms_auto_loop(app)),
         asyncio.create_task(cross_loop(app)),
     ]
-    log.info("ryma v60 FINAL | max_open=%d | mirrors=%d | vip_liq=%d",
-             MAX_OPEN, len(BINANCE_SPOT_MIRRORS), VIP_MIN_LIQUIDITY)
+    log.info("ryma v61 FINAL | max_open=%d | mirrors=%d | vip_liq=%d | maintenance=%s",
+             MAX_OPEN, len(BINANCE_SPOT_MIRRORS), VIP_MIN_LIQUIDITY, is_maintenance())
 
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]):
