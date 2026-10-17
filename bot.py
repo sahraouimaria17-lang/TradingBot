@@ -371,7 +371,7 @@ def get_candles(sym, tf, bars=450, ttl=CANDLE_TTL, min_bars=MIN_BARS):
     hit = _candle_cache.get(key)
     if hit and time.time()-hit[0] < ttl: return hit[1]
     
-    # 1. Binance Mirror أولاً
+    # 1. Binance Mirror
     try:
         rows = binance_mirror_klines(sym, tf, bars)
         if rows and len(rows) >= min_bars:
@@ -382,7 +382,7 @@ def get_candles(sym, tf, bars=450, ttl=CANDLE_TTL, min_bars=MIN_BARS):
                 return df
     except Exception: pass
 
-    # 2. منصات العقود كاحتياط
+    # 2. Futures exchanges
     bad, tried, best = 0, 0, None
     for name in FUTURES_EXCHANGES:
         if _down.get(name, 0) > time.time(): continue
@@ -1917,8 +1917,11 @@ async def cmd_futures(update, ctx):
             try: await update.message.reply_text(trade_post, parse_mode=ParseMode.HTML)
             except Exception: pass
     except Exception as e:
-        log.exception("futures"); try: await wait.edit_text(f"⚠️ {str(e)[:150]}")
-        except Exception: pass
+        log.exception("futures")
+        try:
+            await wait.edit_text(f"⚠️ {str(e)[:150]}")
+        except Exception:
+            pass
 
 @vip_only
 async def cmd_golden(update, ctx):
@@ -1931,8 +1934,11 @@ async def cmd_golden(update, ctx):
         for g in results:
             txt = format_golden_post(g, "vip"); await update.message.reply_text(txt, parse_mode=ParseMode.HTML); await asyncio.sleep(1)
     except Exception as e:
-        log.exception("golden"); try: await wait.edit_text(f"⚠️ {str(e)[:200]}")
-        except Exception: pass
+        log.exception("golden")
+        try:
+            await wait.edit_text(f"⚠️ {str(e)[:200]}")
+        except Exception:
+            pass
 
 @vip_only
 async def cmd_explosions(update, ctx):
@@ -2329,7 +2335,7 @@ async def post_init(app):
         asyncio.create_task(bottoms_auto_loop(app)), asyncio.create_task(cross_loop(app)),
         asyncio.create_task(golden_loop(app)),
     ]
-    log.info("ryma v68 FINAL | max_open=%d | mirrors=%d | vip_liq=%d | maintenance=%s", MAX_OPEN, len(BINANCE_SPOT_MIRRORS), VIP_MIN_LIQUIDITY, is_maintenance())
+    log.info("ryma v69 FINAL | max_open=%d | mirrors=%d | vip_liq=%d | maintenance=%s", MAX_OPEN, len(BINANCE_SPOT_MIRRORS), VIP_MIN_LIQUIDITY, is_maintenance())
 
 async def post_shutdown(app):
     for t in app.bot_data.get("tasks",[]): t.cancel()
@@ -2350,4 +2356,4 @@ def main():
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    main()
+    main() 
