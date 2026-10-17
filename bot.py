@@ -602,21 +602,6 @@ def futures_oi_history(sym, period="4h", limit=20):
                     ch = (curr / old - 1) * 100
                     return dict(current=curr, change_pct=round(ch, 2), src="bybit")
     except Exception: pass
-    try:
-        period_map = {"15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
-        okp = period_map.get(period, "4H")
-        r = requests.get("https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume",
-                         params={"ccy": sym, "period": okp}, timeout=8)
-        if r.status_code == 200:
-            data = r.json().get("data", [])
-            if data and len(data) >= 3:
-                vals = [float(x[1]) for x in data if len(x) > 1 and float(x[1]) > 0]
-                if len(vals) >= 3:
-                    curr = vals[0]; old = vals[-1]
-                    if old > 0:
-                        ch = (curr / old - 1) * 100
-                        return dict(current=curr, change_pct=round(ch, 2), src="okx")
-    except Exception: pass
     return None
 
 def futures_funding_rate(sym):
@@ -625,13 +610,6 @@ def futures_funding_rate(sym):
         if d and d.get("retCode") == 0:
             lst = d.get("result", {}).get("list", [])
             if lst: return float(lst[0].get("fundingRate", 0)) * 100
-    except Exception: pass
-    try:
-        r = requests.get("https://www.okx.com/api/v5/public/funding-rate",
-                         params={"instId": f"{sym}-USDT-SWAP"}, timeout=8)
-        if r.status_code == 200:
-            data = r.json().get("data", [])
-            if data: return float(data[0].get("fundingRate", 0)) * 100
     except Exception: pass
     return None
 
@@ -649,15 +627,6 @@ def futures_long_short_ratio(sym, period="4h", limit=10):
                 buy = float(lst[0].get("buyRatio", 0))
                 sell = float(lst[0].get("sellRatio", 0))
                 if sell > 0: return round(buy / sell, 3)
-    except Exception: pass
-    try:
-        period_map = {"15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
-        okp = period_map.get(period, "4H")
-        r = requests.get("https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio",
-                         params={"ccy": sym, "period": okp}, timeout=8)
-        if r.status_code == 200:
-            data = r.json().get("data", [])
-            if data: return round(float(data[0][1]), 3)
     except Exception: pass
     return None
 
@@ -1090,6 +1059,10 @@ def compute_core_levels(df, i, side, price=None):
             pct = 100 * side * (next_px - entry) / entry
             frac = CORE_TP_FRACS[len(tps)] if len(tps) < len(CORE_TP_FRACS) else 0
             tps.append(dict(px=float(next_px), pct=round(pct,2), frac=frac, hit=False, src=""))
+            
+        # إجبار ترتيب الأهداف لتفادي أي خطأ برمجي
+        tps.sort(key=lambda x: x["px"], reverse=(side == -1))
+        
         return dict(entry=entry, sl=sl, risk=risk, tps=tps, atr=atr)
     except Exception: return None
 
@@ -1553,10 +1526,12 @@ def _build_daily_lists(force_side=None):
 
 def _format_daily_card(res, side_label, change, volume):
     lv = res["lv"]
+    decision = "🟢 شراء" if res["side"] == 1 else "🔴 بيع"
     lines = [side_label, "", f"{res['sym']}USDT", f"➡️ Entry: {fmt(lv['entry'])}"]
     for i, tp in enumerate(lv["tps"][:DAILY_TP_COUNT], 1):
         lines.append(f"🎯 Target {i}: {fmt(tp['px'])}")
     lines.append(f"🛑 Stop loss: {fmt(lv['sl'])}"); lines.append("")
+    lines.append(f"🎯 <b>القرار المتوقع: {decision}</b>")
     ch_icon = "🔺" if change >= 0 else "🔻"
     vol_m = volume / 1_000_000 if volume else 0
     lines.append(f"📊 {ch_icon} {change:+.1f}% | 💰 ${vol_m:.1f}M")
@@ -1624,15 +1599,35 @@ def golden_score(sym):
         except Exception: pass
         if sym in ALPHA_COINS: score += 2; reasons.append("⭐ عملة Alpha")
         if score < 8: return None
-        atr = float(r4["atr"]); price = current
-        if side == 1:
-            sl = price - 2.5 * atr
-            tps = [price + 3.0*atr, price + 6.0*atr, price + 10.0*atr, price + 15.0*atr]
-        else:
-            sl = price + 2.5 * atr
-            tps = [price - 3.0*atr, price - 6.0*atr, price - 10.0*atr, price - 15.0*atr]
+        
+        atr = float(r4["atr"])
+        price = current
+        
+        # ✅ وضع حد أقصى للـ ATR (10% من السعر) لتفادي الجنون
+        atr = min(atr, price * 0.1)
+
+        if side == 1: # LONG
+            # ستوب لوز 5% وأهداف ثابتة (10%, 20%, 30%, 50%)
+            sl = price * 0.95
+            tps = [price * 1.10, price * 1.20, price * 1.30, price * 1.50]
+        else: # SHORT
+            # ستوب لوز 5% وأهداف ثابتة (10%, 20%, 30%, 50%)
+            sl = price * 1.05
+            tps = [price * 0.90, price * 0.80, price * 0.70, price * 0.50]
+            
         risk = abs(price - sl)
         if risk <= 0: return None
+        
+        # ✅ تأكيد إضافي: لا نسمح بأي هدف سالب
+        if any(tp <= 0 for tp in tps):
+            return None
+            
+        # ✅ إجبار ترتيب الأهداف
+        if side == -1:
+            tps.sort(reverse=True) # للشورت: الأعلى أولاً
+        else:
+            tps.sort() # للونغ: الأقل أولاً
+
         return dict(sym=sym, side=side, score=score, reasons=reasons,
                     price=price, atr=atr, sl=sl, tps=tps, risk=risk,
                     trend_1d=trend_1d, trend_4h=trend_4h,
@@ -1656,6 +1651,8 @@ def golden_scan(max_results=2):
 def format_golden_post(g, tier="vip"):
     side_word = "🟢 شراء (LONG)" if g["side"] == 1 else "🔴 بيع (SHORT)"
     side_en = "LONG" if g["side"] == 1 else "SHORT"
+    decision = "🟢 شراء" if g["side"] == 1 else "🔴 بيع"
+    
     lines = [
         "🏆✨ <b>الفرصة الذهبية</b> ✨🏆",
         "━━━━━━━━━━━━━━━━━━━━━",
@@ -1666,15 +1663,20 @@ def format_golden_post(g, tier="vip"):
         f"🎯 الاتجاه: <b>{side_word}</b>",
         f"💵 الدخول: <code>{fmt(g['price'])}</code>",
         f"🛑 وقف الخسارة: <code>{fmt(g['sl'])}</code>", "",
-        "🎯 <b>الأهداف البعيدة:</b>",
+        "🎯 <b>الأهداف (الأسعار):</b>",
     ]
+    
+    # ✅ إظهار السعر فقط بدون نسبة مئوية
     for i, tp in enumerate(g["tps"], 1):
-        pct = 100 * g["side"] * (tp - g["price"]) / g["price"]
         emoji = ["🥇", "🥈", "🥉", "🏅"][i-1]
-        lines.append(f"{emoji} هدف {i}: <code>{fmt(tp)}</code> ({pct:+.1f}%)")
-    lines += ["", "━━━━━━━━━━━━━━━━━━━━━", "🔍 <b>لماذا الفرصة الذهبية؟</b>"]
+        lines.append(f"{emoji} هدف {i}: <code>{fmt(tp)}</code>")
+        
+    lines += ["", "━━━━━━━━━━━━━━━━━━━━━", f"🎯 <b>القرار المتوقع: {decision}</b>"]
+    lines += ["", "🔍 <b>لماذا الفرصة الذهبية؟</b>"]
+    
     for r in g["reasons"][:8]:
         lines.append(f"  • {r}")
+        
     lines += ["", "━━━━━━━━━━━━━━━━━━━━━", "📋 <b>النص جاهز للنسخ:</b>",
               f"<code>#{g['sym']}/USDT {side_en}\n"
               f"💵 Entry: {fmt(g['price'])}\n"
@@ -1684,6 +1686,7 @@ def format_golden_post(g, tier="vip"):
               f"🎯 TP4: {fmt(g['tps'][3])}\n"
               f"🛑 SL: {fmt(g['sl'])}</code>",
               "", RISK_WARNING, f"👤 {BRAND}"]
+              
     return "\n".join(lines)
 
 # ============================================================
@@ -1771,6 +1774,7 @@ def render_chart(res, tier="free", published=False):
 def caption_core(res, tier="free"):
     side, lv, sym = res["side"], res["lv"], res["sym"]
     side_word = "🟢 شراء (LONG)" if side == 1 else "🔴 بيع (SHORT)"
+    decision = "🟢 شراء" if side == 1 else "🔴 بيع"
     now_ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     source = (res.get("source") or "BINANCE").upper()
     grade = res.get("grade", "?")
@@ -1796,6 +1800,9 @@ def caption_core(res, tier="free"):
         lines.append(f"{emoji} الهدف {i}: {fmt(tp['px'])}")
     if tier == "free" and len(lv["tps"]) > 2:
         lines.append(""); lines.append("💎 للأهداف الإضافية → VIP")
+        
+    lines += ["", "━━━━━━━━━━━━━━━━", f"🎯 <b>القرار المتوقع: {decision}</b>"]
+    
     if fut_badge or fut_details:
         lines.append(""); lines.append("━━━━━━━━━━━━━━━━")
         if fut_badge: lines.append(fut_badge)
@@ -2192,16 +2199,19 @@ async def cross_loop(app):
                     if cross["type"] == "golden":
                         emoji = "🌟"; title = "تقاطع ذهبي (Golden Cross)"
                         side_word = "🟢 إشارة شراء قوية"
+                        decision = "🟢 شراء"
                     else:
                         emoji = "💀"; title = "تقاطع الموت (Death Cross)"
                         side_word = "🔴 إشارة بيع قوية"
+                        decision = "🔴 بيع"
                     now_ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
                     msg = (f"{emoji} <b>{title}</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
                            f"📌 <b>#{sym}/USDT</b>\n⏱ الفريم: <b>4H</b>\n\n"
                            f"💵 السعر: <code>{fmt(cross['price'])}</code>\n"
                            f"📈 EMA 50: <code>{fmt(cross['ema50'])}</code>\n"
                            f"📉 EMA 200: <code>{fmt(cross['ema200'])}</code>\n\n"
-                           f"{side_word}\n\n"
+                           f"{side_word}\n"
+                           f"🎯 <b>القرار المتوقع: {decision}</b>\n\n"
                            f"📅 {now_ts}\n👤 {BRAND}")
                     try: await notify_both(app.bot, msg, protect=True)
                     except Exception: pass
@@ -2225,7 +2235,9 @@ async def short_free_loop(app):
                              "━━━━━━━━━━━━━━━━", ""]
                     for s, r in rows:
                         lines.append(f"💠 #{s} — RSI {r['rsi']}")
-                        lines.append(f"💵 {fmt(r['price'])}"); lines.append("")
+                        lines.append(f"💵 {fmt(r['price'])}")
+                        lines.append(f"🎯 القرار المتوقع: 🔴 بيع")
+                        lines.append("")
                     lines.append("💎 للأدق → VIP")
                     lines.append(RISK_WARNING)
                     try:
@@ -2265,9 +2277,11 @@ async def predict_loop(app):
                     lines = ["🔮 رادار التنبؤ بالانفجارات", "━━━━━━━━━━━━━━━━", ""]
                     for p in preds[:7]:
                         icon = "🟢" if p["direction"] == "LONG" else "🔴"
+                        decision = "🟢 شراء" if p["direction"] == "LONG" else "🔴 بيع"
                         reasons = " | ".join(p["reasons"][:3])
                         lines.append(f"{icon} #{p['sym']} ({p['score']}/15)")
                         lines.append(f"   {reasons}")
+                        lines.append(f"   🎯 القرار المتوقع: {decision}")
                     await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines), protect_content=PROTECT)
         except asyncio.CancelledError: raise
         except Exception: log.exception("predict")
@@ -2292,6 +2306,7 @@ async def alpha_summary_loop(app):
                         lines.append(f"⭐ #{s}")
                         lines.append(f"   7ي {r['change_7d']:+.2f}% | 30ي {r['change_30d']:+.2f}%")
                         lines.append(f"   RSI {r['rsi']}")
+                        lines.append(f"   🎯 القرار المتوقع: 🟢 شراء")
                     await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines), protect_content=PROTECT)
         except asyncio.CancelledError: raise
         except Exception: log.exception("alpha_summary")
@@ -2317,6 +2332,7 @@ async def bottoms_auto_loop(app):
                         lines.append(f"   📊 {r['diff']}% تحت EMA200 | RSI {r['rsi']}")
                         lines.append(f"   🔄 تعافي: +{r['rebound']}% | 📊 حجم: x{r['vol_ratio']}")
                         lines.append(f"   💵 {fmt(r['price'])}")
+                        lines.append(f"   🎯 القرار المتوقع: 🟢 شراء")
                     await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines), protect_content=PROTECT)
         except asyncio.CancelledError: raise
         except Exception: log.exception("bottoms_auto")
@@ -2584,7 +2600,7 @@ async def cmd_menu(update, ctx):
     await update.message.reply_text(build_vip_menu_text(), reply_markup=keyboard_vip_menu())
 
 # ============================================================
-#              /daily — للأدمن + VIP
+#              /daily
 # ============================================================
 async def cmd_daily(update, ctx):
     u = update.effective_user
@@ -2636,7 +2652,9 @@ async def cmd_cross(update, ctx):
         lines = ["🌟 التقاطعات:", ""]
         for sym, c in found:
             t = "🌟 ذهبي" if c["type"]=="golden" else "💀 موت"
+            dec = "🟢 شراء" if c["type"]=="golden" else "🔴 بيع"
             lines.append(f"{t} #{sym} — {fmt(c['price'])}")
+            lines.append(f"   🎯 القرار المتوقع: {dec}")
         await wait.edit_text("\n".join(lines)[:4000])
     except Exception as e:
         log.exception("cross"); await wait.edit_text(f"⚠️ {str(e)[:200]}")
@@ -2653,9 +2671,11 @@ async def cmd_active(update, ctx):
     lines = [f"📊 الصفقات النشطة ({len(act)}/{MAX_OPEN})", ""]
     for p in act[:20]:
         side_icon = "🟢" if p["side"] == 1 else "🔴"
+        decision = "🟢 شراء" if p["side"] == 1 else "🔴 بيع"
         cur_r = p.get("realized", 0.0)
         tp_hits = sum(1 for t in p["tps"] if t["hit"])
         lines.append(f"{side_icon} #{p['coin']}/{p['tf']} R:{cur_r:+.2f} TP:{tp_hits}/4")
+        lines.append(f"   🎯 القرار المتوقع: {decision}")
     await update.message.reply_text("\n".join(lines)[:4000])
 
 @vip_only
@@ -2669,8 +2689,10 @@ async def cmd_predict(update, ctx):
         lines = ["🔮 رادار التنبؤ:", ""]
         for p in preds[:7]:
             icon = "🟢" if p["direction"] == "LONG" else "🔴"
+            decision = "🟢 شراء" if p["direction"] == "LONG" else "🔴 بيع"
             lines.append(f"{icon} #{p['sym']} — {p['score']}/15")
             for r in p["reasons"][:3]: lines.append(f"   ✅ {r}")
+            lines.append(f"   🎯 القرار المتوقع: {decision}")
             lines.append("")
         await wait.edit_text("\n".join(lines))
     except Exception as e:
@@ -2687,12 +2709,21 @@ async def cmd_whales(update, ctx):
     if not rows:
         await wait.edit_text("🐋 لا توجد حركة"); return
     rows.sort(key=lambda x: -x[2])
-    lines = ["🐋 رادار الحيتان:", ""]
+    lines = ["🐋 <b>رادار الحيتان (صفقات فوق 20 ألف دولار)</b>", "━━━━━━━━━━━━━━━━", ""]
+    
     for s, w, largest, bv, sv in rows[:10]:
-        total = bv + sv; buy_pct = (bv / total * 100) if total > 0 else 0
-        direction = "🟢" if buy_pct > 55 else ("🔴" if buy_pct < 45 else "⚖️")
-        lines.append(f"🐋 #{s}: {w} صفقة | ${largest:,.0f} | {direction}")
-    await wait.edit_text("\n".join(lines))
+        total = bv + sv
+        buy_pct = (bv / total * 100) if total > 0 else 0
+        direction = "🟢 شراء" if buy_pct > 55 else ("🔴 بيع" if buy_pct < 45 else "⚖️ متذبذب")
+        
+        lines.append(f"🐋 <b>#{s}</b>")
+        lines.append(f"   🔢 عدد الصفقات: <b>{w}</b> صفقة كبيرة")
+        lines.append(f"   💰 أكبر صفقة: <b>${largest:,.0f}</b>")
+        lines.append(f"   📊 الاتجاه: <b>{direction}</b> ({buy_pct:.0f}%)")
+        lines.append(f"   🎯 القرار المتوقع: {direction}")
+        lines.append("")
+        
+    await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 @vip_only
 async def cmd_liquidity(update, ctx):
@@ -2703,8 +2734,10 @@ async def cmd_liquidity(update, ctx):
     if not liq:
         await wait.edit_text("💧 لا توجد بيانات"); return
     bias = "🟢 ضغط شراء" if liq["ratio"] > 0.55 else ("🔴 ضغط بيع" if liq["ratio"] < 0.45 else "⚖️")
+    decision = "🟢 شراء" if liq["ratio"] > 0.55 else ("🔴 بيع" if liq["ratio"] < 0.45 else "⚖️ حياد")
     await wait.edit_text(f"💧 {sym}\n🟢 ${liq['bids']:,.0f}\n🔴 ${liq['asks']:,.0f}\n"
-                         f"📊 {liq['ratio']*100:.1f}% | {bias}")
+                         f"📊 {liq['ratio']*100:.1f}% | {bias}\n\n"
+                         f"🎯 القرار المتوقع: {decision}")
 
 @vip_only
 async def cmd_futures(update, ctx):
@@ -2736,9 +2769,11 @@ async def cmd_futures(update, ctx):
             lines.append("⚖️ L/S: <i>لا توجد بيانات</i>")
         sig = await asyncio.to_thread(futures_signal, sym)
         if sig and sig["direction"]:
+            decision = "🟢 شراء" if sig['direction']=='LONG' else "🔴 بيع"
             lines.append(""); lines.append("━━━━━━━━━━━━━━━━")
             lines.append(f"🎯 <b>الإشارة: {'🟢 شراء (LONG)' if sig['direction']=='LONG' else '🔴 بيع (SHORT)'}</b>")
             lines.append(f"💪 القوة: {sig['confidence']} (Score: {sig['score']:+d})")
+            lines.append(f"🎯 <b>القرار المتوقع: {decision}</b>")
             lines.append(""); lines.append("🔍 <b>الأسباب:</b>")
             for r in sig["reasons"][:5]: lines.append(f"  • {r}")
         else:
@@ -2809,7 +2844,9 @@ async def cmd_explosions(update, ctx):
     rows.sort(key=lambda x: -x[1]["vol_ratio"])
     lines = ["💥 رادار الانفجارات:", ""]
     for s, r in rows[:10]:
+        decision = "🟢 شراء" if r["price_change"] > 0 else "🔴 بيع"
         lines.append(f"💥 #{s}: حجم x{r['vol_ratio']} | {r['price_change']:+.2f}%")
+        lines.append(f"   🎯 القرار المتوقع: {decision}")
     await wait.edit_text("\n".join(lines))
 
 @vip_only
@@ -2826,6 +2863,7 @@ async def cmd_pump(update, ctx):
     lines = ["🚀 عملات في صعود:", ""]
     for s, r in rows[:10]:
         lines.append(f"🚀 #{s}: 1س {r['change_1h']:+.2f}% | 4س {r['change_4h']:+.2f}%")
+        lines.append(f"   🎯 القرار المتوقع: 🟢 شراء")
     await wait.edit_text("\n".join(lines))
 
 @vip_only
@@ -2843,6 +2881,7 @@ async def cmd_bottoms(update, ctx):
     for s, r in rows[:10]:
         lines.append(f"{r['severity']} #{s}")
         lines.append(f"   {r['diff']}% تحت EMA200 | RSI {r['rsi']} | تعافي +{r['rebound']}%")
+        lines.append(f"   🎯 القرار المتوقع: 🟢 شراء")
     await wait.edit_text("\n".join(lines)[:4000])
 
 @vip_only
@@ -2858,6 +2897,7 @@ async def cmd_shorts_radar(update, ctx):
     lines = ["🔻 رادار الشورت:", ""]
     for s, r in rows[:10]:
         lines.append(f"🔻 #{s}: RSI {r['rsi']} | {fmt(r['price'])}")
+        lines.append(f"   🎯 القرار المتوقع: 🔴 بيع")
     await wait.edit_text("\n".join(lines))
 
 @vip_only
@@ -2874,6 +2914,7 @@ async def cmd_alpha(update, ctx):
     lines = ["⭐ رادار Alpha:", ""]
     for s, r in rows[:10]:
         lines.append(f"⭐ #{s} 7ي {r['change_7d']:+.2f}% | 30ي {r['change_30d']:+.2f}%")
+        lines.append(f"   🎯 القرار المتوقع: 🟢 شراء")
     await wait.edit_text("\n".join(lines))
 
 # ============================================================
@@ -2959,7 +3000,9 @@ async def cmd_scan(update, ctx):
     lines = ["🎯 أفضل الإعدادات:", ""]
     for r in res[:10]:
         s = "🟢" if r["side"]==1 else "🔴"
+        dec = "🟢 شراء" if r["side"]==1 else "🔴 بيع"
         lines.append(f"{r['grade']} | #{r['sym']} {s}")
+        lines.append(f"   🎯 القرار المتوقع: {dec}")
     await wait.edit_text("\n".join(lines))
 
 @admin_only
@@ -2968,7 +3011,7 @@ async def cmd_short(update, ctx):
     res = await asyncio.to_thread(scan_sync, COINS)
     res = [r for r in res if r["side"]==-1 and r["rank"]>=0]
     if not res: await wait.edit_text("لا شورت"); return
-    lines = ["🔻"] + [f"{r['grade']} | #{r['sym']}" for r in res[:15]]
+    lines = ["🔻"] + [f"{r['grade']} | #{r['sym']} | 🎯 شراء: بيع" for r in res[:15]]
     await wait.edit_text("\n".join(lines))
 
 @admin_only
@@ -3350,7 +3393,7 @@ async def post_init(app):
         asyncio.create_task(cross_loop(app)),
         asyncio.create_task(golden_loop(app)),
     ]
-    log.info("ryma v65 NEUTRAL | max_open=%d | mirrors=%d | vip_liq=%d | maintenance=%s",
+    log.info("ryma v66 DECISION | max_open=%d | mirrors=%d | vip_liq=%d | maintenance=%s",
              MAX_OPEN, len(BINANCE_SPOT_MIRRORS), VIP_MIN_LIQUIDITY, is_maintenance())
 
 async def post_shutdown(app):
