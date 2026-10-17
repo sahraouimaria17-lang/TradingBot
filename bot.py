@@ -70,6 +70,9 @@ def coin_link(sym, source="binance_fut"):
     if s == "bingx":   return f"https://bingx.com/en-us/perpetual/{sym_u}-USDT/"
     return REFERRAL_LINKS["binance"][1]
 
+# إعدادات لمنع ظهور المربع الكبير (Link Preview)
+NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
+
 FAST_EXCHANGES = ["okx", "bybit", "gateio", "mexc", "kucoin", "bitget", "htx", "binance"]
 EXCHANGES = ["okx", "bybit", "gateio", "mexc", "kucoin", "bitget", "htx",
              "binance", "bingx", "lbank", "bitmart", "poloniex"]
@@ -110,7 +113,7 @@ CYCLE_MARKET_SUMMARY = 16200
 CYCLE_PREDICT        = 14400
 CYCLE_ALPHA_SUMMARY  = 14400
 CYCLE_BOTTOMS_AUTO   = 21600
-CYCLE_GOLDEN         = 18000   # ✅ 5 ساعات
+CYCLE_GOLDEN         = 18000
 CYCLE_PROMO          = 604800
 CROSS_CHECK_INTERVAL = 1800
 
@@ -1362,7 +1365,7 @@ def _archive(p):
 def format_trade_card(p, event_kind=None, event_data=None):
     source = display_source(p.get("source") or "binance_fut")
     cl = coin_link(p['coin'], p.get("source") or "binance_fut")
-    lines = [f"📌 <a href='{cl}'>#{p['coin']}USDT</a> 👆 اضغط هنا للعملة", "",
+    lines = [f"📌 <a href='{cl}'>#{p['coin']}/USDT</a> 👆 اضغط هنا", "",
              f"📡 المصدر: <b>{source}</b>", "",
              f"➡️ Entry: {fmt(p['fill'])}", ""]
     for i, tp in enumerate(p["tps"], 1):
@@ -1436,12 +1439,10 @@ def _build_daily_lists(force_side=None):
 
 def _format_daily_card(res, side_label, change, volume):
     lv = res["lv"]; decision = "🟢 شراء" if res["side"] == 1 else "🔴 بيع"
-    name, ref = referral_for(res.get("source", "binance_fut"))
     cl = coin_link(res['sym'], res.get("source", "binance_fut"))
     lines = [side_label, "",
-             f"📌 <a href='{cl}'>#{res['sym']}/USDT</a> 👆 اضغط هنا للعملة",
+             f"📌 <a href='{cl}'>#{res['sym']}/USDT</a> 👆 اضغط هنا",
              f"📡 {display_source(res.get('source','binance_fut'))}",
-             f"🔗 <a href='{ref}'>{name} - سجّل الآن</a>",
              f"➡️ Entry: {fmt(lv['entry'])}"]
     for i, tp in enumerate(lv["tps"][:DAILY_TP_COUNT], 1):
         lines.append(f"🎯 Target {i}: {fmt(tp['px'])}")
@@ -1558,14 +1559,12 @@ def golden_scan(max_results=2):
 def format_golden_post(g, tier="vip"):
     side_word = "🟢 شراء (LONG)" if g["side"] == 1 else "🔴 بيع (SHORT)"
     decision = "🟢 شراء" if g["side"] == 1 else "🔴 بيع"
-    name, ref = referral_for(g.get("source", "binance_fut"))
     cl = coin_link(g['sym'], g.get("source", "binance_fut"))
     lines = [
         "🏆✨ <b>الفرصة الذهبية</b> ✨🏆",
         "━━━━━━━━━━━━━━━━━━━━━",
-        f"📌 <a href='{cl}'>#{g['sym']}/USDT</a> 👆 اضغط هنا للعملة",
+        f"📌 <a href='{cl}'>#{g['sym']}/USDT</a> 👆 اضغط هنا",
         f"📡 المصدر: <b>{display_source(g.get('source','binance_fut'))}</b>",
-        f"🔗 <a href='{ref}'>{name} - سجّل الآن</a>",
         f"🏆 التقييم: <b>{g['score']} نقطة</b>",
         "━━━━━━━━━━━━━━━━━━━━━", "",
         f"🎯 الاتجاه: <b>{side_word}</b>",
@@ -1587,14 +1586,16 @@ async def notify_both(bot, text, protect=True):
         if not chat: continue
         try:
             await bot.send_message(chat, text, parse_mode=ParseMode.HTML,
-                                   protect_content=PROTECT if chat != ADMIN_ID else False)
+                                   protect_content=PROTECT if chat != ADMIN_ID else False,
+                                   link_preview_options=NO_PREVIEW)
         except Exception as e:
             log.warning(f"notify_both {chat}: {str(e)[:80]}")
 
 async def notify_free(bot, text):
     if CHANNEL_ID:
         try:
-            await bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, protect_content=PROTECT)
+            await bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, 
+                                   protect_content=PROTECT, link_preview_options=NO_PREVIEW)
         except Exception as e:
             log.warning(f"notify_free: {str(e)[:80]}")
 
@@ -1659,7 +1660,7 @@ def caption_core(res, tier="free"):
     lines = [
         "╭━━━ 💎 RYMA CRYPTO 💎 ━━━╮",
         f"┃ 🎯 التوصية: {side_word}",
-        f"┃ 📌 <a href='{cl}'>#{sym}/USDT</a> 👆 اضغط هنا للعملة",
+        f"┃ 📌 <a href='{cl}'>#{sym}/USDT</a> 👆 اضغط هنا",
         f"┃ 📡 المصدر: {source}",
         f"┃ 🏆 الدرجة: {grade}",
         "╰━━━━━━━━━━━━━━━━━━━━━━━╯", "",
@@ -1696,9 +1697,7 @@ def build_copy_post(res):
     return "\n".join(lines)
 
 def keyboard_free(sym, tf, source="binance_fut"):
-    name, ref = referral_for(source)
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"🔗 سجّل في {name}", url=ref)],
         [InlineKeyboardButton("🌐 جميع منصات التداول", callback_data=f"refs:{source}")],
         [InlineKeyboardButton("💎 اشترك في VIP ✨", url=VIP_INVITE_LINK)],
         [InlineKeyboardButton("📢 قناة التوصيات", url=CHANNEL_LINK)],
@@ -1707,9 +1706,7 @@ def keyboard_free(sym, tf, source="binance_fut"):
     ])
 
 def keyboard_vip(sym, tf, source="binance_fut"):
-    name, ref = referral_for(source)
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"🔗 سجّل في {name}", url=ref)],
         [InlineKeyboardButton("🌐 جميع المنصات", callback_data=f"refs:{source}")],
         [InlineKeyboardButton("📋 القائمة", callback_data="vip_menu")],
         [InlineKeyboardButton("🔄 تحديث", callback_data=f"tf:{sym}:{tf}")],
@@ -2115,7 +2112,7 @@ async def short_free_loop(app):
                         lines += [f"💠 <a href='{cl}'>#{s}</a> 👆 — RSI {r['rsi']}",
                                   f"💵 {fmt(r['price'])}", f"🎯 القرار المتوقع: 🔴 بيع", ""]
                     lines.append("💎 للأدق → VIP"); lines.append(RISK_WARNING)
-                    try: await app.bot.send_message(CHANNEL_ID, "\n".join(lines), protect_content=PROTECT)
+                    try: await app.bot.send_message(CHANNEL_ID, "\n".join(lines), protect_content=PROTECT, link_preview_options=NO_PREVIEW)
                     except Exception: pass
         except asyncio.CancelledError: raise
         except Exception: log.exception("short_free")
@@ -2129,12 +2126,12 @@ async def market_summary_loop(app):
             if CHANNEL_ID:
                 txt = await asyncio.to_thread(build_market_summary, FREE_SYMS)
                 if txt:
-                    try: await app.bot.send_message(CHANNEL_ID, txt, protect_content=PROTECT)
+                    try: await app.bot.send_message(CHANNEL_ID, txt, protect_content=PROTECT, link_preview_options=NO_PREVIEW)
                     except Exception: pass
             if VIP_CHANNEL_ID:
                 txt = await asyncio.to_thread(build_market_summary, ALPHA_COINS[:10])
                 if txt:
-                    try: await app.bot.send_message(VIP_CHANNEL_ID, txt, protect_content=PROTECT)
+                    try: await app.bot.send_message(VIP_CHANNEL_ID, txt, protect_content=PROTECT, link_preview_options=NO_PREVIEW)
                     except Exception: pass
         except asyncio.CancelledError: raise
         except Exception: log.exception("market_summary")
@@ -2155,7 +2152,7 @@ async def predict_loop(app):
                         reasons = " | ".join(p["reasons"][:3])
                         lines += [f"{icon} #{p['sym']} ({p['score']}/15)", f"   {reasons}",
                                   f"   🎯 القرار المتوقع: {decision}"]
-                    await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines), protect_content=PROTECT)
+                    await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines), protect_content=PROTECT, link_preview_options=NO_PREVIEW)
         except asyncio.CancelledError: raise
         except Exception: log.exception("predict")
         await asyncio.sleep(CYCLE_PREDICT)
@@ -2176,7 +2173,7 @@ async def alpha_summary_loop(app):
                     for s, r in rows[:10]:
                         lines += [f"⭐ #{s}", f"   7ي {r['change_7d']:+.2f}% | 30ي {r['change_30d']:+.2f}%",
                                   f"   RSI {r['rsi']}", f"   🎯 القرار المتوقع: 🟢 شراء"]
-                    await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines), protect_content=PROTECT)
+                    await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines), protect_content=PROTECT, link_preview_options=NO_PREVIEW)
         except asyncio.CancelledError: raise
         except Exception: log.exception("alpha_summary")
         await asyncio.sleep(CYCLE_ALPHA_SUMMARY)
@@ -2199,7 +2196,7 @@ async def bottoms_auto_loop(app):
                                   f"   {r['diff']}% تحت EMA200 | RSI {r['rsi']}",
                                   f"   تعافي: +{r['rebound']}% | حجم: x{r['vol_ratio']}",
                                   f"   💵 {fmt(r['price'])}", f"   🎯 القرار المتوقع: 🟢 شراء"]
-                    await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines), protect_content=PROTECT)
+                    await app.bot.send_message(VIP_CHANNEL_ID, "\n".join(lines), protect_content=PROTECT, link_preview_options=NO_PREVIEW)
         except asyncio.CancelledError: raise
         except Exception: log.exception("bottoms_auto")
         await asyncio.sleep(CYCLE_BOTTOMS_AUTO)
@@ -2490,10 +2487,12 @@ async def cmd_daily(update, ctx):
         await wait.delete()
         for idx, item in enumerate(longs, 1):
             txt = _format_daily_card(item["res"], f"🟢 LONG {idx}", item.get("change", 0), item.get("volume", 0))
-            await update.message.reply_text(txt, parse_mode=ParseMode.HTML); await asyncio.sleep(0.7)
+            await update.message.reply_text(txt, parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW)
+            await asyncio.sleep(0.7)
         for idx, item in enumerate(shorts, 1):
             txt = _format_daily_card(item["res"], f"🔴 SHORT {idx}", item.get("change", 0), item.get("volume", 0))
-            await update.message.reply_text(txt, parse_mode=ParseMode.HTML); await asyncio.sleep(0.7)
+            await update.message.reply_text(txt, parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW)
+            await asyncio.sleep(0.7)
         await update.message.reply_text(f"📊 النتيجة: {len(longs)} LONG + {len(shorts)} SHORT\n\n"
                                         f"💡 الصفقات جاهزة للنشر يدوياً\n\n{RISK_WARNING}",
                                         parse_mode=ParseMode.HTML)
@@ -2526,7 +2525,7 @@ async def cmd_cross(update, ctx):
             t = "🌟 ذهبي" if c["type"]=="golden" else "💀 موت"
             dec = "🟢 شراء" if c["type"]=="golden" else "🔴 بيع"
             lines += [f"{t} #{sym} — {fmt(c['price'])}", f"   🎯 القرار المتوقع: {dec}"]
-        await wait.edit_text("\n".join(lines)[:4000])
+        await wait.edit_text("\n".join(lines)[:4000], link_preview_options=NO_PREVIEW)
     except Exception as e:
         log.exception("cross"); await wait.edit_text(f"⚠️ {str(e)[:200]}")
 
@@ -2542,7 +2541,7 @@ async def cmd_active(update, ctx):
         cur_r = p.get("realized", 0.0); tp_hits = sum(1 for t in p["tps"] if t["hit"])
         lines += [f"{side_icon} #{p['coin']}/{p['tf']} R:{cur_r:+.2f} TP:{tp_hits}/4",
                   f"   🎯 القرار المتوقع: {decision}"]
-    await update.message.reply_text("\n".join(lines)[:4000])
+    await update.message.reply_text("\n".join(lines)[:4000], link_preview_options=NO_PREVIEW)
 
 @vip_only
 async def cmd_predict(update, ctx):
@@ -2558,7 +2557,7 @@ async def cmd_predict(update, ctx):
             lines.append(f"{icon} #{p['sym']} — {p['score']}/15")
             for r in p["reasons"][:3]: lines.append(f"   ✅ {r}")
             lines += [f"   🎯 القرار المتوقع: {decision}", ""]
-        await wait.edit_text("\n".join(lines))
+        await wait.edit_text("\n".join(lines), link_preview_options=NO_PREVIEW)
     except Exception as e: await wait.edit_text(f"⚠️ {str(e)[:150]}")
 
 @vip_only
@@ -2578,7 +2577,7 @@ async def cmd_whales(update, ctx):
                   f"   💰 أكبر صفقة: <b>${largest:,.0f}</b>",
                   f"   📊 الاتجاه: <b>{direction}</b> ({buy_pct:.0f}%)",
                   f"   🎯 القرار المتوقع: {direction}", ""]
-    await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW)
 
 @vip_only
 async def cmd_liquidity(update, ctx):
@@ -2624,7 +2623,7 @@ async def cmd_futures(update, ctx):
             for r in sig["reasons"][:5]: lines.append(f"  • {r}")
         else:
             lines += ["", "━━━━━━━━━━━━━━━━", "⚖️ <b>لا توجد إشارة واضحة</b>"]
-        await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        await wait.edit_text("\n".join(lines), parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW)
     except Exception as e:
         log.exception("futures")
         try: await wait.edit_text(f"⚠️ {str(e)[:150]}")
@@ -2637,11 +2636,12 @@ async def cmd_golden(update, ctx):
         results = await asyncio.to_thread(golden_scan, 2)
         if not results:
             await wait.edit_text("💎 <b>لا توجد فرصة ذهبية حالياً</b>\n\nالشروط صارمة، عودة بعد بضع ساعات.",
-                                 parse_mode=ParseMode.HTML); return
+                                 parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW); return
         await wait.delete()
         for g in results:
             txt = format_golden_post(g, "vip")
-            await update.message.reply_text(txt, parse_mode=ParseMode.HTML); await asyncio.sleep(1)
+            await update.message.reply_text(txt, parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW)
+            await asyncio.sleep(1)
     except Exception as e:
         log.exception("golden")
         try: await wait.edit_text(f"⚠️ {str(e)[:200]}")
@@ -2661,7 +2661,7 @@ async def cmd_explosions(update, ctx):
         decision = "🟢 شراء" if r["price_change"] > 0 else "🔴 بيع"
         lines += [f"💥 #{s}: حجم x{r['vol_ratio']} | {r['price_change']:+.2f}%",
                   f"   🎯 القرار المتوقع: {decision}"]
-    await wait.edit_text("\n".join(lines))
+    await wait.edit_text("\n".join(lines), link_preview_options=NO_PREVIEW)
 
 @vip_only
 async def cmd_pump(update, ctx):
@@ -2676,7 +2676,7 @@ async def cmd_pump(update, ctx):
     for s, r in rows[:10]:
         lines += [f"🚀 #{s}: 1س {r['change_1h']:+.2f}% | 4س {r['change_4h']:+.2f}%",
                   f"   🎯 القرار المتوقع: 🟢 شراء"]
-    await wait.edit_text("\n".join(lines))
+    await wait.edit_text("\n".join(lines), link_preview_options=NO_PREVIEW)
 
 @vip_only
 async def cmd_bottoms(update, ctx):
@@ -2692,7 +2692,7 @@ async def cmd_bottoms(update, ctx):
         lines += [f"{r['severity']} #{s}",
                   f"   {r['diff']}% تحت EMA200 | RSI {r['rsi']} | تعافي +{r['rebound']}%",
                   f"   🎯 القرار المتوقع: 🟢 شراء"]
-    await wait.edit_text("\n".join(lines)[:4000])
+    await wait.edit_text("\n".join(lines)[:4000], link_preview_options=NO_PREVIEW)
 
 @vip_only
 async def cmd_shorts_radar(update, ctx):
@@ -2705,7 +2705,7 @@ async def cmd_shorts_radar(update, ctx):
     lines = ["🔻 رادار الشورت:", ""]
     for s, r in rows[:10]:
         lines += [f"🔻 #{s}: RSI {r['rsi']} | {fmt(r['price'])}", f"   🎯 القرار المتوقع: 🔴 بيع"]
-    await wait.edit_text("\n".join(lines))
+    await wait.edit_text("\n".join(lines), link_preview_options=NO_PREVIEW)
 
 @vip_only
 async def cmd_alpha(update, ctx):
@@ -2720,7 +2720,7 @@ async def cmd_alpha(update, ctx):
     for s, r in rows[:10]:
         lines += [f"⭐ #{s} 7ي {r['change_7d']:+.2f}% | 30ي {r['change_30d']:+.2f}%",
                   f"   🎯 القرار المتوقع: 🟢 شراء"]
-    await wait.edit_text("\n".join(lines))
+    await wait.edit_text("\n".join(lines), link_preview_options=NO_PREVIEW)
 
 @admin_only
 async def cmd_forcepost(update, ctx):
@@ -2758,7 +2758,7 @@ async def cmd_debug(update, ctx):
     g, l = await asyncio.to_thread(get_top_movers, True)
     lines.append(f"🟢 Gainers: {len(g)} | 🔴 Losers: {len(l)}")
     lines.append(f"🔗 روابط الإحالة: {len(REFERRAL_LINKS)} منصة")
-    await update.message.reply_text("\n".join(lines)[:4000])
+    await update.message.reply_text("\n".join(lines)[:4000], link_preview_options=NO_PREVIEW)
 
 @admin_only
 async def cmd_post(update, ctx):
@@ -2779,7 +2779,7 @@ async def cmd_bt(update, ctx):
     per, a, b = await asyncio.to_thread(backtest_many, syms, years)
     if not per: await wait.edit_text("❌"); return
     text, _ = bt_report(per, a, b, arg)
-    await wait.edit_text(text[:4000])
+    await wait.edit_text(text[:4000], link_preview_options=NO_PREVIEW)
 
 @admin_only
 async def cmd_bt50(update, ctx):
@@ -2790,7 +2790,7 @@ async def cmd_bt50(update, ctx):
     per, a, b = await asyncio.to_thread(backtest_many, syms, years)
     if not per: await wait.edit_text("❌"); return
     text, _ = bt_report(per, a, b, "TOP50")
-    await wait.edit_text(text[:4000])
+    await wait.edit_text(text[:4000], link_preview_options=NO_PREVIEW)
 
 @admin_only
 async def cmd_scan(update, ctx):
@@ -2803,7 +2803,7 @@ async def cmd_scan(update, ctx):
     for r in res[:10]:
         s = "🟢" if r["side"]==1 else "🔴"; dec = "🟢 شراء" if r["side"]==1 else "🔴 بيع"
         lines += [f"{r['grade']} | #{r['sym']} {s}", f"   🎯 القرار المتوقع: {dec}"]
-    await wait.edit_text("\n".join(lines))
+    await wait.edit_text("\n".join(lines), link_preview_options=NO_PREVIEW)
 
 @admin_only
 async def cmd_short(update, ctx):
@@ -2812,7 +2812,7 @@ async def cmd_short(update, ctx):
     res = [r for r in res if r["side"]==-1 and r["rank"]>=0]
     if not res: await wait.edit_text("لا شورت"); return
     lines = ["🔻 فرص شورت:"] + [f"{r['grade']} | #{r['sym']} | 🎯 شراء: بيع" for r in res[:15]]
-    await wait.edit_text("\n".join(lines))
+    await wait.edit_text("\n".join(lines), link_preview_options=NO_PREVIEW)
 
 @admin_only
 async def cmd_delist(update, ctx):
@@ -2837,7 +2837,7 @@ async def cmd_delist(update, ctx):
         for c, d in rows:
             if c in seen: continue
             seen.add(c); lines.append(f"🔻 {c} — 📅 {d}")
-        await wait.edit_text("\n".join(lines[:40]))
+        await wait.edit_text("\n".join(lines[:40]), link_preview_options=NO_PREVIEW)
     except Exception as e: await wait.edit_text(f"⚠️ {str(e)[:150]}")
 
 @admin_only
@@ -2848,7 +2848,7 @@ async def cmd_price(update, ctx):
     lo, hi = min(prices.values()), max(prices.values())
     lines = [f"💲 {sym}/USDT"] + [f"• {n}: {fmt(p)}" for n,p in sorted(prices.items(), key=lambda z:z[1])]
     lines.append(f"\n📊 الفرق: {100*(hi/lo-1):.2f}%")
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text("\n".join(lines), link_preview_options=NO_PREVIEW)
 
 @admin_only
 async def cmd_why(update, ctx):
@@ -2874,7 +2874,7 @@ async def cmd_users(update, ctx):
         st, _ = user_status(int(u["id"]), u)
         icon = {"admin":"👑","vip":"💎","trial":"🆓","warning":"⚠️","blocked":"⛔"}.get(st,"•")
         lines += [f"{icon} {label}", f"    📊 {u.get('requests',0)} | آخر: {time_ago(u.get('last_seen'))}"]
-    await update.message.reply_text("\n".join(lines)[:4000])
+    await update.message.reply_text("\n".join(lines)[:4000], link_preview_options=NO_PREVIEW)
 
 @admin_only
 async def cmd_testchannels(update, ctx):
@@ -3022,7 +3022,8 @@ async def cb_handler(update, ctx):
         try:
             await q.message.reply_text("🌐 <b>منصات التداول المعتمدة</b>\n\nاختر منصة للتسجيل:",
                                        reply_markup=keyboard_refs("binance_fut"),
-                                       parse_mode=ParseMode.HTML)
+                                       parse_mode=ParseMode.HTML,
+                                       link_preview_options=NO_PREVIEW)
         except Exception: pass
         return
 
@@ -3190,7 +3191,7 @@ async def post_init(app):
         asyncio.create_task(bottoms_auto_loop(app)), asyncio.create_task(cross_loop(app)),
         asyncio.create_task(golden_loop(app)), asyncio.create_task(promo_loop(app)),
     ]
-    log.info("ryma v68 FUTURES | max_open=%d | golden_cycle=%ds | min_score=%d | maintenance=%s",
+    log.info("ryma v69 NO_PREVIEW | max_open=%d | golden_cycle=%ds | min_score=%d | maintenance=%s",
              MAX_OPEN, CYCLE_GOLDEN, get_golden_config().get("min_score",5), is_maintenance())
 
 async def post_shutdown(app):
